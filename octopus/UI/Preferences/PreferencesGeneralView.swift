@@ -6,6 +6,7 @@
 //
 
 import SwiftUI
+import AppKit
 import Combine
 import ServiceManagement
 import ApplicationServices
@@ -17,8 +18,11 @@ struct PreferencesGeneralView: View {
     @AppStorage("appearance") private var appearance = "system"
     @AppStorage("defaultNumberOrder") private var defaultNumberOrder = "rightHanded"
     @AppStorage("instantSwitch") private var instantSwitch = "never"
+    @AppStorage("windowMenuDisplay") private var windowMenuDisplay =
+        UserDefaults.standard.bool(forKey: "showWindowMenuOnPrimaryDisplay") ? "primary" : "automatic"
     
     @State private var hasAccessibilityPermission = AXIsProcessTrusted()
+    @State private var screens = NSScreen.screens
     
     // Timer to poll for accessibility permission changes
     let timer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
@@ -66,6 +70,22 @@ struct PreferencesGeneralView: View {
             Section {
 //                Toggle("Hide menubar icon", isOn: $hideMenubarIcon)
                 Toggle("Show active profile in menu bar", isOn: $showActiveProfileInMenuBar)
+                Picker("Window menu display:", selection: $windowMenuDisplay) {
+                    Text("Automatic").tag("automatic")
+                    Text("Primary display").tag("primary")
+                    ForEach(screens.indices, id: \.self) { index in
+                        let screen = screens[index]
+                        if let id = SidebarSettings.monitorID(screen) {
+                            Text("\(screen.localizedName) (Display \(index + 1))").tag(id)
+                        }
+                    }
+                    if windowMenuDisplay != "automatic", windowMenuDisplay != "primary",
+                       !screens.contains(where: { SidebarSettings.monitorID($0) == windowMenuDisplay }) {
+                        Text("Disconnected display (using primary)").tag(windowMenuDisplay)
+                    }
+                }
+                .pickerStyle(.menu)
+                .help("Automatic keeps the current placement. A disconnected display uses the primary display. Applies when the window menu next opens.")
 
                 Picker("Instant switch:", selection: $instantSwitch) {
                     Text("Never").tag("never")
@@ -83,7 +103,13 @@ struct PreferencesGeneralView: View {
             }
         }
         .formStyle(.grouped)
-        .frame(height: hasAccessibilityPermission ? 264 : 334)
+        .frame(height: hasAccessibilityPermission ? 294 : 364)
+        .onAppear {
+            screens = NSScreen.screens
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didChangeScreenParametersNotification)) { _ in
+            screens = NSScreen.screens
+        }
         .onReceive(timer) { _ in
             // Poll for permission changes
             hasAccessibilityPermission = AXIsProcessTrusted()

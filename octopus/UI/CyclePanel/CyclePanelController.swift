@@ -139,7 +139,20 @@ final class CyclePanelController: NSObject {
         }
         
         if !panel.isVisible {
-            panel.center()
+            let defaults = UserDefaults.standard
+            // Preserve the earlier primary-display toggle until a display is explicitly chosen.
+            let display = defaults.string(forKey: "windowMenuDisplay")
+                ?? (defaults.bool(forKey: "showWindowMenuOnPrimaryDisplay") ? "primary" : "automatic")
+            let screens = NSScreen.screens
+            if display != "automatic",
+               let screen = screens.first(where: { SidebarSettings.monitorID($0) == display }) ?? screens.first {
+                // screens.first is the primary display and the fallback for a disconnected selection.
+                let visibleFrame = screen.visibleFrame
+                panel.setFrameOrigin(CGPoint(x: visibleFrame.midX - panel.frame.width / 2,
+                                             y: visibleFrame.midY - panel.frame.height / 2))
+            } else {
+                panel.center()
+            }
             panelAnchorCenter = CGPoint(x: panel.frame.midX, y: panel.frame.midY)
             updatePanelSize()
             panel.makeKeyAndOrderFront(nil)
