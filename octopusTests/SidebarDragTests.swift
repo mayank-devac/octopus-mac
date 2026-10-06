@@ -33,6 +33,61 @@ struct SidebarDragTests {
         #expect(SidebarPlacementGeometry.frame(for: .bottomRight, in: area).minY == area.minY)
     }
 
+    @Test func snappingStartsBeforeThePointerReachesTheBorderAndClearsWhenLeaving() {
+        let points: [(CGPoint, SidebarSnapTarget)] = [
+            (CGPoint(x: screen.minX + 120, y: screen.midY), .left),
+            (CGPoint(x: screen.maxX - 120, y: screen.midY), .right),
+            (CGPoint(x: screen.midX, y: screen.maxY - 120), .maximize),
+            (CGPoint(x: screen.midX, y: screen.minY + 120), .bottom),
+            (CGPoint(x: screen.minX + 100, y: screen.maxY - 100), .topLeft),
+            (CGPoint(x: screen.maxX - 100, y: screen.maxY - 100), .topRight),
+            (CGPoint(x: screen.minX + 100, y: screen.minY + 100), .bottomLeft),
+            (CGPoint(x: screen.maxX - 100, y: screen.minY + 100), .bottomRight)]
+        for (point, target) in points {
+            #expect(SidebarPlacementGeometry.snap(at: point, screen: screen) == target)
+        }
+        for point in [CGPoint(x: screen.minX + 121, y: screen.midY),
+                      CGPoint(x: screen.maxX - 121, y: screen.midY),
+                      CGPoint(x: screen.midX, y: screen.maxY - 121),
+                      CGPoint(x: screen.midX, y: screen.minY + 121)] {
+            #expect(SidebarPlacementGeometry.snap(at: point, screen: screen) == nil)
+        }
+    }
+
+    @Test func smallDisplaysKeepAFreeMovementAreaBetweenSnapZones() {
+        let compact = CGRect(x: 50, y: -100, width: 240, height: 200)
+        #expect(SidebarPlacementGeometry.snap(at: CGPoint(x: compact.midX, y: compact.midY), screen: compact) == nil)
+        #expect(SidebarPlacementGeometry.snap(at: CGPoint(x: compact.minX + 60, y: compact.midY), screen: compact) == .left)
+        #expect(SidebarPlacementGeometry.snap(at: CGPoint(x: compact.minX + 61, y: compact.midY), screen: compact) == nil)
+    }
+
+    @Test func chosenDistanceChangesWhenTheSnapPreviewStarts() {
+        let point = CGPoint(x: screen.minX + 100, y: screen.midY)
+        #expect(SidebarPlacementGeometry.snap(at: point, screen: screen, distance: 24) == nil)
+        #expect(SidebarPlacementGeometry.snap(at: point, screen: screen, distance: 120) == .left)
+        #expect(SidebarPlacementGeometry.snap(at: point, screen: screen, distance: 300) == .left)
+        #expect(SidebarPlacementGeometry.snap(at: CGPoint(x: screen.midX, y: screen.midY), screen: screen, distance: 300) == nil)
+    }
+
+    @Test func snapDistanceRejectsInvalidValuesAndStaysWithinTheSliderRange() {
+        #expect(SidebarSettings.normalizedSnapDistance(0) == 24)
+        #expect(SidebarSettings.normalizedSnapDistance(500) == 300)
+        #expect(SidebarSettings.normalizedSnapDistance(180) == 180)
+        #expect(SidebarSettings.normalizedSnapDistance(.nan) == 120)
+        #expect(SidebarSettings.normalizedSnapDistance(.infinity) == 120)
+    }
+
+    @Test func snapDistanceUsesTheDefaultAndPersistsTheUsersChoice() throws {
+        let name = "SidebarDragTests.snapDistance.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: name))
+        defer { defaults.removePersistentDomain(forName: name) }
+        #expect(SidebarSettings.snapDistance(in: defaults) == 120)
+        defaults.set(192.0, forKey: "sidebarSnapDistance")
+        #expect(SidebarSettings.snapDistance(in: try #require(UserDefaults(suiteName: name))) == 192)
+        defaults.set(900.0, forKey: "sidebarSnapDistance")
+        #expect(SidebarSettings.snapDistance(in: defaults) == 300)
+    }
+
     @Test func coordinatesUseThePrimaryDisplayForEveryMonitor() {
         let frame = CGRect(x: -1300, y: 1200, width: 800, height: 600)
         let ax = SidebarPlacementGeometry.flip(frame, primaryTop: 900)
@@ -76,7 +131,7 @@ struct SidebarDragTests {
         #expect(allows(membership: [7, 8], visible: [8, 9]))
     }
 
-    @MainActor @Test func appIconsOnlyChooseAnUnambiguousWindowIdentity() {
+    @MainActor @Test func appIconsChooseTheShownWindowEvenWhenSeveralWindowsExist() {
         let app = Application(NSRunningApplication.current)
         let pid = NSRunningApplication.current.processIdentifier
         let first = Window(AXUIElementCreateApplication(pid), app)
@@ -84,13 +139,18 @@ struct SidebarDragTests {
         let second = Window(AXUIElementCreateApplication(pid), app)
         second.cgWindowID = 22
         let firstID = SidebarWindowID(pid: pid, windowID: 11)
+        let secondID = SidebarWindowID(pid: pid, windowID: 22)
         let single = SidebarEntry(pid: pid, application: app, windows: [first], preferredID: firstID)
-        let multiple = SidebarEntry(pid: pid, application: app, windows: [first, second], preferredID: firstID)
+        let multiple = SidebarEntry(pid: pid, application: app, windows: [first, second], preferredID: secondID, focusedID: firstID)
         let otherDesktop = SidebarEntry(pid: pid, application: app, windows: [first], preferredID: firstID, hasOtherWindows: true)
         #expect(SidebarIconDragPolicy.target(for: single) == firstID)
-        #expect(SidebarIconDragPolicy.target(for: multiple) == nil)
-        #expect(SidebarIconDragPolicy.target(for: otherDesktop) == nil)
+        #expect(SidebarIconDragPolicy.target(for: multiple) == secondID)
+        #expect(SidebarIconDragPolicy.target(for: otherDesktop) == firstID)
         #expect(SidebarIconDragPolicy.target(for: SidebarEntry(pid: pid, application: app, windows: [], preferredID: nil)) == nil)
+        let stale = SidebarEntry(pid: pid, application: app, windows: [first],
+                                 preferredID: SidebarWindowID(pid: pid, windowID: 33))
+        #expect(SidebarIconDragPolicy.target(for: stale) == nil)
+        #expect(SidebarIconDragPolicy.target(for: SidebarEntry(pid: pid, application: app, windows: [first], preferredID: nil)) == nil)
     }
 
     @MainActor @Test func nativePressDoesNotClickAndDragsKeepTheOriginalCallback() throws {

@@ -51,6 +51,18 @@ struct SidebarClickGate {
 enum SidebarSettings {
     static let defaultAppSpacing: Double = 4
     static let maximumAppSpacing: Double = 16
+    static let defaultSnapDistance: Double = 200
+    static let minimumSnapDistance: Double = 20
+    static let maximumSnapDistance: Double = 460
+
+    static func normalizedSnapDistance(_ value: Double) -> Double {
+        guard value.isFinite else { return defaultSnapDistance }
+        return min(max(value, minimumSnapDistance), maximumSnapDistance)
+    }
+
+    static func snapDistance(in defaults: UserDefaults = .standard) -> Double {
+        normalizedSnapDistance(defaults.object(forKey: "sidebarSnapDistance") as? Double ?? defaultSnapDistance)
+    }
 
     static func registerDefaults() {
         UserDefaults.standard.register(defaults: [
@@ -62,7 +74,8 @@ enum SidebarSettings {
             "sidebarAutoHide": false,
             "sidebarShowSingleWindowMenu": false,
             "sidebarActiveAppClickAction": SidebarActiveAppClickAction.minimize.rawValue,
-            "sidebarAppSpacing": defaultAppSpacing
+            "sidebarAppSpacing": defaultAppSpacing,
+            "sidebarSnapDistance": defaultSnapDistance
         ])
     }
 

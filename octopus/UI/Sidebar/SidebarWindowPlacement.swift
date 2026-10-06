@@ -2,9 +2,10 @@ import AppKit
 
 enum SidebarIconDragPolicy {
     static func target(for entry: SidebarEntry) -> SidebarWindowID? {
-        guard entry.windows.count == 1, !entry.hasOtherWindows,
-              let id = entry.windows.first?.cgWindowID else { return nil }
-        return SidebarWindowID(pid: entry.pid, windowID: id)
+        // Match the window title shown under the icon; never substitute another window.
+        guard let id = entry.preferredID, id.pid == entry.pid,
+              entry.windows.contains(where: { $0.cgWindowID == id.windowID }) else { return nil }
+        return id
     }
 }
 
@@ -74,20 +75,29 @@ enum SidebarPlacementGeometry {
         CGRect(x: rect.minX, y: primaryTop - rect.maxY, width: rect.width, height: rect.height)
     }
 
-    static func snap(at point: CGPoint, screen: CGRect) -> SidebarSnapTarget? {
+    static func snap(at point: CGPoint, screen: CGRect, distance: Double = SidebarSettings.defaultSnapDistance) -> SidebarSnapTarget? {
         guard screen.contains(point) else { return nil }
         let left = point.x - screen.minX
         let right = screen.maxX - point.x
         let bottom = point.y - screen.minY
         let top = screen.maxY - point.y
-        if left <= 48 && top <= 48 { return .topLeft }
-        if right <= 48 && top <= 48 { return .topRight }
-        if left <= 48 && bottom <= 48 { return .bottomLeft }
-        if right <= 48 && bottom <= 48 { return .bottomRight }
-        if left <= 24 { return .left }
-        if right <= 24 { return .right }
-        if top <= 24 { return .maximize }
-        if bottom <= 24 { return .bottom }
+        // Let people drop near the side rather than having to hit the screen border.
+        // Cap each band on small displays so opposite zones leave a free-move centre.
+        let reach = CGFloat(SidebarSettings.normalizedSnapDistance(distance))
+        let horizontalReach = min(reach, screen.width / 4)
+        let verticalReach = min(reach, screen.height / 4)
+        let nearLeft = left <= horizontalReach
+        let nearRight = right <= horizontalReach
+        let nearTop = top <= verticalReach
+        let nearBottom = bottom <= verticalReach
+        if nearLeft && nearTop { return .topLeft }
+        if nearRight && nearTop { return .topRight }
+        if nearLeft && nearBottom { return .bottomLeft }
+        if nearRight && nearBottom { return .bottomRight }
+        if nearLeft { return .left }
+        if nearRight { return .right }
+        if nearTop { return .maximize }
+        if nearBottom { return .bottom }
         return nil
     }
 

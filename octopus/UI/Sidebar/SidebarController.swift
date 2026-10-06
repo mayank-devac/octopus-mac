@@ -445,7 +445,7 @@ final class SidebarController {
 
     private func beginDrag(_ entryID: SidebarEntryID, target: SidebarWindowID?, title: String, source: NSView, event: NSEvent) {
         guard let target else {
-            dragController.showFeedback("Drag a specific window from this app's window list.")
+            dragController.showFeedback("No current window is available to move. Choose a window from the app's list.")
             if let entry = inventory.entries.first(where: { $0.id == entryID }), let icon = iconFrame(entryID) {
                 showMenu(entry, icon: icon)
             }

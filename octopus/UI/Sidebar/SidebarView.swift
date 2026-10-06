@@ -110,7 +110,7 @@ struct SidebarView: View {
         .accessibilityAddTraits(.isButton)
         .accessibilityAction { onClick(entry.id) }
         .accessibilityActions {
-            if entry.windows.count == 1, !entry.hasOtherWindows, let id = entry.preferredID {
+            if let id = dragTarget {
                 ForEach(SidebarSnapTarget.allCases, id: \.self) { target in
                     Button(target.title) { onPlacement(id, target) }
                 }

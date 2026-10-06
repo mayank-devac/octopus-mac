@@ -103,7 +103,7 @@ struct PreferencesGeneralView: View {
             }
         }
         .formStyle(.grouped)
-        .frame(height: hasAccessibilityPermission ? 294 : 364)
+        .frame(height: hasAccessibilityPermission ? 310 : 400)
         .onAppear {
             screens = NSScreen.screens
         }

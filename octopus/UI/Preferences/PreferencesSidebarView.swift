@@ -11,6 +11,7 @@ struct PreferencesSidebarView: View {
     @AppStorage("sidebarShowSingleWindowMenu") private var showSingleWindowMenu = false
     @AppStorage("sidebarActiveAppClickAction") private var activeAppClickAction = SidebarActiveAppClickAction.minimize.rawValue
     @AppStorage("sidebarAppSpacing") private var appSpacing = SidebarSettings.defaultAppSpacing
+    @AppStorage("sidebarSnapDistance") private var snapDistance = SidebarSettings.defaultSnapDistance
     @State private var screens = NSScreen.screens
 
     var body: some View {
@@ -60,16 +61,31 @@ struct PreferencesSidebarView: View {
                         .foregroundStyle(.secondary)
                         .frame(width: 38, alignment: .trailing)
                 }
+                HStack {
+                    Text("Snap distance")
+                    Slider(value: Binding(
+                        get: { SidebarSettings.normalizedSnapDistance(snapDistance) },
+                        set: { snapDistance = SidebarSettings.normalizedSnapDistance($0) }
+                    ), in: SidebarSettings.minimumSnapDistance...SidebarSettings.maximumSnapDistance, step: 20)
+                        .accessibilityLabel("Window snap distance from screen sides")
+                        .accessibilityValue("\(Int(SidebarSettings.normalizedSnapDistance(snapDistance))) points")
+                    Text("\(Int(SidebarSettings.normalizedSnapDistance(snapDistance))) pt")
+                        .monospacedDigit()
+                        .foregroundStyle(.secondary)
+                        .frame(width: 46, alignment: .trailing)
+                }
+                .help("Larger distances show snap previews sooner. On smaller displays the distance is limited so the centre stays available for moving windows.")
             } footer: {
-                Text("All desktops groups windows by desktop, with a separator between groups. An app can appear in several groups; each menu shows only that desktop’s windows, prefixed with its desktop number. Finder appears only with a window, including minimised windows. Apps without known windows appear after the desktop groups. Desktop discovery uses private macOS APIs and may fall back to the app list. In full screen, reveal the sidebar at the screen edge. Hide affects the whole app across desktops.")
+                Text("Groups windows by desktop, with separators between groups. Apps can appear in several groups; each menu shows only that desktop’s windows. Finder appears only when it has a window, and apps without known windows appear after the desktop groups. In full screen, the sidebar appears at the screen edge; Hide affects the whole app across desktops.")
             }
             .disabled(!enabled)
         }
         .formStyle(.grouped)
-        .frame(height: 485)
+        .frame(height: 492)
         .onAppear {
             desktopScope = SidebarDesktopScope.saved(desktopScope).rawValue
             activeAppClickAction = SidebarActiveAppClickAction.saved(activeAppClickAction).rawValue
+            snapDistance = SidebarSettings.normalizedSnapDistance(snapDistance)
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didChangeScreenParametersNotification)) { _ in
             screens = NSScreen.screens

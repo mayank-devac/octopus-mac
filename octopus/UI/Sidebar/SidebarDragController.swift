@@ -13,6 +13,7 @@ final class SidebarDragController: NSObject, NSDraggingSource {
     private var feedbackPanel: NSPanel?
     private var feedbackWork: DispatchWorkItem?
     private var generation = 0
+    private var snapDistance = SidebarSettings.defaultSnapDistance
     var excludedFrames: () -> [CGRect] = { [] }
     var onInteractionChange: ((Bool) -> Void)?
     var isActive: Bool { sessionID != nil }
@@ -25,6 +26,8 @@ final class SidebarDragController: NSObject, NSDraggingSource {
     func begin(id: SidebarWindowID, title: String, source: NSView, event: NSEvent) {
         guard !isActive, AXIsProcessTrusted() else { return }
         dismissFeedback()
+        // Preview and drop must use the same distance throughout this drag.
+        snapDistance = SidebarSettings.snapDistance()
         generation += 1
         let nonce = UUID()
         sessionID = nonce
@@ -166,7 +169,7 @@ final class SidebarDragController: NSObject, NSDraggingSource {
                         label: "Checking window…", valid: false)
             return []
         }
-        let snap = SidebarPlacementGeometry.snap(at: point, screen: screen.frame)
+        let snap = SidebarPlacementGeometry.snap(at: point, screen: screen.frame, distance: snapDistance)
         guard snap == nil || target.canResize else {
             showPreview(frame: CGRect(x: point.x - 140, y: point.y - 48, width: 280, height: 40),
                         label: "Fixed-size window — move away from the edge", valid: false)
@@ -181,7 +184,7 @@ final class SidebarDragController: NSObject, NSDraggingSource {
     fileprivate func drop(at point: CGPoint) -> Bool {
         guard update(at: point) == .private, let target,
               let screen = NSScreen.screens.first(where: { $0.frame.contains(point) }) else { return false }
-        let snap = SidebarPlacementGeometry.snap(at: point, screen: screen.frame)
+        let snap = SidebarPlacementGeometry.snap(at: point, screen: screen.frame, distance: snapDistance)
         let frame = snap.map { SidebarPlacementGeometry.frame(for: $0, in: screen.visibleFrame) }
             ?? SidebarPlacementGeometry.freeFrame(at: point, size: target.frame.size, in: screen.visibleFrame)
         let primaryTop = NSScreen.screens.first?.frame.maxY ?? 0
