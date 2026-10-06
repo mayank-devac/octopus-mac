@@ -1,0 +1,50 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Xcode / Swift package manager
+**/xcuserdata/
+**/*.xcuserstate
+**/*.xcscmblueprint
+**/*.xccheckout
+**/*.xcodeproj/xcuserdata/
+**/*.xcodeproj/project.xcworkspace/xcuserdata/
+**/*.xcworkspace/xcuserdata/
+**/*.xcworkspace/xcshareddata/*.xccheckout
+**/*.xcworkspace/xcshareddata/*.xcscmblueprint
+DerivedData/
+.build/
+.swiftpm/
+
+# Build output
+build/
+Build/
+*.dSYM
+*.app
+*.ipa
+*.xcarchive
+
+# Editor and temp files
+*.swp
+*.tmp
+*.orig
+*.rej
+*~
+
+# Local secrets and signing credentials
+.env
+.env.*
+!.env.example
+!.env.sample
+*.p12
+*.p8
+*.pem
+*.key
+*.keystore
+*.mobileprovision
+*.provisionprofile
+
+Config/LocalSigning.xcconfig
+default.profraw
