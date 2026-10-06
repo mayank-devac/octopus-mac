@@ -55,7 +55,7 @@ struct PreferencesShortcutsView: View {
                         .font(.body)
                         .foregroundColor(.secondary)
 
-                    Button("Reset to defaults") {
+                    Button("Reset shortcut modifiers") {
                         showingResetConfirmation = true
                     }
                     .buttonStyle(.bordered)
@@ -120,9 +120,16 @@ struct PreferencesShortcutsView: View {
             } footer: {
                 Text("⌃ Control  •  ⌥ Option  •  ⇧ Shift  •  ⌘ Command")
             }
+
+            Section {
+                Toggle("Use numpad digits for shortcuts", isOn: $modifierManager.numpadShortcutsEnabled)
+                    .toggleStyle(.checkbox)
+            } footer: {
+                Text("Also use numpad 0–9 for app and profile shortcuts. These combinations may conflict with other apps.")
+            }
         }
         .formStyle(.grouped)
-        .frame(height: !modifierManager.activateEnabled || !modifierManager.bindEnabled || !modifierManager.profileEnabled ? 395 : 360)
+        .frame(height: !modifierManager.activateEnabled || !modifierManager.bindEnabled || !modifierManager.profileEnabled ? 495 : 460)
         .alert("Reset shortcut modifiers?", isPresented: $showingResetConfirmation) {
             Button("Cancel", role: .cancel) {}
             Button("Reset", role: .destructive) {

@@ -10,6 +10,10 @@ import KeyboardShortcuts
 
 @MainActor
 final class ModifierManager: ObservableObject {
+    @AppStorage("numpadShortcutsEnabled") var numpadShortcutsEnabled = false {
+        didSet { updateShortcuts() }
+    }
+
     @AppStorage("bindEnabled") private var bindEnabledStored = true
     @AppStorage("bindControl") var bindControl = true {
         didSet { updateShortcuts() }
@@ -157,8 +161,8 @@ final class ModifierManager: ObservableObject {
         }
     }
 
-    /// Registers a number shortcut on both the main-row key and its numeric-keypad
-    /// equivalent so the shortcut fires regardless of which key the user presses.
+    /// Main-row shortcuts are always available for enabled actions; numpad
+    /// equivalents are registered only when the user opts in.
     private func setNumberShortcut(
         _ number: Int,
         enabled: Bool,
@@ -170,8 +174,10 @@ final class ModifierManager: ObservableObject {
             enabled ? .init(numberKeys[number], modifiers: modifiers) : nil,
             for: mainName
         )
+        // Clear saved and live keypad registrations when off so other apps
+        // receive these keys, including after upgrading from automatic support.
         KeyboardShortcuts.setShortcut(
-            enabled ? .init(keypadKeys[number], modifiers: modifiers) : nil,
+            enabled && numpadShortcutsEnabled ? .init(keypadKeys[number], modifiers: modifiers) : nil,
             for: keypadName
         )
     }
