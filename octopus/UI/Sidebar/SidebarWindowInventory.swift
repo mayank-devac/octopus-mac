@@ -1,0 +1,968 @@
+import AppKit
+import Combine
+
+struct SidebarWindowID: Hashable {
+    let pid: pid_t
+    let windowID: CGWindowID
+}
+
+struct SidebarEntry: Identifiable {
+    let pid: pid_t
+    let application: Application
+    let windows: [Window]
+    let preferredID: SidebarWindowID?
+    var focusedID: SidebarWindowID? = nil
+    var isHidden = false
+    var windowStates: [CGWindowID: SidebarWindowState] = [:]
+    var desktop: SidebarDesktop? = nil
+    var hasOtherWindows = false
+    var id: SidebarEntryID { SidebarEntryID(pid: pid, desktopID: desktop?.id) }
+
+    var visibleIDs: Set<SidebarWindowID> {
+        guard !isHidden else { return [] }
+        return Set(windows.compactMap { window in
+            guard let id = window.cgWindowID, windowStates[id]?.isMinimized != true,
+                  windowStates[id]?.isOnScreen != false else { return nil }
+            return SidebarWindowID(pid: self.pid, windowID: id)
+        })
+    }
+
+    var preferredWindow: Window? {
+        guard let preferredID else { return nil }
+        return windows.first { $0.cgWindowID == preferredID.windowID }
+    }
+}
+
+struct SidebarWindowState: Equatable {
+    let isMinimized: Bool
+    let canMinimize: Bool
+    var isOnScreen = true
+    var desktops: [SidebarDesktop] = []
+    var desktopLabel: String? = nil
+}
+
+enum SidebarWindowAction: Equatable {
+    case activateApp(pid_t)
+    case focus(SidebarWindowID)
+    case minimize(SidebarWindowID, requireFocused: Bool)
+    case hide(SidebarWindowID)
+
+    var target: SidebarWindowID? {
+        switch self {
+        case .activateApp: return nil
+        case .focus(let id), .minimize(let id, _), .hide(let id): return id
+        }
+    }
+
+    var processIdentifier: pid_t {
+        switch self {
+        case .activateApp(let pid): return pid
+        case .focus(let id), .minimize(let id, _), .hide(let id): return id.pid
+        }
+    }
+}
+
+enum SidebarIconClickPolicy {
+    static func action(for entry: SidebarEntry, frontmostPID: pid_t?,
+                       setting: SidebarActiveAppClickAction) -> SidebarWindowAction? {
+        guard let preferred = entry.preferredID else { return .activateApp(entry.pid) }
+        // The app can remain active with every window minimised. Restore before toggling.
+        guard !entry.isHidden, !entry.visibleIDs.isEmpty else { return .focus(preferred) }
+        guard frontmostPID == entry.pid, setting != .none else { return .focus(preferred) }
+        if setting == .hide { return .hide(preferred) }
+        guard let focused = entry.focusedID, entry.visibleIDs.contains(focused) else { return nil }
+        return .minimize(focused, requireFocused: true)
+    }
+}
+
+// Main-thread cancellation must be visible even while the AX queue is blocked in another app.
+final class SidebarPendingAction: @unchecked Sendable {
+    private let lock = NSLock()
+    private var cancelled = false
+    private var focusStarted = false
+    let frontmostPID: pid_t?
+
+    init(frontmostPID: pid_t?) { self.frontmostPID = frontmostPID }
+
+    func cancel() {
+        lock.lock()
+        cancelled = true
+        lock.unlock()
+    }
+
+    var isCancelled: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return cancelled
+    }
+
+    // A validated focus can itself trigger a Space change while AX is still returning.
+    func beginFocus() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !cancelled else { return false }
+        focusStarted = true
+        return true
+    }
+
+    var hasStartedFocus: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return focusStarted
+    }
+
+    var isCurrent: Bool {
+        !isCancelled && AXIsProcessTrusted()
+            && NSWorkspace.shared.frontmostApplication?.processIdentifier == frontmostPID
+    }
+
+    func canFinishFocus(on pid: pid_t) -> Bool {
+        let currentPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
+        return !isCancelled && AXIsProcessTrusted() && (currentPID == frontmostPID || currentPID == pid)
+    }
+}
+
+enum SidebarWindowPolicy {
+    static func isEligible(onScreen: Bool, normalLevel: Bool, standardWindow: Bool,
+                           minimized: Bool, hidden: Bool, ownProcess: Bool,
+                           previouslyListed: Bool = false,
+                           scope: SidebarDesktopScope = .visibleDesktops) -> Bool {
+        // CG visibility and AXMinimized do not change atomically during Dock animations.
+        // Visible-desktop mode keeps a live window until it closes or the desktop changes.
+        (scope == .allDesktops || onScreen || minimized || hidden || previouslyListed)
+            && normalLevel && standardWindow && !ownProcess
+    }
+
+    static func isTopLevelWindow(role: String?, subrole: String?) -> Bool {
+        guard role == (kAXWindowRole as String) else {
+            return false
+        }
+        // Some applications omit AXSubrole or report AXUnknown for a normal top-level window.
+        return subrole == nil || subrole == "" || subrole == "AXUnknown"
+            || subrole == (kAXStandardWindowSubrole as String)
+    }
+
+    static func canMinimize(standardWindow: Bool, fullScreen: Bool, modal: Bool,
+                            hasSheets: Bool, settable: Bool) -> Bool {
+        standardWindow && !fullScreen && !modal && !hasSheets && settable
+    }
+
+    static func normalizedWindowTitle(_ title: String) -> String {
+        title.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
+
+    static func needsBrowserHelperCheck(bundleIdentifier: String?) -> Bool {
+        bundleIdentifier == "com.brave.Browser" || bundleIdentifier == "com.google.Chrome"
+    }
+
+    static func isBrowserHelper(title: String?, applicationTitle: String, subrole: String?,
+                                hasCloseButton: Bool?, parentIsWindow: Bool,
+                                bounds: CGRect?, minimized: Bool) -> Bool {
+        // Real browser windows have their own close control. A failed control query
+        // is unknown, not evidence of a helper; keep that window until a later scan.
+        guard hasCloseButton == false else { return false }
+        if parentIsWindow { return true }
+        if title == nil, !minimized, let bounds, bounds.width <= 1 || bounds.height <= 1 { return true }
+        // An app-name/empty title alone is insufficient: genuine untitled windows
+        // with window controls pass above. Toolbar/backing surfaces have neither.
+        if let title {
+            let name = normalizedWindowTitle(title)
+            if name.isEmpty || name == normalizedWindowTitle(applicationTitle) { return true }
+        }
+        return subrole == nil || subrole == "" || subrole == "AXUnknown"
+    }
+
+    static func preferredID(_ ids: [SidebarWindowID], recency: [SidebarWindowID: UInt64],
+                            focused: SidebarWindowID?, states: [CGWindowID: SidebarWindowState] = [:],
+                            hidden: Bool = false) -> SidebarWindowID? {
+        let unminimized = hidden ? [] : ids.filter { states[$0.windowID]?.isMinimized != true }
+        let visible = unminimized.filter { states[$0.windowID]?.isOnScreen != false }
+        // Prefer this desktop before considering another Space or a minimised window.
+        let candidates = !visible.isEmpty ? visible : (unminimized.isEmpty ? ids : unminimized)
+        if let recent = candidates.filter({ recency[$0] != nil }).max(by: { recency[$0]! < recency[$1]! }) {
+            return recent
+        }
+        if let focused, candidates.contains(focused) { return focused }
+        return candidates.first
+    }
+}
+
+@MainActor
+final class SidebarWindowInventory: ObservableObject {
+    @Published private(set) var entries: [SidebarEntry] = []
+    @Published private(set) var hasPermission = AXIsProcessTrusted()
+    @Published private(set) var fullScreenDisplays: Set<CGDirectDisplayID> = []
+    private(set) var desktopScope = SidebarDesktopScope.allDesktops
+    var onChange: (() -> Void)?
+    var onDesktopChange: (() -> Void)?
+
+    private lazy var reader = SidebarWindowReader(onChange: { [weak self] in
+        DispatchQueue.main.async { self?.refresh() }
+    })
+    private var notifications: [NSObjectProtocol] = []
+    private var permissionTimer: Timer?
+    private var presentationObserver: NSKeyValueObservation?
+    private var pendingRefresh: DispatchWorkItem?
+    private var discoveryRefresh: DispatchWorkItem?
+    private var refreshRequested = false
+    private var generation = 0
+    private var desktopGeneration = 0
+    private var running = false
+    private var refreshCompletions: [() -> Void] = []
+    private var pendingActions: [pid_t: SidebarPendingAction] = [:]
+
+    var separatorIndices: Set<Int> {
+        Self.separatorIndices(entries: entries, scope: desktopScope)
+    }
+
+    static func separatorIndices(entries: [SidebarEntry], scope: SidebarDesktopScope) -> Set<Int> {
+        guard scope == .allDesktops else { return [] }
+        return Set(entries.indices.dropFirst().filter { entries[$0 - 1].desktop?.id != entries[$0].desktop?.id })
+    }
+
+    // AX's window list can be empty when an app's windows are all on other Spaces.
+    // App visibility in All desktops must therefore come from the running-app list.
+    static func entries(for applications: [NSRunningApplication], windowEntries: [SidebarEntry],
+                        scope: SidebarDesktopScope) -> [SidebarEntry] {
+        let result: [SidebarEntry]
+        if scope == .allDesktops {
+            let byPID = Dictionary(uniqueKeysWithValues: windowEntries.map { ($0.pid, $0) })
+            let apps = applications.filter { !$0.isTerminated }.compactMap { running -> SidebarEntry? in
+                if let entry = byPID[running.processIdentifier], !entry.windows.isEmpty { return entry }
+                // Finder stays running to draw the desktop even with no Finder windows.
+                // Keep real window entries above, including hidden/minimised ones.
+                guard running.bundleIdentifier != "com.apple.finder" else { return nil }
+                return SidebarEntry(
+                    pid: running.processIdentifier, application: Application(running), windows: [],
+                    preferredID: nil, isHidden: running.isHidden)
+            }
+            result = apps.flatMap { groups(for: $0) }
+        } else {
+            result = windowEntries.filter { $0.application.runningApplication?.isTerminated != true }
+        }
+        return result.sorted {
+            if scope == .allDesktops {
+                let left = $0.desktop?.order ?? Int.max
+                let right = $1.desktop?.order ?? Int.max
+                if left != right { return left < right }
+            }
+            let comparison = $0.application.title.localizedCaseInsensitiveCompare($1.application.title)
+            return comparison == .orderedSame ? $0.pid < $1.pid : comparison == .orderedAscending
+        }
+    }
+
+    private static func groups(for entry: SidebarEntry) -> [SidebarEntry] {
+        guard !entry.windows.isEmpty else { return [entry] }
+        var groups: [SidebarDesktop: [Window]] = [:]
+        var unknown: [Window] = []
+        for window in entry.windows {
+            let desktops = window.cgWindowID.flatMap { entry.windowStates[$0]?.desktops } ?? []
+            if desktops.isEmpty { unknown.append(window) }
+            for desktop in desktops { groups[desktop, default: []].append(window) }
+        }
+        func group(_ windows: [Window], desktop: SidebarDesktop?) -> SidebarEntry {
+            let ids = windows.compactMap { $0.cgWindowID.map { SidebarWindowID(pid: entry.pid, windowID: $0) } }
+            let windowIDs = Set(ids.map(\.windowID))
+            var states = entry.windowStates.filter { windowIDs.contains($0.key) }
+            for id in Array(states.keys) { states[id]?.desktopLabel = desktop?.windowPrefix }
+            let history = entry.preferredID.map { [$0: UInt64(1)] } ?? [:]
+            let preferred = SidebarWindowPolicy.preferredID(ids, recency: history, focused: entry.focusedID,
+                                                            states: states, hidden: entry.isHidden)
+            return SidebarEntry(pid: entry.pid, application: entry.application, windows: windows,
+                preferredID: preferred, focusedID: ids.contains(where: { $0 == entry.focusedID }) ? entry.focusedID : nil,
+                isHidden: entry.isHidden, windowStates: states, desktop: desktop,
+                hasOtherWindows: entry.windows.count > windows.count)
+        }
+        var result = groups.map { group($0.value, desktop: $0.key) }
+        if !unknown.isEmpty { result.append(group(unknown, desktop: nil)) }
+        return result
+    }
+
+    func setDesktopScope(_ scope: SidebarDesktopScope) {
+        guard desktopScope != scope else { return }
+        cancelActions()
+        desktopScope = scope
+        desktopGeneration += 1
+        entries = []
+        refresh()
+    }
+
+    func start() {
+        guard !running else { return }
+        running = true
+        presentationObserver = NSApp.observe(\.currentSystemPresentationOptions) { [weak self] _, _ in
+            Task { @MainActor in self?.refresh() }
+        }
+        let center = NSWorkspace.shared.notificationCenter
+        for name in [NSWorkspace.didLaunchApplicationNotification, NSWorkspace.didTerminateApplicationNotification,
+                     NSWorkspace.didActivateApplicationNotification, NSWorkspace.didHideApplicationNotification,
+                     NSWorkspace.didUnhideApplicationNotification, NSWorkspace.activeSpaceDidChangeNotification,
+                     NSWorkspace.didWakeNotification] {
+            notifications.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] note in
+                Task { @MainActor in
+                    guard let self else { return }
+                    if note.name == NSWorkspace.activeSpaceDidChangeNotification {
+                        self.cancelActions(preservingStartedFocus: self.desktopScope == .allDesktops)
+                        self.desktopGeneration += 1
+                        if self.desktopScope == .visibleDesktops { self.entries = [] }
+                        self.onDesktopChange?()
+                    }
+                    self.refresh()
+                }
+            })
+        }
+        refresh()
+    }
+
+    func stop() {
+        cancelActions()
+        running = false
+        generation += 1
+        pendingRefresh?.cancel()
+        pendingRefresh = nil
+        discoveryRefresh?.cancel()
+        discoveryRefresh = nil
+        refreshRequested = false
+        refreshCompletions.removeAll()
+        notifications.forEach { NSWorkspace.shared.notificationCenter.removeObserver($0) }
+        notifications.removeAll()
+        permissionTimer?.invalidate()
+        permissionTimer = nil
+        presentationObserver = nil
+        reader.queue.async { [reader] in reader.removeObservers() }
+        entries = []
+        fullScreenDisplays = []
+    }
+
+    func refresh(completion: (() -> Void)? = nil) {
+        guard running else { return }
+        discoveryRefresh?.cancel()
+        discoveryRefresh = nil
+        if let completion { refreshCompletions.append(completion) }
+        // Let the active scan finish. Any number of new events need only one follow-up.
+        guard pendingRefresh == nil else {
+            refreshRequested = true
+            return
+        }
+        startRefresh()
+    }
+
+    private func startRefresh() {
+        generation += 1
+        let request = generation
+        let desktop = desktopGeneration
+        let scope = desktopScope
+        // Requests made during this scan keep their completions for the next scan.
+        let completions = refreshCompletions
+        refreshCompletions.removeAll()
+        let applications = NSWorkspace.shared.runningApplications.filter {
+            $0.activationPolicy == .regular && $0.processIdentifier != ProcessInfo.processInfo.processIdentifier
+        }
+        let fullScreenPID = NSApp.currentSystemPresentationOptions.contains(.fullScreen)
+            ? NSWorkspace.shared.frontmostApplication?.processIdentifier : nil
+        let work = DispatchWorkItem { [weak self, reader] in
+            let snapshot = reader.read(applications, systemFullScreenPID: fullScreenPID,
+                                       desktop: desktop, scope: scope)
+            DispatchQueue.main.async {
+                guard let self, self.running, request == self.generation else { return }
+                if desktop == self.desktopGeneration {
+                    self.hasPermission = snapshot.hasPermission
+                    self.entries = Self.entries(for: applications, windowEntries: snapshot.entries, scope: scope)
+                    self.fullScreenDisplays = snapshot.fullScreenDisplays
+                    self.updatePermissionTimer()
+                    if snapshot.needsWindowDiscovery {
+                        self.scheduleDiscoveryRefresh()
+                    } else {
+                        self.discoveryRefresh?.cancel()
+                        self.discoveryRefresh = nil
+                    }
+                    self.onChange?()
+                    for completion in completions {
+                        guard self.running, request == self.generation else { return }
+                        completion()
+                    }
+                } else {
+                    // Never repopulate a newly selected desktop with the old one's windows.
+                    self.refreshCompletions.insert(contentsOf: completions, at: 0)
+                    self.refreshRequested = true
+                }
+                guard self.running, request == self.generation else { return }
+                self.pendingRefresh = nil
+                let refreshAgain = self.refreshRequested
+                self.refreshRequested = false
+                if refreshAgain { self.startRefresh() }
+            }
+        }
+        pendingRefresh = work
+        reader.queue.async(execute: work)
+    }
+
+    // Sidebar actions never use Window.focus(), whose keyboard fallback reopens apps.
+    func focus(_ id: SidebarWindowID) {
+        perform(.focus(id))
+    }
+
+    func perform(_ action: SidebarWindowAction, frontmostPID: pid_t? = NSWorkspace.shared.frontmostApplication?.processIdentifier) {
+        let pid = action.processIdentifier
+        guard running, hasPermission, pendingActions[pid] == nil else { return }
+        let token = SidebarPendingAction(frontmostPID: frontmostPID)
+        pendingActions[pid] = token
+        let application = entries.first(where: { $0.pid == pid })?.application.runningApplication
+        let desktop = desktopGeneration
+        let systemFullScreenPID = NSApp.currentSystemPresentationOptions.contains(.fullScreen) ? frontmostPID : nil
+        reader.queue.async { [weak self, reader] in
+            let result = reader.perform(action, desktop: desktop, token: token,
+                                        systemFullScreenPID: systemFullScreenPID, application: application)
+            DispatchQueue.main.async {
+                guard let self, self.running, !token.isCancelled,
+                      desktop == self.desktopGeneration
+                        || (self.desktopScope == .allDesktops && token.hasStartedFocus) else { return }
+                switch result {
+                case .activate(let application):
+                    // The reader has validated the running app or restored/raised its window.
+                    // macOS decides whether activation switches to a different Space.
+                    if token.canFinishFocus(on: pid), !application.isTerminated {
+                        _ = application.activate()
+                    }
+                // Stale or unsupported requests stay quiet; refresh below reconciles the UI.
+                case .rejected, .completed: break
+                }
+                // Keep the click guard until the new inventory is published, not just until
+                // AX returns; a second click must never act on the pre-minimise snapshot.
+                self.refresh { [weak self] in
+                    guard let self, self.pendingActions[pid] === token else { return }
+                    self.pendingActions[pid] = nil
+                }
+            }
+        }
+    }
+
+    private func cancelActions(preservingStartedFocus: Bool = false) {
+        pendingActions = pendingActions.filter { _, token in
+            if preservingStartedFocus && token.hasStartedFocus { return true }
+            token.cancel()
+            return false
+        }
+    }
+
+    private func scheduleDiscoveryRefresh() {
+        guard discoveryRefresh == nil else { return }
+        let work = DispatchWorkItem { [weak self] in self?.refresh() }
+        discoveryRefresh = work
+        // Only continue a finite, unfinished discovery scan. Never poll after it ends.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: work)
+    }
+
+    private func updatePermissionTimer() {
+        if !hasPermission { cancelActions() }
+        if hasPermission {
+            permissionTimer?.invalidate()
+            permissionTimer = nil
+        } else if permissionTimer == nil {
+            // Only poll while permission is missing; normal inventory updates are event driven.
+            permissionTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+                Task { @MainActor in
+                    if AXIsProcessTrusted() { self?.refresh() }
+                }
+            }
+        }
+    }
+}
+
+// AX calls can block on another application. Mutable state is confined to queue;
+// the run-loop callback only invokes the immutable, Sendable onChange closure.
+private final class SidebarWindowReader: @unchecked Sendable {
+    let queue = DispatchQueue(label: "app.octopus.sidebar.windows", qos: .userInitiated)
+    private let onChange: @Sendable () -> Void
+    private var observers: [pid_t: AXObserver] = [:]
+    private var observedWindows: [pid_t: [AXUIElement]] = [:]
+    private var recency: [SidebarWindowID: UInt64] = [:]
+    private var lastFocused: [pid_t: SidebarWindowID] = [:]
+    private var sequence: UInt64 = 0
+    private struct KnownWindow {
+        let element: AXUIElement
+        let application: NSRunningApplication
+    }
+    private var knownWindows: [SidebarWindowID: KnownWindow] = [:]
+    private var previousEntries: [pid_t: SidebarEntry] = [:]
+    private var desktopGeneration: Int?
+    private var desktopScope: SidebarDesktopScope?
+    private var fullScreenWindows: Set<SidebarWindowID> = []
+    private let spaceReader = SidebarSpaceReader()
+    private let windowDiscovery = SidebarWindowDiscovery()
+
+    init(onChange: @escaping @Sendable () -> Void) {
+        self.onChange = onChange
+    }
+
+    struct Snapshot {
+        var hasPermission: Bool
+        var entries: [SidebarEntry] = []
+        var fullScreenDisplays: Set<CGDirectDisplayID> = []
+        var needsWindowDiscovery = false
+    }
+
+    private struct ListedWindow {
+        let pid: pid_t
+        let bounds: CGRect
+        let title: String
+        let onScreen: Bool
+        let normalLevel: Bool
+    }
+
+    static func isOnScreen(_ id: SidebarWindowID) -> Bool {
+        guard let list = CGWindowListCopyWindowInfo(.optionIncludingWindow, id.windowID) as? [[String: Any]],
+              let info = list.first,
+              (info[kCGWindowNumber as String] as? NSNumber)?.uint32Value == id.windowID,
+              (info[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value == id.pid else { return false }
+        return (info[kCGWindowIsOnscreen as String] as? Bool) == true
+    }
+
+    private func listedWindows() -> [CGWindowID: ListedWindow] {
+        guard let list = CGWindowListCopyWindowInfo([.optionAll, .excludeDesktopElements], kCGNullWindowID)
+            as? [[String: Any]] else { return [:] }
+        var windows: [CGWindowID: ListedWindow] = [:]
+        for info in list {
+            guard let id = info[kCGWindowNumber as String] as? NSNumber,
+                  let pid = info[kCGWindowOwnerPID as String] as? NSNumber,
+                  let level = info[kCGWindowLayer as String] as? NSNumber,
+                  let dictionary = info[kCGWindowBounds as String] as? [String: Any],
+                  let bounds = CGRect(dictionaryRepresentation: dictionary as CFDictionary),
+                  bounds.width > 0, bounds.height > 0 else { continue }
+            windows[id.uint32Value] = ListedWindow(
+                pid: pid.int32Value,
+                bounds: bounds,
+                title: info[kCGWindowName as String] as? String ?? "",
+                onScreen: (info[kCGWindowIsOnscreen as String] as? Bool) == true,
+                normalLevel: level.intValue == 0
+            )
+        }
+        return windows
+    }
+
+    private func matchingWindow(for axWindow: AXUIElement, pid: pid_t,
+                                windowID: CGWindowID?, listed: [CGWindowID: ListedWindow]) -> (CGWindowID, ListedWindow)? {
+        let candidates = listed.filter { $0.value.pid == pid && $0.value.normalLevel }
+        guard !candidates.isEmpty else { return nil }
+        if let id = windowID {
+            // An authoritative AX ID must not fall back to a different window's title/frame.
+            return candidates[id].map { (id, $0) }
+        }
+
+        let axTitle: String = axWindow.getAttributeValue(.title) ?? ""
+        let normalizedAXTitle = SidebarWindowPolicy.normalizedWindowTitle(axTitle)
+        let titleMatches = candidates.filter {
+            !normalizedAXTitle.isEmpty &&
+                SidebarWindowPolicy.normalizedWindowTitle($0.value.title) == normalizedAXTitle
+        }
+        if titleMatches.count == 1, let match = titleMatches.first { return match }
+
+        guard let axFrame = axWindow.getWindowFrame() else {
+            return candidates.count == 1 ? candidates.first : nil
+        }
+        // Accessibility and Core Graphics use the same logical coordinate space here.
+        // A small tolerance covers browser chrome changing its title bar metrics.
+        let nearest = candidates.min {
+            frameDistance(axFrame, $0.value.bounds) < frameDistance(axFrame, $1.value.bounds)
+        }
+        guard let nearest, frameDistance(axFrame, nearest.value.bounds) <= 32 else { return nil }
+        return nearest
+    }
+
+    private func frameDistance(_ lhs: CGRect, _ rhs: CGRect) -> CGFloat {
+        abs(lhs.midX - rhs.midX) + abs(lhs.midY - rhs.midY)
+            + abs(lhs.width - rhs.width) + abs(lhs.height - rhs.height)
+    }
+
+    func read(_ applications: [NSRunningApplication], systemFullScreenPID: pid_t?,
+              desktop: Int, scope: SidebarDesktopScope) -> Snapshot {
+        dispatchPrecondition(condition: .onQueue(queue))
+        if desktopScope != scope || (desktopGeneration != desktop && scope == .visibleDesktops) {
+            knownWindows.removeAll()
+            previousEntries.removeAll()
+        }
+        desktopGeneration = desktop
+        desktopScope = scope
+        fullScreenWindows.removeAll()
+        var snapshot = Snapshot(hasPermission: AXIsProcessTrusted())
+        guard snapshot.hasPermission else {
+            removeObservers()
+            return snapshot
+        }
+        let listed = listedWindows()
+        let desktops = spaceReader.read(windowIDs: Set(listed.filter { $0.value.normalLevel }.keys))
+        let visible = listed.filter { $0.value.onScreen && $0.value.normalLevel }
+        // Some games/video windows do not expose AXFullScreen. Only use geometry as a
+        // fallback when AppKit independently confirms that their active app is full screen.
+        for window in visible.values where window.pid == systemFullScreenPID {
+            if let display = displayContaining(window.bounds),
+               window.bounds.insetBy(dx: -2, dy: -2).contains(CGDisplayBounds(display)) {
+                snapshot.fullScreenDisplays.insert(display)
+            }
+        }
+        let pids = Set(applications.map(\.processIdentifier))
+        windowDiscovery.retainApplications(pids)
+        var survivingIDs: Set<SidebarWindowID> = []
+        for pid in Array(observers.keys) where !pids.contains(pid) { removeObserver(pid) }
+
+        for running in applications where !running.isTerminated {
+            let app = Application(running)
+            guard let element = app.element else { continue }
+            AXUIElementSetMessagingTimeout(element, 0.2)
+            // A failed AX query is not an empty window list. Keep the last verified list
+            // until a successful scan, a desktop change, or termination resolves it.
+            let readableWindows: [AXUIElement]? = element.getAttributeValue(.windows)
+            if readableWindows == nil {
+                if var previous = previousEntries[running.processIdentifier],
+                   previous.application.runningApplication?.isTerminated == false {
+                    previous.isHidden = running.isHidden
+                    for id in Array(previous.windowStates.keys) {
+                        previous.windowStates[id]?.isOnScreen = listed[id].map {
+                            $0.pid == running.processIdentifier && $0.onScreen && $0.normalLevel
+                        } ?? false
+                        previous.windowStates[id]?.desktops = desktops[id] ?? []
+                        previous.windowStates[id]?.desktopLabel = desktops[id]?.first?.windowPrefix
+                    }
+                    snapshot.entries.append(previous)
+                    for window in previous.windows {
+                        if let id = window.cgWindowID {
+                            survivingIDs.insert(SidebarWindowID(pid: running.processIdentifier, windowID: id))
+                        }
+                    }
+                    continue
+                }
+            }
+            var axWindows = readableWindows ?? []
+            if scope == .allDesktops {
+                // A real cross-Space window must belong to a managed desktop. Browser
+                // helper surfaces can be layer 0 but have no Space membership.
+                let candidates = Set(listed.filter {
+                    $0.value.pid == running.processIdentifier && $0.value.normalLevel
+                        && !(desktops[$0.key]?.isEmpty ?? true)
+                }.keys)
+                let discovered = windowDiscovery.read(pid: running.processIdentifier, current: axWindows, candidates: candidates)
+                axWindows = discovered.windows
+                snapshot.needsWindowDiscovery = snapshot.needsWindowDiscovery || discovered.needsAnotherPass
+            }
+            observe(app: element, pid: running.processIdentifier, windows: axWindows)
+            var windows: [Window] = []
+            var states: [CGWindowID: SidebarWindowState] = [:]
+            for axWindow in axWindows {
+                AXUIElementSetMessagingTimeout(axWindow, 0.2)
+                let axID = axWindow.getWindowID().flatMap { $0 == kCGNullWindowID ? nil : $0 }
+                var ownerPID: pid_t = 0
+                guard AXUIElementGetPid(axWindow, &ownerPID) == .success,
+                      ownerPID == running.processIdentifier else { continue }
+                let previousID = knownID(for: axWindow, pid: ownerPID, reportedID: axID)
+                let previous = previousEntries[ownerPID]
+                guard let role: String = axWindow.getAttributeValue(.role) else {
+                    if let id = previousID,
+                       let window = previous?.windows.first(where: { $0.cgWindowID == id }),
+                       var state = previous?.windowStates[id],
+                       survivingIDs.insert(SidebarWindowID(pid: ownerPID, windowID: id)).inserted {
+                        state.isOnScreen = listed[id].map { $0.pid == ownerPID && $0.onScreen } ?? false
+                        state.desktops = desktops[id] ?? []
+                        state.desktopLabel = desktops[id]?.first?.windowPrefix
+                        windows.append(window)
+                        states[id] = state
+                    }
+                    continue
+                }
+                let subrole: String? = axWindow.getAttributeValue(.subrole)
+                guard SidebarWindowPolicy.isTopLevelWindow(role: role, subrole: subrole) else { continue }
+                let minimized: Bool = axWindow.getAttributeValue(.minimized)
+                    ?? previousID.flatMap { previous?.windowStates[$0]?.isMinimized } ?? false
+                let restorable = running.isHidden || minimized
+                let match = matchingWindow(for: axWindow, pid: running.processIdentifier,
+                    windowID: axID, listed: scope == .allDesktops || restorable ? listed : visible)
+                let rawTitle: String? = axWindow.getAttributeValue(.title)
+                if SidebarWindowPolicy.needsBrowserHelperCheck(bundleIdentifier: running.bundleIdentifier),
+                   isBrowserHelper(axWindow, applicationTitle: app.title, title: rawTitle,
+                                   subrole: subrole, bounds: match?.1.bounds, minimized: minimized) {
+                    continue
+                }
+                // Use the same AX window enumeration as the keyboard list. Hidden/minimised
+                // windows do not need to have been visible during this octopus session.
+                let normalLevel = axID.flatMap { listed[$0] }.map {
+                    $0.pid == running.processIdentifier && $0.normalLevel
+                } ?? (match != nil || restorable || previousID != nil)
+                guard SidebarWindowPolicy.isEligible(onScreen: match?.1.onScreen == true,
+                    normalLevel: normalLevel, standardWindow: true, minimized: minimized,
+                    hidden: running.isHidden, ownProcess: false, previouslyListed: previousID != nil,
+                    scope: scope),
+                    let id = axID ?? match?.0 ?? previousID else { continue }
+                let sidebarID = SidebarWindowID(pid: running.processIdentifier, windowID: id)
+                guard survivingIDs.insert(sidebarID).inserted else { continue }
+                let fullScreen: Bool = axWindow.getAttributeValue(NSAccessibility.Attribute(rawValue: "AXFullScreen")) ?? false
+                let geometryFullScreen = match.map {
+                    guard $0.1.onScreen, running.processIdentifier == systemFullScreenPID,
+                          let display = displayContaining($0.1.bounds) else { return false }
+                    return $0.1.bounds.insetBy(dx: -2, dy: -2).contains(CGDisplayBounds(display))
+                } ?? false
+                if fullScreen || geometryFullScreen { fullScreenWindows.insert(sidebarID) }
+                if fullScreen, !running.isHidden, !minimized, let info = match?.1, info.onScreen,
+                   let display = displayContaining(info.bounds) {
+                    snapshot.fullScreenDisplays.insert(display)
+                }
+                knownWindows[sidebarID] = KnownWindow(element: axWindow, application: running)
+                states[id] = SidebarWindowState(isMinimized: minimized,
+                    canMinimize: !fullScreen && !geometryFullScreen
+                        && isMinimizedSettable(axWindow),
+                    isOnScreen: match?.1.onScreen == true, desktops: desktops[id] ?? [],
+                    desktopLabel: desktops[id]?.first?.windowPrefix)
+                let title = rawTitle ?? ""
+                let window = Window(axWindow, app, cachedTitle: title.isEmpty ? app.title : title)
+                window.cgWindowID = id
+                windows.append(window)
+            }
+            guard !windows.isEmpty else { continue }
+            let focusedElement: AXUIElement? = element.getAttributeValue(.focusedWindow)
+            let focusedID = windows.first { window in
+                focusedElement.map { CFEqual($0, window.element) } ?? false
+            }.flatMap { window in
+                window.cgWindowID.map { SidebarWindowID(pid: running.processIdentifier, windowID: $0) }
+            }
+            let ids = windows.compactMap { window in
+                window.cgWindowID.map { SidebarWindowID(pid: running.processIdentifier, windowID: $0) }
+            }
+            // AX retains an app's focused window after another app becomes active.
+            // Reading every app also catches a quick window switch followed by an app switch.
+            if let focusedID, ids.contains(focusedID), focusedID != lastFocused[running.processIdentifier] {
+                recordFocus(focusedID)
+            }
+            if let preferred = SidebarWindowPolicy.preferredID(ids, recency: recency, focused: focusedID,
+                                                               states: states, hidden: running.isHidden) {
+                snapshot.entries.append(SidebarEntry(pid: running.processIdentifier,
+                    application: app, windows: windows, preferredID: preferred,
+                    focusedID: focusedID, isHidden: running.isHidden, windowStates: states))
+            }
+        }
+        knownWindows = knownWindows.filter { survivingIDs.contains($0.key) }
+        // Bound history without losing recency for windows temporarily on another desktop.
+        recency = recency.filter { pids.contains($0.key.pid) }
+        lastFocused = lastFocused.filter { pids.contains($0.key) }
+        if recency.count > 4096 {
+            recency = Dictionary(uniqueKeysWithValues: recency.sorted { $0.value > $1.value }.prefix(2048).map { ($0.key, $0.value) })
+        }
+        previousEntries = Dictionary(uniqueKeysWithValues: snapshot.entries.map { ($0.pid, $0) })
+        return snapshot
+    }
+
+    private func knownID(for element: AXUIElement, pid: pid_t, reportedID: CGWindowID?) -> CGWindowID? {
+        if let id = reportedID {
+            guard let known = knownWindows[SidebarWindowID(pid: pid, windowID: id)],
+                  !known.application.isTerminated, CFEqual(known.element, element) else { return nil }
+            return id
+        }
+        return knownWindows.first {
+            $0.key.pid == pid && !$0.value.application.isTerminated && CFEqual($0.value.element, element)
+        }?.key.windowID
+    }
+
+    enum ActionResult {
+        case activate(NSRunningApplication)
+        case completed
+        case rejected
+    }
+
+    func perform(_ action: SidebarWindowAction, desktop: Int, token: SidebarPendingAction,
+                 systemFullScreenPID: pid_t?, application: NSRunningApplication?) -> ActionResult {
+        dispatchPrecondition(condition: .onQueue(queue))
+        guard desktopGeneration == desktop, token.isCurrent else { return .rejected }
+        if case .activateApp(let pid) = action {
+            guard desktopScope == .allDesktops, pid != ProcessInfo.processInfo.processIdentifier,
+                  let running = application, running.processIdentifier == pid,
+                  running.activationPolicy == .regular, !running.isTerminated,
+                  token.isCurrent, token.beginFocus() else { return .rejected }
+            if running.isHidden, !running.unhide() { return .rejected }
+            guard token.canFinishFocus(on: pid), !running.isTerminated else { return .rejected }
+            // Do not launch or reopen an app to manufacture a window for the sidebar.
+            return .activate(running)
+        }
+        guard let id = action.target,
+              let known = validatedWindow(id), token.isCurrent else { return .rejected }
+        let element = known.element
+        AXUIElementSetMessagingTimeout(element, 0.2)
+        let running = known.application
+        let minimized: Bool = element.getAttributeValue(.minimized) ?? false
+
+        switch action {
+        case .activateApp: return .rejected // Handled above, without requiring an AX window.
+        case .hide:
+            guard !running.isHidden, token.isCurrent else { return .rejected }
+            return running.hide() ? .completed : .rejected
+        case .minimize(_, let requireFocused):
+            guard !running.isHidden, !minimized,
+                  desktopScope == .allDesktops || Self.isOnScreen(id),
+                  !(requireFocused && systemFullScreenPID == id.pid),
+                  canChangeMinimized(element, fullScreen: fullScreenWindows.contains(id)) else { return .rejected }
+            if requireFocused {
+                let appElement = AXUIElementCreateApplication(id.pid)
+                AXUIElementSetMessagingTimeout(appElement, 0.2)
+                guard token.frontmostPID == id.pid,
+                      let focused: AXUIElement = appElement.getAttributeValue(.focusedWindow),
+                      CFEqual(focused, element) else { return .rejected }
+            }
+            guard token.isCurrent else { return .rejected }
+            return AXUIElementSetAttributeValue(element, kAXMinimizedAttribute as CFString,
+                                               kCFBooleanTrue) == .success ? .completed : .rejected
+        case .focus:
+            // Only previously verified windows can be restored. Never launch or reopen.
+            guard desktopScope == .allDesktops || running.isHidden || minimized || Self.isOnScreen(id),
+                  token.beginFocus() else { return .rejected }
+            if minimized {
+                guard canChangeMinimized(element, fullScreen: fullScreenWindows.contains(id)), token.isCurrent,
+                      AXUIElementSetAttributeValue(element, kAXMinimizedAttribute as CFString,
+                                                   kCFBooleanFalse) == .success else { return .rejected }
+            }
+            guard token.canFinishFocus(on: id.pid) else { return .rejected }
+            if running.isHidden, !running.unhide() { return .rejected }
+            guard token.canFinishFocus(on: id.pid), !running.isTerminated,
+                  AXUIElementPerformAction(element, kAXRaiseAction as CFString) == .success else { return .rejected }
+            recordFocus(id)
+            return .activate(running)
+        }
+    }
+
+    private func validatedWindow(_ id: SidebarWindowID) -> KnownWindow? {
+        guard let known = knownWindows[id], !known.application.isTerminated,
+              known.application.processIdentifier == id.pid,
+              id.pid != ProcessInfo.processInfo.processIdentifier else { return nil }
+        let app = Application(known.application)
+        if let element = app.element { AXUIElementSetMessagingTimeout(element, 0.2) }
+        let reportedID = known.element.getWindowID().flatMap { $0 == kCGNullWindowID ? nil : $0 }
+        // Off-Space handles will not appear in kAXWindowsAttribute. Their freshly
+        // reported window ID, role and owner PID validate them without that list.
+        guard reportedID.map({ $0 == id.windowID })
+            ?? app.getAXWindows().contains(where: { CFEqual($0, known.element) }) else { return nil }
+        var pid: pid_t = 0
+        guard AXUIElementGetPid(known.element, &pid) == .success, pid == id.pid,
+              SidebarWindowPolicy.isTopLevelWindow(role: known.element.getAttributeValue(.role),
+                                                   subrole: known.element.getAttributeValue(.subrole)) else { return nil }
+        return known
+    }
+
+    private func canChangeMinimized(_ element: AXUIElement, fullScreen: Bool) -> Bool {
+        let isFullScreen: Bool = element.getAttributeValue(NSAccessibility.Attribute(rawValue: "AXFullScreen")) ?? false
+        let modal: Bool = element.getAttributeValue(NSAccessibility.Attribute(rawValue: "AXModal")) ?? false
+        let sheets: [AXUIElement] = element.getAttributeValue(NSAccessibility.Attribute(rawValue: "AXSheets")) ?? []
+        return SidebarWindowPolicy.canMinimize(
+            standardWindow: SidebarWindowPolicy.isTopLevelWindow(role: element.getAttributeValue(.role),
+                                                                subrole: element.getAttributeValue(.subrole)),
+            fullScreen: fullScreen || isFullScreen, modal: modal, hasSheets: !sheets.isEmpty,
+            settable: isMinimizedSettable(element))
+    }
+
+    private func isMinimizedSettable(_ element: AXUIElement) -> Bool {
+        var settable = DarwinBoolean(false)
+        return AXUIElementIsAttributeSettable(element, kAXMinimizedAttribute as CFString, &settable) == .success
+            && settable.boolValue
+    }
+
+    private func isBrowserHelper(_ element: AXUIElement, applicationTitle: String, title: String?,
+                                 subrole: String?, bounds: CGRect?, minimized: Bool) -> Bool {
+        var closeButton: CFTypeRef?
+        let closeError = AXUIElementCopyAttributeValue(element, kAXCloseButtonAttribute as CFString, &closeButton)
+        let hasCloseButton: Bool?
+        var closeWindowID: CGWindowID?
+        switch closeError {
+        case .success:
+            if let closeButton, CFGetTypeID(closeButton) == AXUIElementGetTypeID() {
+                let button = closeButton as! AXUIElement
+                let ownerWindow: AXUIElement? = button.getAttributeValue(
+                    NSAccessibility.Attribute(rawValue: kAXWindowAttribute as String))
+                closeWindowID = ownerWindow?.getWindowID()
+                // A browser overlay can forward the real window's controls. Those
+                // controls do not make the overlay a second independent window.
+                if let closeWindowID, let id = element.getWindowID() {
+                    hasCloseButton = closeWindowID == id
+                } else {
+                    hasCloseButton = true
+                }
+            } else {
+                hasCloseButton = false
+            }
+        case .attributeUnsupported, .noValue:
+            hasCloseButton = false
+        default:
+            hasCloseButton = nil
+        }
+        let parent: AXUIElement? = element.getAttributeValue(.parent)
+        let parentRole: String? = parent?.getAttributeValue(.role)
+        let rejected = SidebarWindowPolicy.isBrowserHelper(title: title, applicationTitle: applicationTitle,
+            subrole: subrole, hasCloseButton: hasCloseButton, parentIsWindow: parentRole == (kAXWindowRole as String),
+            bounds: bounds, minimized: minimized)
+        #if DEBUG
+        if ProcessInfo.processInfo.environment["octopus_BROWSER_WINDOW_DIAGNOSTICS"] == "1" {
+            let id = element.getWindowID() ?? 0
+            let line = "octopus browser window id=\(id) title=\(String(describing: title)) subrole=\(String(describing: subrole)) ownClose=\(String(describing: hasCloseButton)) closeWindowID=\(String(describing: closeWindowID)) closeError=\(closeError.rawValue) parent=\(String(describing: parentRole)) bounds=\(String(describing: bounds)) minimized=\(minimized) rejected=\(rejected)\n"
+            if let data = line.data(using: .utf8) { FileHandle.standardError.write(data) }
+        }
+        #endif
+        return rejected
+    }
+
+    private func recordFocus(_ id: SidebarWindowID) {
+        sequence += 1
+        recency[id] = sequence
+        lastFocused[id.pid] = id
+    }
+
+    private func displayContaining(_ bounds: CGRect) -> CGDirectDisplayID? {
+        var displays = [CGDirectDisplayID](repeating: 0, count: 32)
+        var count: UInt32 = 0
+        guard CGGetActiveDisplayList(UInt32(displays.count), &displays, &count) == .success else { return nil }
+        return displays.prefix(Int(count)).max { left, right in
+            let a = CGDisplayBounds(left).intersection(bounds)
+            let b = CGDisplayBounds(right).intersection(bounds)
+            return a.width * a.height < b.width * b.height
+        }
+    }
+
+    private func observe(app: AXUIElement, pid: pid_t, windows: [AXUIElement]) {
+        if observers[pid] == nil {
+            var observer: AXObserver?
+            let callback: AXObserverCallback = { _, _, _, context in
+                guard let context else { return }
+                Unmanaged<SidebarWindowReader>.fromOpaque(context).takeUnretainedValue().onChange()
+            }
+            guard AXObserverCreate(pid, callback, &observer) == .success, let observer else { return }
+            observers[pid] = observer
+            for name in [kAXWindowCreatedNotification, kAXFocusedWindowChangedNotification,
+                         kAXApplicationShownNotification, kAXApplicationHiddenNotification] {
+                AXObserverAddNotification(observer, app, name as CFString, Unmanaged.passUnretained(self).toOpaque())
+            }
+            CFRunLoopAddSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(observer), .commonModes)
+        }
+        guard let observer = observers[pid] else { return }
+        let previous = observedWindows[pid] ?? []
+        let names = [kAXUIElementDestroyedNotification, kAXTitleChangedNotification,
+                     kAXWindowMiniaturizedNotification, kAXWindowDeminiaturizedNotification,
+                     kAXMovedNotification, kAXResizedNotification]
+        for window in previous where !windows.contains(where: { CFEqual($0, window) }) {
+            for name in names { AXObserverRemoveNotification(observer, window, name as CFString) }
+        }
+        for window in windows where !previous.contains(where: { CFEqual($0, window) }) {
+            for name in names {
+                AXObserverAddNotification(observer, window, name as CFString, Unmanaged.passUnretained(self).toOpaque())
+            }
+        }
+        observedWindows[pid] = windows
+    }
+
+    private func removeObserver(_ pid: pid_t) {
+        if let observer = observers.removeValue(forKey: pid) {
+            CFRunLoopRemoveSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(observer), .commonModes)
+        }
+        observedWindows.removeValue(forKey: pid)
+    }
+
+    func removeObservers() {
+        dispatchPrecondition(condition: .onQueue(queue))
+        for pid in Array(observers.keys) { removeObserver(pid) }
+        knownWindows.removeAll()
+        previousEntries.removeAll()
+        fullScreenWindows.removeAll()
+        windowDiscovery.reset()
+    }
+}

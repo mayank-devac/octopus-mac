@@ -1,0 +1,270 @@
+//
+//  PreferencesProfilesView.swift
+//  octopus
+//
+//  Created  on 28-01-2026.
+//
+
+import SwiftUI
+
+struct PreferencesProfilesView: View {
+    @EnvironmentObject var profileManager: ProfileManager
+    @AppStorage("defaultNumberOrder") private var defaultNumberOrder = "rightHanded"
+    @StateObject private var modifierManager: ModifierManager = {
+        if let manager = AppDelegate.modifierManager {
+            return manager
+        }
+        return ModifierManager()
+    }()
+    private var profiles: [Profile] { profileManager.profiles }
+    
+    private var sortedProfiles: [Profile] {
+        let numberedProfiles = profiles.filter { $0.profileNumber != nil }
+        let unnumberedProfiles = profiles.filter { $0.profileNumber == nil }
+        
+        let sortedNumbered = numberedProfiles.sorted { profile1, profile2 in
+            guard let num1 = profile1.profileNumber, let num2 = profile2.profileNumber else {
+                return false
+            }
+            
+            if defaultNumberOrder == "rightHanded" {
+                let order1 = num1 == 0 ? 0 : (11 - num1)
+                let order2 = num2 == 0 ? 0 : (11 - num2)
+                return order1 < order2
+            } else {
+                if num1 == 0 { return false }
+                if num2 == 0 { return true }
+                return num1 < num2
+            }
+        }
+        
+        return sortedNumbered + unnumberedProfiles.sorted { $0.createdAt < $1.createdAt }
+    }
+    
+    @State private var selectedProfileID: UUID?
+    
+    var body: some View {
+        HStack(spacing: 0) {
+            VStack(spacing: 0) {
+                List(sortedProfiles, id: \.id, selection: $selectedProfileID) { profile in
+                    HStack {
+                        Text(profile.name)
+
+                        if let number = profile.profileNumber {
+                            Spacer()
+
+                            Text("\(modifierManager.profileModifierSymbols)\(number)")
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                                .frame(minWidth: 40, alignment: .trailing)
+                        }
+                    }
+                    .tag(profile.id)
+                    .contextMenu {
+                        Button("Duplicate Profile") {
+                            let copy = profileManager.duplicateProfile(profile)
+                            selectedProfileID = copy.id
+                        }
+                    }
+                }
+                
+                Divider()
+                
+                HStack {
+                    Button(action: addProfile) {
+                        Image(systemName: "plus")
+                            .frame(width: 20, height:20)
+                    }
+                    .buttonStyle(.borderless)
+                    
+                    Button(action: removeProfile) {
+                        Image(systemName: "minus")
+                            .frame(width: 20, height:20)
+                    }
+                    .buttonStyle(.borderless)
+                    .disabled(sortedProfiles.count <= 1 || selectedProfileID == nil)
+                    
+                    Spacer()
+                }
+                .padding(8)
+            }
+            .frame(width: 200)
+            
+            Divider()
+            
+            if let selectedProfileID = selectedProfileID,
+               let selectedIndex = profiles.firstIndex(where: { $0.id == selectedProfileID }) {
+                ProfileDetailView(
+                    profile: $profileManager.profiles[selectedIndex],
+                    profileManager: profileManager,
+                    modifierManager: modifierManager
+                )
+            } else {
+                Text("Select a profile")
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+        }
+        .frame(height: 635)
+        .onAppear {
+            if selectedProfileID == nil {
+                selectedProfileID = profileManager.currentProfileID
+            }
+        }
+    }
+    
+    private func addProfile() {
+        let newProfile = profileManager.createProfile(name: "New Profile")
+        selectedProfileID = newProfile.id
+    }
+    
+    private func removeProfile() {
+        guard sortedProfiles.count > 1,
+              let selectedID = selectedProfileID,
+              let selectedIndex = sortedProfiles.firstIndex(where: { $0.id == selectedID }) else {
+            return
+        }
+        
+        let selectedProfile = sortedProfiles[selectedIndex]
+        
+        // Pick the next profile below, or fall back to the one above
+        let nextIndex = selectedIndex + 1 < sortedProfiles.count ? selectedIndex + 1 : selectedIndex - 1
+        let nextProfile = sortedProfiles[nextIndex]
+        
+        if selectedProfile.id == profileManager.currentProfileID {
+            profileManager.switchProfile(nextProfile)
+        }
+        
+        profileManager.deleteProfile(selectedProfile)
+        selectedProfileID = nextProfile.id
+    }
+}
+
+struct ProfileDetailView: View {
+    @Binding var profile: Profile
+    @ObservedObject var profileManager: ProfileManager
+    @ObservedObject var modifierManager: ModifierManager
+    @AppStorage("defaultNumberOrder") private var defaultNumberOrder = "rightHanded"
+    
+    
+    var body: some View {
+        Form {
+            Section {
+                TextField("Profile name:", text: $profile.name)
+                
+                Picker("Number order:", selection: $profile.numberOrder) {
+                    Text("Use default").tag(nil as String?)
+                    Text("Right handed (0, 9, ..., 1)").tag("rightHanded" as String?)
+                    Text("Left handed (1, ..., 9, 0)").tag("leftHanded" as String?)
+                }
+                .pickerStyle(.menu)
+                
+                Picker("Profile number:", selection: $profile.profileNumber) {
+                    Text("Unnumbered").tag(nil as Int?)
+                    
+                    Divider()
+                    
+                    let numberOrder = profile.numberOrder ?? defaultNumberOrder
+                    let sortedNumbers = profileManager.availableNumbers(excluding: profile).sorted { num1, num2 in
+                        if numberOrder == "rightHanded" {
+                            // Right handed: 0, 9, 8, ..., 1
+                            let order1 = num1 == 0 ? 0 : (11 - num1)
+                            let order2 = num2 == 0 ? 0 : (11 - num2)
+                            return order1 < order2
+                        } else {
+                            // Left handed: 1, 2, ..., 9, 0
+                            if num1 == 0 { return false }
+                            if num2 == 0 { return true }
+                            return num1 < num2
+                        }
+                    }
+                    
+                    ForEach(sortedNumbers, id: \.self) { number in
+                        Text("\(number)").tag(number as Int?)
+                    }
+                }
+                .pickerStyle(.menu)
+                .onChange(of: profile.profileNumber) { oldValue, newValue in
+                    if !profileManager.setProfileNumber(profile, number: newValue) {
+                        profile.profileNumber = oldValue
+                    }
+                }
+            } footer: {
+                if let number = profile.profileNumber {
+                    Text("\(modifierManager.profileModifierSymbols)\(number)")
+                        .foregroundStyle(.tertiary)
+                } else {
+                    Text("No shortcut assigned")
+                        .foregroundStyle(.tertiary)
+                }
+            }
+            
+            Section("Application Bindings") {
+                ForEach(numbersInOrder, id: \.self) { number in
+                    HStack {
+                        Text("\(number):")
+                            .frame(width: 30, alignment: .leading)
+                        
+                        if let bundleIdentifier = profileManager.bundleIdentifier(for: number, in: profile) {
+                            if let app = Application(bundleIdentifier: bundleIdentifier) {
+                                Text(app.title)
+                                    .foregroundStyle(.secondary)
+                            } else {
+                                Text(bundleIdentifier)
+                                    .foregroundStyle(.secondary)
+                            }
+                            
+                            Spacer()
+                            
+                            Button("Remove") {
+                                profileManager.unbind(slot: number, in: profile)
+                            }
+                            .buttonStyle(.borderless)
+                        } else {
+                            Text("Not set")
+                                .foregroundStyle(.tertiary)
+                            
+                            Spacer()
+                        }
+                        
+                        Button("Choose application...") {
+                            chooseApplication(for: number)
+                        }
+                        .buttonStyle(.borderless)
+                    }
+                }
+            }
+        }
+        .formStyle(.grouped)
+        .padding()
+    }
+    
+    private var numbersInOrder: [Int] {
+        let effectiveOrder = profile.numberOrder ?? defaultNumberOrder
+        
+        if effectiveOrder == "leftHanded" {
+            return Array(1...9) + [0]
+        } else {
+            return [0] + Array((1...9).reversed())
+        }
+    }
+    
+    private func chooseApplication(for number: Int) {
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.allowedContentTypes = [.application]
+        panel.directoryURL = URL(fileURLWithPath: "/Applications")
+        
+        if panel.runModal() == .OK, let url = panel.url {
+            if let app = Application(url: url) {
+                guard let bundleIdentifier = app.bundleIdentifier else {
+                    NSSound.beep()
+                    return
+                }
+                profileManager.bind(bundleIdentifier: bundleIdentifier, to: number, in: profile)
+            }
+        }
+    }
+}
