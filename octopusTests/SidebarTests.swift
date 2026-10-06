@@ -262,6 +262,10 @@ struct SidebarTests {
                 modifierFlags: [], timestamp: timestamp, windowNumber: 0, context: nil,
                 eventNumber: count, clickCount: count, pressure: 1))
             view.mouseDown(with: event)
+            let release = try #require(NSEvent.mouseEvent(with: .leftMouseUp, location: .zero,
+                modifierFlags: [], timestamp: timestamp + 0.01, windowNumber: 0, context: nil,
+                eventNumber: count, clickCount: count, pressure: 0))
+            view.mouseUp(with: release)
             #expect(clicks == expectedClicks)
         }
     }
@@ -426,7 +430,7 @@ struct SidebarTests {
         let icon = CGRect(x: -70, y: 200, width: 40, height: 40)
         let right = SidebarLayout.menuFrame(size: CGSize(width: 400, height: 300), icon: icon, screen: screen, side: .right)
         #expect(right.maxX == icon.minX - SidebarLayout.menuGap)
-        #expect(right.midY == icon.midY - 36)
+        #expect(right.midY == icon.midY - 18)
         let leftIcon = CGRect(x: screen.minX + 30, y: screen.maxY - 40, width: 40, height: 40)
         let left = SidebarLayout.menuFrame(size: CGSize(width: 400, height: 500), icon: leftIcon, screen: screen, side: .left)
         #expect(left.minX == leftIcon.maxX + SidebarLayout.menuGap)

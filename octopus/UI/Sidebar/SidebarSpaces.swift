@@ -70,4 +70,19 @@ final class SidebarSpaceReader {
         }
         return result
     }
+
+    // Do not infer hidden/minimised windows' desktop from their old screen bounds.
+    func visibleDesktopIDs() -> Set<UInt64> {
+        guard let connection, let displays,
+              let raw = displays(connection())?.takeRetainedValue() as? [[String: Any]] else { return [] }
+        return Self.visibleDesktopIDs(from: raw)
+    }
+
+    static func visibleDesktopIDs(from displays: [[String: Any]]) -> Set<UInt64> {
+        Set(displays.compactMap { display in
+            guard let current = display["Current Space"] as? [String: Any],
+                  (current["type"] as? NSNumber)?.intValue == 0 else { return nil }
+            return (current["ManagedSpaceID"] as? NSNumber ?? current["id64"] as? NSNumber)?.uint64Value
+        }.filter { $0 != 0 })
+    }
 }

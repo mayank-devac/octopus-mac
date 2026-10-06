@@ -1,0 +1,19 @@
+{
+  "repository": "rxhanson/Rectangle",
+  "commit": "4003736040e0ba870b32b2f8a6855a7665f02515",
+  "files": [
+    {
+      "file": "AccessibilityElement.swift",
+      "url": "https://raw.githubusercontent.com/rxhanson/Rectangle/4003736040e0ba870b32b2f8a6855a7665f02515/Rectangle/AccessibilityElement.swift",
+      "sha256": "fc4e3af3097f73a575783a86abbcc1d887bf7ea6ed2f537f32f774d5c3855df1",
+      "reason": "Reference for AX frame placement and timeouts; license retained."
+    },
+    {
+      "file": "LICENSE",
+      "url": "https://raw.githubusercontent.com/rxhanson/Rectangle/4003736040e0ba870b32b2f8a6855a7665f02515/LICENSE",
+      "sha256": "70cc27dffd8581495ae47486693e95fa7353315ddd64e15f5cb421163a68ebb9",
+      "reason": "Reference for AX frame placement and timeouts; license retained."
+    }
+  ],
+  "usage": "Reference only; not compiled or bundled."
+}

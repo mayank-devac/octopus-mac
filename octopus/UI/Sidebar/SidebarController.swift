@@ -5,6 +5,7 @@ import SwiftUI
 final class SidebarController {
     private let inventory = SidebarWindowInventory()
     private let viewState = SidebarViewState()
+    private lazy var dragController = SidebarDragController(inventory: inventory)
     private let cycleController: CyclePanelController
     private let panel: SidebarPanel
     private var settingsObserver: NSObjectProtocol?
@@ -58,7 +59,11 @@ final class SidebarController {
         let hostingView = NSHostingView(rootView: SidebarView(
             inventory: inventory, state: viewState,
             onClick: { [weak self] entryID in self?.activate(entryID) },
-            onAnchor: { [weak self] entryID, view in self?.anchors[entryID] = view }
+            onAnchor: { [weak self] entryID, view in self?.anchors[entryID] = view },
+            onDrag: { [weak self] entryID, id, title, source, event in
+                self?.beginDrag(entryID, target: id, title: title, source: source, event: event)
+            },
+            onPlacement: { [weak self] id, target in self?.dragController.place(id, at: target) }
         ))
         hostingView.sizingOptions = []
         panel.contentView = hostingView
@@ -71,6 +76,32 @@ final class SidebarController {
         cycleController.onSidebarWindowAction = { [weak self] action in self?.inventory.perform(action) }
         cycleController.onSidebarDismiss = { [weak self] in
             self?.updatePointer()
+        }
+        cycleController.onSidebarDrag = { [weak self] id, title, source, event in
+            self?.dragController.begin(id: id, title: title, source: source, event: event)
+        }
+        cycleController.onSidebarPlacement = { [weak self] id, target in self?.dragController.place(id, at: target) }
+        dragController.excludedFrames = { [weak self] in
+            guard let self else { return [] }
+            var frames = self.panel.isVisible ? [self.panel.frame] : []
+            if self.cycleController.sidebarEntryID != nil { frames.append(self.cycleController.panel.frame) }
+            return frames
+        }
+        dragController.onInteractionChange = { [weak self] dragging in
+            guard let self else { return }
+            if dragging {
+                self.cancelPendingHover()
+                for work in [self.dismissWork, self.hideWork, self.revealWork] { work?.cancel() }
+                self.dismissWork = nil
+                self.hideWork = nil
+                self.revealWork = nil
+            } else {
+                self.cycleController.dismissSidebar()
+                self.updatePointer()
+            }
+        }
+        inventory.onPlacementResult = { [weak self] result in
+            if let message = result.message { self?.dragController.showFeedback(message) }
         }
         settingsObserver = NotificationCenter.default.addObserver(
             forName: UserDefaults.didChangeNotification, object: nil, queue: .main
@@ -87,6 +118,10 @@ final class SidebarController {
         cycleController.onSidebarActivate = nil
         cycleController.onSidebarWindowAction = nil
         cycleController.onSidebarDismiss = nil
+        cycleController.onSidebarDrag = nil
+        cycleController.onSidebarPlacement = nil
+        dragController.stop()
+        inventory.onPlacementResult = nil
     }
 
     private func applySettings() {
@@ -121,6 +156,7 @@ final class SidebarController {
 
     private func stopSidebar() {
         cancelInteraction()
+        dragController.stop()
         inventory.stop()
         panel.orderOut(nil)
         if let monitor = localMouseMonitor { NSEvent.removeMonitor(monitor) }
@@ -163,6 +199,8 @@ final class SidebarController {
 
     private func inventoryChanged() {
         guard settings?.enabled == true else { return }
+        dragController.validateInventory()
+        guard !dragController.isActive else { return }
         layout()
         if isFullScreen && !wasFullScreen { cancelInteraction(); panel.orderOut(nil) }
         wasFullScreen = isFullScreen
@@ -278,6 +316,7 @@ final class SidebarController {
     }
 
     private func handleMouse(_ event: NSEvent) {
+        guard !dragController.isActive else { return }
         let point = NSEvent.mouseLocation
         // One pointer-position path owns row and button hover. Native row/button hover
         // callbacks must not compete with it or miss movement over overlapping controls.
@@ -306,7 +345,7 @@ final class SidebarController {
     }
 
     private func updatePointer() {
-        guard settings?.enabled == true else { return }
+        guard settings?.enabled == true, !dragController.isActive else { return }
         let point = NSEvent.mouseLocation
         let inSidebar = panel.isVisible && sidebarFrame.contains(point)
         let inMenu = cycleController.sidebarEntryID != nil && cycleController.panel.frame.contains(point)
@@ -392,6 +431,7 @@ final class SidebarController {
     }
 
     private func cancelInteraction() {
+        dragController.cancel()
         hoveredEntryID = nil
         cycleController.dismissSidebar()
         cancelPendingHover()
@@ -401,6 +441,17 @@ final class SidebarController {
         hideWork = nil
         pointerWasInSidebar = false
         viewState.highlightedEntryID = nil
+    }
+
+    private func beginDrag(_ entryID: SidebarEntryID, target: SidebarWindowID?, title: String, source: NSView, event: NSEvent) {
+        guard let target else {
+            dragController.showFeedback("Drag a specific window from this app's window list.")
+            if let entry = inventory.entries.first(where: { $0.id == entryID }), let icon = iconFrame(entryID) {
+                showMenu(entry, icon: icon)
+            }
+            return
+        }
+        dragController.begin(id: target, title: title, source: source, event: event)
     }
 }
 

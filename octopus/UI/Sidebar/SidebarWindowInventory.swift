@@ -46,18 +46,19 @@ enum SidebarWindowAction: Equatable {
     case focus(SidebarWindowID)
     case minimize(SidebarWindowID, requireFocused: Bool)
     case hide(SidebarWindowID)
+    case place(SidebarWindowID, SidebarPlacementRequest)
 
     var target: SidebarWindowID? {
         switch self {
         case .activateApp: return nil
-        case .focus(let id), .minimize(let id, _), .hide(let id): return id
+        case .focus(let id), .minimize(let id, _), .hide(let id), .place(let id, _): return id
         }
     }
 
     var processIdentifier: pid_t {
         switch self {
         case .activateApp(let pid): return pid
-        case .focus(let id), .minimize(let id, _), .hide(let id): return id.pid
+        case .focus(let id), .minimize(let id, _), .hide(let id), .place(let id, _): return id.pid
         }
     }
 }
@@ -195,6 +196,7 @@ final class SidebarWindowInventory: ObservableObject {
     private(set) var desktopScope = SidebarDesktopScope.allDesktops
     var onChange: (() -> Void)?
     var onDesktopChange: (() -> Void)?
+    var onPlacementResult: ((SidebarPlacementResult) -> Void)?
 
     private lazy var reader = SidebarWindowReader(onChange: { [weak self] in
         DispatchQueue.main.async { self?.refresh() }
@@ -402,9 +404,26 @@ final class SidebarWindowInventory: ObservableObject {
         perform(.focus(id))
     }
 
+    func preparePlacement(_ id: SidebarWindowID, completion: @escaping (SidebarPlacementTarget?) -> Void) {
+        guard running, hasPermission, pendingActions[id.pid] == nil else { completion(nil); return }
+        let desktop = desktopGeneration
+        reader.queue.async { [weak self, reader] in
+            let target = reader.placementTarget(id, desktop: desktop)
+            DispatchQueue.main.async {
+                guard let self, self.running, self.hasPermission, desktop == self.desktopGeneration else {
+                    completion(nil); return
+                }
+                completion(target)
+            }
+        }
+    }
+
     func perform(_ action: SidebarWindowAction, frontmostPID: pid_t? = NSWorkspace.shared.frontmostApplication?.processIdentifier) {
         let pid = action.processIdentifier
-        guard running, hasPermission, pendingActions[pid] == nil else { return }
+        guard running, hasPermission, pendingActions[pid] == nil else {
+            if case .place = action { onPlacementResult?(.failed("Window control is unavailable or busy.")) }
+            return
+        }
         let token = SidebarPendingAction(frontmostPID: frontmostPID)
         pendingActions[pid] = token
         let application = entries.first(where: { $0.pid == pid })?.application.runningApplication
@@ -424,6 +443,11 @@ final class SidebarWindowInventory: ObservableObject {
                     if token.canFinishFocus(on: pid), !application.isTerminated {
                         _ = application.activate()
                     }
+                case .placement(let result, let application):
+                    if case .placed = result, let application, token.canFinishFocus(on: pid), !application.isTerminated {
+                        _ = application.activate()
+                    }
+                    self.onPlacementResult?(result)
                 // Stale or unsupported requests stay quiet; refresh below reconciles the UI.
                 case .rejected, .completed: break
                 }
@@ -763,6 +787,41 @@ private final class SidebarWindowReader: @unchecked Sendable {
         case activate(NSRunningApplication)
         case completed
         case rejected
+        case placement(SidebarPlacementResult, NSRunningApplication?)
+    }
+
+    func placementTarget(_ id: SidebarWindowID, desktop: Int) -> SidebarPlacementTarget? {
+        dispatchPrecondition(condition: .onQueue(queue))
+        guard desktopGeneration == desktop, AXIsProcessTrusted(), let known = validatedWindow(id) else { return nil }
+        let element = known.element
+        AXUIElementSetMessagingTimeout(element, 0.2)
+        guard let fullScreen: Bool = placementAttribute(element, "AXFullScreen", unsupported: false),
+              let modal: Bool = placementAttribute(element, "AXModal", unsupported: false),
+              let sheets: [AXUIElement] = placementAttribute(element, "AXSheets", unsupported: []),
+              let minimized: Bool = placementAttribute(element, kAXMinimizedAttribute, unsupported: false),
+              let frame = element.getWindowFrame(), SidebarPlacementGeometry.isValid(frame) else { return nil }
+        let memberships = Set((spaceReader.read(windowIDs: [id.windowID])[id.windowID] ?? []).map(\.id))
+        guard SidebarPlacementEligibility.allows(fullScreen: fullScreen || fullScreenWindows.contains(id),
+            modal: modal, hasSheets: !sheets.isEmpty, canMove: isSettable(element, attribute: .position),
+            windowDesktops: memberships, visibleDesktops: spaceReader.visibleDesktopIDs()) else { return nil }
+        return SidebarPlacementTarget(id: id, frame: frame, canResize: isSettable(element, attribute: .size),
+                                      isMinimized: minimized, desktopGeneration: desktop)
+    }
+
+    private func placementAttribute<T>(_ element: AXUIElement, _ attribute: String, unsupported: T) -> T? {
+        var value: AnyObject?
+        switch AXUIElementCopyAttributeValue(element, attribute as CFString, &value) {
+        case .success: return value as? T
+        // Some toolkits do not expose these optional attributes. A failed read is different.
+        case .attributeUnsupported: return unsupported
+        default: return nil
+        }
+    }
+
+    private func isSettable(_ element: AXUIElement, attribute: NSAccessibility.Attribute) -> Bool {
+        var settable = DarwinBoolean(false)
+        return AXUIElementIsAttributeSettable(element, attribute.rawValue as CFString, &settable) == .success
+            && settable.boolValue
     }
 
     func perform(_ action: SidebarWindowAction, desktop: Int, token: SidebarPendingAction,
@@ -788,6 +847,43 @@ private final class SidebarWindowReader: @unchecked Sendable {
 
         switch action {
         case .activateApp: return .rejected // Handled above, without requiring an AX window.
+        case .place(_, let request):
+            guard request.desktopGeneration == desktop,
+                  let target = placementTarget(id, desktop: desktop),
+                  !request.resize || target.canResize else {
+                return .placement(.failed("This window cannot be placed on the current desktop."), nil)
+            }
+            if target.isMinimized {
+                guard canChangeMinimized(element, fullScreen: false), token.isCurrent,
+                      AXUIElementSetAttributeValue(element, kAXMinimizedAttribute as CFString, kCFBooleanFalse) == .success else {
+                    return .placement(.failed("This window could not be restored."), nil)
+                }
+            }
+            guard token.canFinishFocus(on: id.pid) else { return .rejected }
+            if running.isHidden, !running.unhide() { return .placement(.failed("This app could not be shown."), nil) }
+            let deadline = ProcessInfo.processInfo.systemUptime + 1.2
+            let result = SidebarPlacementWriter.apply(request,
+                canContinue: { token.canFinishFocus(on: id.pid) && !running.isTerminated && ProcessInfo.processInfo.systemUptime < deadline },
+                readFrame: { element.getWindowFrame() },
+                writePosition: { position in
+                    var position = position
+                    guard let value = AXValueCreate(.cgPoint, &position) else { return false }
+                    return AXUIElementSetAttributeValue(element, kAXPositionAttribute as CFString, value) == .success
+                }, writeSize: { size in
+                    var size = size
+                    guard let value = AXValueCreate(.cgSize, &size) else { return false }
+                    return AXUIElementSetAttributeValue(element, kAXSizeAttribute as CFString, value) == .success
+                })
+            if result == .cancelled, !token.isCancelled, ProcessInfo.processInfo.systemUptime >= deadline {
+                return .placement(.failed("This app took too long to finish placement; the window may have moved."), nil)
+            }
+            guard case .placed = result else { return .placement(result, nil) }
+            guard token.canFinishFocus(on: id.pid), validatedWindow(id) != nil, token.beginFocus(),
+                  AXUIElementPerformAction(element, kAXRaiseAction as CFString) == .success else {
+                return .placement(.failed("Window placement finished, but the app could not bring it forward."), nil)
+            }
+            recordFocus(id)
+            return .placement(result, running)
         case .hide:
             guard !running.isHidden, token.isCurrent else { return .rejected }
             return running.hide() ? .completed : .rejected

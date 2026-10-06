@@ -35,6 +35,8 @@ final class CyclePanelController: NSObject {
     var onSidebarActivate: ((SidebarWindowID) -> Void)?
     var onSidebarWindowAction: ((SidebarWindowAction) -> Void)?
     var onSidebarDismiss: (() -> Void)?
+    var onSidebarDrag: ((SidebarWindowID, String, NSView, NSEvent) -> Void)?
+    var onSidebarPlacement: ((SidebarWindowID, SidebarSnapTarget) -> Void)?
     var sidebarApplicationID: pid_t? {
         presentation == .sidebar && panel.isVisible ? currentApplication?.pid : nil
     }
@@ -101,6 +103,13 @@ final class CyclePanelController: NSObject {
             self.onSidebarWindowAction?(.hide(SidebarWindowID(pid: pid, windowID: id)))
         }, onHideAnchor: { [weak self] view in
             self?.sidebarHideAnchor = view
+        }, onDrag: { [weak self] id, title, source, event in
+            guard let self, self.presentation == .sidebar else { return }
+            self.onSidebarDrag?(id, title, source, event)
+        }, onPlacement: { [weak self] itemID, target in
+            guard let self, self.presentation == .sidebar, let pid = self.currentApplication?.pid,
+                  case .window(let id) = itemID else { return }
+            self.onSidebarPlacement?(SidebarWindowID(pid: pid, windowID: id), target)
         })
         let hostingView = NSHostingView(rootView: contentView)
         // Panel dimensions are controlled by updatePanelSize, not content-size probes.

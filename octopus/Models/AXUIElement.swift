@@ -48,7 +48,9 @@ extension AXUIElement {
         guard AXUIElementCopyAttributeValue(self, NSAccessibility.Attribute.position.rawValue as CFString, &positionObject) == .success,
               AXUIElementCopyAttributeValue(self, NSAccessibility.Attribute.size.rawValue as CFString, &sizeObject) == .success,
               let positionObject,
-              let sizeObject else { return nil }
+              let sizeObject,
+              CFGetTypeID(positionObject) == AXValueGetTypeID(),
+              CFGetTypeID(sizeObject) == AXValueGetTypeID() else { return nil }
 
         let position = unsafeBitCast(positionObject, to: AXValue.self)
         let size = unsafeBitCast(sizeObject, to: AXValue.self)

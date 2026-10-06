@@ -15,6 +15,8 @@ struct CyclePanelView: View {
     var onWindowAction: (CyclePanelItem.ID) -> Void = { _ in }
     var onHideApp: () -> Void = {}
     var onHideAnchor: (NSView?) -> Void = { _ in }
+    var onDrag: (SidebarWindowID, String, NSView, NSEvent) -> Void = { _, _, _, _ in }
+    var onPlacement: (CyclePanelItem.ID, SidebarSnapTarget) -> Void = { _, _ in }
 
     private let headerPadding: Double = 12
     
@@ -86,16 +88,28 @@ struct CyclePanelView: View {
         if state.showsSidebarActions, case .window(let window) = item {
             let prefix = window.cgWindowID.flatMap { state.sidebarWindowStates[$0]?.desktopLabel } ?? ""
             let title = prefix + item.title
+            let dragTarget = window.application.pid.flatMap { pid in
+                window.cgWindowID.map { SidebarWindowID(pid: pid, windowID: $0) }
+            }
             HStack(spacing: 0) {
-                // Keep the original title gesture: making it a Button adds a focus ring
-                // and competing button tracking to every pointer selection update.
+                // Track press/drag on the title only; keep the action button independent.
                 CyclePanelRow(title: title, isSelected: index == state.selectedIndex,
                               isCompact: true, showsSelectionBackground: false)
-                .onTapGesture { onActivate(item.id) }
+                .overlay {
+                    SidebarPointerRegion(onClick: { onActivate(item.id) }, onAnchor: { _ in },
+                                         onDrag: { source, event in
+                        if let dragTarget { onDrag(dragTarget, item.title, source, event) }
+                    })
+                }
                 .accessibilityAddTraits(.isButton)
                 .accessibilityAction { onActivate(item.id) }
                 .accessibilityLabel("Focus \(title)")
                 .accessibilityValue(index == state.selectedIndex ? "Selected" : "")
+                .accessibilityActions {
+                    ForEach(SidebarSnapTarget.allCases, id: \.self) { target in
+                        Button(target.title) { onPlacement(item.id, target) }
+                    }
+                }
                 if let id = window.cgWindowID, let status = state.sidebarWindowStates[id] {
                     let restore = state.sidebarAppIsHidden || status.isMinimized
                     let enabled = status.canMinimize || (state.sidebarAppIsHidden && !status.isMinimized)

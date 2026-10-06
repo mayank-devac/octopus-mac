@@ -15,6 +15,8 @@ struct SidebarView: View {
     @Environment(\.colorScheme) private var colorScheme
     var onClick: (SidebarEntryID) -> Void
     var onAnchor: (SidebarEntryID, NSView?) -> Void
+    var onDrag: (SidebarEntryID, SidebarWindowID?, String, NSView, NSEvent) -> Void = { _, _, _, _, _ in }
+    var onPlacement: (SidebarWindowID, SidebarSnapTarget) -> Void = { _, _ in }
 
     var body: some View {
         Group {
@@ -57,6 +59,7 @@ struct SidebarView: View {
 
     private func item(_ entry: SidebarEntry, index: Int) -> some View {
         let title = entry.preferredWindow?.title ?? entry.application.title
+        let dragTarget = SidebarIconDragPolicy.target(for: entry)
         let maximumLabelScale: CGFloat = reduceMotion ? 1 : 1 + SidebarLayout.magnificationGrowth
         // Reserve width for the largest zoom so labels keep the same wrapping during hover.
         let labelPadding: CGFloat = 4
@@ -96,7 +99,8 @@ struct SidebarView: View {
         .overlay {
             SidebarPointerRegion(
                 onClick: { onClick(entry.id) },
-                onAnchor: { onAnchor(entry.id, $0) }
+                onAnchor: { onAnchor(entry.id, $0) },
+                onDrag: { onDrag(entry.id, dragTarget, title, $0, $1) }
             )
         }
         .accessibilityElement(children: .ignore)
@@ -105,6 +109,13 @@ struct SidebarView: View {
                            : "Focus window, or apply the active-app click setting")
         .accessibilityAddTraits(.isButton)
         .accessibilityAction { onClick(entry.id) }
+        .accessibilityActions {
+            if entry.windows.count == 1, !entry.hasOtherWindows, let id = entry.preferredID {
+                ForEach(SidebarSnapTarget.allCases, id: \.self) { target in
+                    Button(target.title) { onPlacement(id, target) }
+                }
+            }
+        }
     }
 
     private func scale(for index: Int) -> CGFloat {
@@ -214,6 +225,7 @@ private struct SidebarLabelBackground: NSViewRepresentable {
 struct SidebarPointerRegion: NSViewRepresentable {
     var onClick: () -> Void
     var onAnchor: (NSView?) -> Void
+    var onDrag: ((NSView, NSEvent) -> Void)? = nil
 
     func makeNSView(context: Context) -> PointerView {
         let view = PointerView()
@@ -225,6 +237,7 @@ struct SidebarPointerRegion: NSViewRepresentable {
     func updateNSView(_ view: PointerView, context: Context) {
         view.onClick = onClick
         view.onAnchor = onAnchor
+        view.onDrag = onDrag
     }
 
     static func dismantleNSView(_ view: PointerView, coordinator: ()) {
@@ -234,12 +247,30 @@ struct SidebarPointerRegion: NSViewRepresentable {
     final class PointerView: NSView {
         var onClick: (() -> Void)?
         var onAnchor: ((NSView?) -> Void)?
+        var onDrag: ((NSView, NSEvent) -> Void)?
         private var clickGate = SidebarClickGate()
+        private var press: (point: CGPoint, click: (() -> Void)?, drag: ((NSView, NSEvent) -> Void)?)?
         override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
         override func mouseDown(with event: NSEvent) {
             // Suppress only very fast repeats, even if macOS groups later clicks together.
+            press = nil
             guard clickGate.accepts(timestamp: event.timestamp, clickCount: event.clickCount) else { return }
-            onClick?()
+            press = (event.locationInWindow, onClick, onDrag)
+        }
+        override func mouseDragged(with event: NSEvent) {
+            guard let press, Self.hasStartedDrag(from: press.point, to: event.locationInWindow) else { return }
+            self.press = nil
+            press.drag?(self, event)
+        }
+        override func mouseUp(with event: NSEvent) {
+            let click = press?.click
+            press = nil
+            if bounds.contains(convert(event.locationInWindow, from: nil)) { click?() }
+        }
+        override func cancelOperation(_ sender: Any?) { press = nil }
+
+        static func hasStartedDrag(from start: CGPoint, to end: CGPoint) -> Bool {
+            hypot(end.x - start.x, end.y - start.y) > 6
         }
     }
 }
