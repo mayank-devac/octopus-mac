@@ -9,22 +9,24 @@ struct PreferencesSidebarView: View {
     @State private var selectedDisplayID = ""
     @State private var configuration = SidebarConfiguration()
     @State private var savedDisplays: [String: SidebarDisplayPreference] = [:]
+    @State private var formHeight: CGFloat?
 
     private var displayChoices: [(id: String, name: String)] {
-        let connected = screens.enumerated().compactMap { index, screen -> (id: String, name: String)? in
+        screens.enumerated().compactMap { index, screen -> (id: String, name: String)? in
             guard let id = SidebarSettings.monitorID(screen) else { return nil }
+            let detectedName = screen.localizedName.trimmingCharacters(in: .whitespacesAndNewlines)
             let duplicate = screens.filter { $0.localizedName == screen.localizedName }.count > 1
-            let name = duplicate ? "\(screen.localizedName) (Display \(index + 1))" : screen.localizedName
-            return (id, name)
+            let name = detectedName.isEmpty ? "Display \(index + 1)"
+                : duplicate ? "\(detectedName) (Display \(index + 1))" : detectedName
+            let role = index == 0 ? "Primary" : "Secondary"
+            return (id, "\(name) (\(role))")
         }
-        let ids = Set(connected.map(\.id))
-        let disconnected = savedDisplays.filter { !ids.contains($0.key) }.sorted { $0.key < $1.key }
-            .map { entry in
-                let duplicate = savedDisplays.values.filter { $0.name == entry.value.name }.count > 1
-                let suffix = duplicate ? "disconnected · \(entry.key.prefix(8))" : "disconnected"
-                return (id: entry.key, name: "\(entry.value.name) (\(suffix))")
-            }
-        return connected + disconnected
+    }
+
+    private var singleDisplaySelection: Binding<String> {
+        Binding(get: {
+            displayChoices.contains { $0.id == monitor } ? monitor : "primary"
+        }, set: { monitor = $0 })
     }
 
     private var editingEnabled: Bool {
@@ -68,6 +70,7 @@ struct PreferencesSidebarView: View {
     }
 
     private func reload() {
+        screens = NSScreen.screens
         savedDisplays = SidebarSettings.displayPreferences()
         if !displayChoices.contains(where: { $0.id == selectedDisplayID }) {
             selectedDisplayID = displayChoices.first(where: { $0.id == monitor })?.id
@@ -107,17 +110,12 @@ struct PreferencesSidebarView: View {
                     Spacer()
                     resetButton
                 }
-            } else if screens.count > 1 || monitor != "primary" {
+            } else {
                 HStack {
-                    Picker("Display", selection: $monitor) {
+                    Picker("Display", selection: singleDisplaySelection) {
                         Text("Primary display").tag("primary")
-                        ForEach(displayChoices.filter { choice in
-                            screens.contains { SidebarSettings.monitorID($0) == choice.id }
-                        }, id: \.id) { display in
+                        ForEach(displayChoices, id: \.id) { display in
                             Text(display.name).tag(display.id)
-                        }
-                        if monitor != "primary", !screens.contains(where: { SidebarSettings.monitorID($0) == monitor }) {
-                            Text("Disconnected display (using primary)").tag(monitor)
                         }
                     }
                     .pickerStyle(.menu)
@@ -221,23 +219,24 @@ struct PreferencesSidebarView: View {
                         .foregroundStyle(.secondary)
                         .frame(width: 46, alignment: .trailing)
                 }
+                .background {
+                    PreferencesFormSizeReader { height in
+                        if formHeight == nil || abs((formHeight ?? 0) - height) > 0.5 {
+                            formHeight = height
+                        }
+                    }
+                }
             }
             .disabled(!editingEnabled || (multiDisplay && selectedDisplayID.isEmpty))
         }
         .formStyle(.grouped)
-        // Leave room for the settings toolbar and keep the form usable on smaller screens.
-        .frame(height: min(660, max(360, (NSScreen.main?.visibleFrame.height ?? 760) - 100)))
-        .onAppear {
-            screens = NSScreen.screens
-            reload()
-        }
+        .frame(height: formHeight)
+        .onAppear { reload() }
         .onChange(of: selectedDisplayID) { _, _ in reload() }
         .onChange(of: multiDisplay) { _, _ in reload() }
         .onReceive(NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification)
             .receive(on: RunLoop.main)) { _ in reload() }
-        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didChangeScreenParametersNotification)) { _ in
-            screens = NSScreen.screens
-            reload()
-        }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didChangeScreenParametersNotification)
+            .receive(on: RunLoop.main)) { _ in reload() }
     }
 }

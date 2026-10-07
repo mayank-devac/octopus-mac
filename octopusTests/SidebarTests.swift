@@ -1,10 +1,66 @@
 import AppKit
 import Combine
 import class SwiftUI.NSHostingView
+import struct SwiftUI.Form
+import struct SwiftUI.Section
+import struct SwiftUI.ForEach
+import struct SwiftUI.Text
+import protocol SwiftUI.View
 import Testing
 @testable import octopus
 
 struct SidebarTests {
+    @Test func settingsHeightFitsContentAndTheActualWindowsScreen() {
+        #expect(PreferencesFormSizing.height(contentHeight: 610, screenHeight: 1000,
+                                             windowHeight: 750, viewportHeight: 660) == 610)
+        #expect(PreferencesFormSizing.height(contentHeight: 610, screenHeight: 600,
+                                             windowHeight: 750, viewportHeight: 660) == 510)
+        #expect(PreferencesFormSizing.height(contentHeight: 610, screenHeight: 1000,
+                                             windowHeight: 600, viewportHeight: 510) == 610)
+        #expect(PreferencesFormSizing.height(contentHeight: 630, screenHeight: 1000,
+                                             windowHeight: 750, viewportHeight: 660) == 630)
+        #expect(PreferencesFormSizing.height(contentHeight: .nan, screenHeight: 1000,
+                                             windowHeight: 750, viewportHeight: 660) == nil)
+        #expect(PreferencesFormSizing.height(contentHeight: 610, screenHeight: 600.5,
+                                             windowHeight: 750, viewportHeight: 660) == 510)
+    }
+
+    @MainActor @Test func groupedFormMeasuresItsLastRowBeyondTheVisibleViewport() async throws {
+        var measured: CGFloat?
+        let form = Form {
+            Section("Settings") {
+                ForEach(0..<18) { index in
+                    Text("Setting \(index)")
+                }
+                Text("Last setting").background {
+                    PreferencesFormSizeReader { measured = $0 }
+                }
+            }
+        }
+        .formStyle(.grouped)
+        let window = NSWindow(contentRect: CGRect(x: 100, y: 100, width: 650, height: 300),
+                              styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { window.close() }
+        let hosting = NSHostingView(rootView: form)
+        hosting.sizingOptions = []
+        window.contentView = hosting
+        window.orderFront(nil)
+        hosting.layoutSubtreeIfNeeded()
+        try await Task.sleep(nanoseconds: 100_000_000)
+        let height = try #require(measured)
+        let screen = try #require(window.screen)
+        #expect(height > 300)
+        #expect(height <= screen.visibleFrame.height)
+        // A larger viewport must not inflate the measured content height.
+        measured = nil
+        window.setContentSize(CGSize(width: 650, height: height + 40))
+        hosting.layoutSubtreeIfNeeded()
+        try await Task.sleep(nanoseconds: 100_000_000)
+        let resizedHeight = try #require(measured)
+        #expect(abs(resizedHeight - height) <= 1)
+    }
+
     @MainActor @Test func currentDisplayFiltersMenusAndTargetsWithoutChangingDesktopScope() throws {
         let running = NSRunningApplication.current
         let app = Application(running)
