@@ -18,6 +18,7 @@ final class SidebarDragController: NSObject, NSDraggingSource {
     private var feedbackWork: DispatchWorkItem?
     private var generation = 0
     private var snapDistance = SidebarSettings.defaultSnapDistance
+    var snapDistanceProvider: () -> Double = { SidebarSettings.snapDistance() }
     var excludedFrames: () -> [CGRect] = { [] }
     var desktopDropTarget: (CGPoint, SidebarDesktop?) -> SidebarDesktopDropTarget? = { _, _ in nil }
     var sidebarDragContains: (CGPoint) -> Bool = { _ in false }
@@ -35,7 +36,7 @@ final class SidebarDragController: NSObject, NSDraggingSource {
         guard !isActive, AXIsProcessTrusted() else { return }
         dismissFeedback()
         // Preview and drop must use the same distance throughout this drag.
-        snapDistance = SidebarSettings.snapDistance()
+        snapDistance = SidebarSettings.normalizedSnapDistance(snapDistanceProvider())
         generation += 1
         let nonce = UUID()
         sessionID = nonce

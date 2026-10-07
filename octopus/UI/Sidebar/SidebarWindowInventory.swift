@@ -39,6 +39,7 @@ struct SidebarWindowState: Equatable {
     var isOnScreen = true
     var desktops: [SidebarDesktop] = []
     var desktopLabel: String? = nil
+    var displayIdentifier: String? = nil
 }
 
 enum SidebarWindowAction: Equatable {
@@ -146,6 +147,27 @@ enum SidebarFocusActivation {
 }
 
 enum SidebarWindowPolicy {
+    static func displayIdentifier(desktops: [SidebarDesktop], bounds: CGRect?,
+                                  displayFrames: [String: CGRect]) -> String? {
+        let members = Set(desktops.compactMap(\.displayIdentifier).filter { displayFrames[$0] != nil })
+        // Space membership remains useful when hidden/minimised windows have stale bounds.
+        if members.count == 1 { return members.first }
+        guard let bounds, !bounds.isEmpty, !bounds.isNull, !bounds.isInfinite else { return nil }
+        let candidates = displayFrames.filter { members.isEmpty || members.contains($0.key) }
+        var selected: String?
+        var largestArea: CGFloat = 0
+        for (id, frame) in candidates.sorted(by: { $0.key < $1.key }) {
+            let overlap = frame.intersection(bounds)
+            guard !overlap.isNull else { continue }
+            let area = overlap.width * overlap.height
+            if area > largestArea {
+                selected = id
+                largestArea = area
+            }
+        }
+        return selected
+    }
+
     static func isEligible(onScreen: Bool, normalLevel: Bool, standardWindow: Bool,
                            minimized: Bool, hidden: Bool, ownProcess: Bool,
                            previouslyListed: Bool = false,
@@ -218,6 +240,7 @@ final class SidebarWindowInventory: ObservableObject {
     @Published private(set) var desktops: [SidebarDesktop] = []
     @Published private(set) var canTransferDesktops = false
     private(set) var desktopScope = SidebarDesktopScope.allDesktops
+    private var displayIdentifier: String?
     var onChange: (() -> Void)?
     var onDesktopChange: (() -> Void)?
     var onPlacementResult: ((SidebarPlacementResult) -> Void)?
@@ -257,12 +280,34 @@ final class SidebarWindowInventory: ObservableObject {
     // AX's window list can be empty when an app's windows are all on other Spaces.
     // App visibility in All desktops must therefore come from the running-app list.
     static func entries(for applications: [NSRunningApplication], windowEntries: [SidebarEntry],
-                        scope: SidebarDesktopScope) -> [SidebarEntry] {
+                        scope: SidebarDesktopScope, displayIdentifier: String? = nil) -> [SidebarEntry] {
+        let windowEntries = displayIdentifier.map { displayID in
+            windowEntries.compactMap { entry -> SidebarEntry? in
+                let windows = entry.windows.filter { window in
+                    guard let id = window.cgWindowID, let state = entry.windowStates[id] else { return false }
+                    return state.displayIdentifier == displayID
+                }
+                guard !windows.isEmpty else { return nil }
+                var filtered = projectedEntry(entry, windows: windows, desktop: entry.desktop,
+                                              hasOtherWindows: entry.hasOtherWindows)
+                for id in Array(filtered.windowStates.keys) {
+                    guard var state = filtered.windowStates[id] else { continue }
+                    state.desktops.removeAll {
+                        $0.displayIdentifier != displayID && $0.displayIdentifier != "Main" && $0.displayIdentifier != nil
+                    }
+                    state.desktopLabel = state.desktops.first?.windowPrefix
+                    filtered.windowStates[id] = state
+                }
+                return filtered
+            }
+        } ?? windowEntries
         let result: [SidebarEntry]
         if scope == .allDesktops {
             let byPID = Dictionary(uniqueKeysWithValues: windowEntries.map { ($0.pid, $0) })
             let apps = applications.filter { !$0.isTerminated }.compactMap { running -> SidebarEntry? in
                 if let entry = byPID[running.processIdentifier], !entry.windows.isEmpty { return entry }
+                // An app without windows has no display to assign it to.
+                guard displayIdentifier == nil else { return nil }
                 // Finder stays running to draw the desktop even with no Finder windows.
                 // Keep real window entries above, including hidden/minimised ones.
                 guard running.bundleIdentifier != "com.apple.finder" else { return nil }
@@ -294,28 +339,34 @@ final class SidebarWindowInventory: ObservableObject {
             if desktops.isEmpty { unknown.append(window) }
             for desktop in desktops { groups[desktop, default: []].append(window) }
         }
-        func group(_ windows: [Window], desktop: SidebarDesktop?) -> SidebarEntry {
-            let ids = windows.compactMap { $0.cgWindowID.map { SidebarWindowID(pid: entry.pid, windowID: $0) } }
-            let windowIDs = Set(ids.map(\.windowID))
-            var states = entry.windowStates.filter { windowIDs.contains($0.key) }
-            for id in Array(states.keys) { states[id]?.desktopLabel = desktop?.windowPrefix }
-            let history = entry.preferredID.map { [$0: UInt64(1)] } ?? [:]
-            let preferred = SidebarWindowPolicy.preferredID(ids, recency: history, focused: entry.focusedID,
-                                                            states: states, hidden: entry.isHidden)
-            return SidebarEntry(pid: entry.pid, application: entry.application, windows: windows,
-                preferredID: preferred, focusedID: ids.contains(where: { $0 == entry.focusedID }) ? entry.focusedID : nil,
-                isHidden: entry.isHidden, windowStates: states, desktop: desktop,
-                hasOtherWindows: entry.windows.count > windows.count)
+        var result = groups.map { projectedEntry(entry, windows: $0.value, desktop: $0.key,
+                                                hasOtherWindows: entry.windows.count > $0.value.count) }
+        if !unknown.isEmpty {
+            result.append(projectedEntry(entry, windows: unknown, desktop: nil,
+                                         hasOtherWindows: entry.windows.count > unknown.count))
         }
-        var result = groups.map { group($0.value, desktop: $0.key) }
-        if !unknown.isEmpty { result.append(group(unknown, desktop: nil)) }
         return result
     }
 
-    func setDesktopScope(_ scope: SidebarDesktopScope) {
-        guard desktopScope != scope else { return }
+    private static func projectedEntry(_ entry: SidebarEntry, windows: [Window], desktop: SidebarDesktop?,
+                                       hasOtherWindows: Bool) -> SidebarEntry {
+        let ids = windows.compactMap { $0.cgWindowID.map { SidebarWindowID(pid: entry.pid, windowID: $0) } }
+        let windowIDs = Set(ids.map(\.windowID))
+        var states = entry.windowStates.filter { windowIDs.contains($0.key) }
+        for id in Array(states.keys) { states[id]?.desktopLabel = desktop?.windowPrefix }
+        let history = entry.preferredID.map { [$0: UInt64(1)] } ?? [:]
+        let preferred = SidebarWindowPolicy.preferredID(ids, recency: history, focused: entry.focusedID,
+                                                        states: states, hidden: entry.isHidden)
+        return SidebarEntry(pid: entry.pid, application: entry.application, windows: windows,
+            preferredID: preferred, focusedID: ids.contains(where: { $0 == entry.focusedID }) ? entry.focusedID : nil,
+            isHidden: entry.isHidden, windowStates: states, desktop: desktop, hasOtherWindows: hasOtherWindows)
+    }
+
+    func setDesktopScope(_ scope: SidebarDesktopScope, displayIdentifier: String? = nil) {
+        guard desktopScope != scope || self.displayIdentifier != displayIdentifier else { return }
         cancelActions()
         desktopScope = scope
+        self.displayIdentifier = displayIdentifier
         desktopGeneration += 1
         entries = []
         refresh()
@@ -392,6 +443,7 @@ final class SidebarWindowInventory: ObservableObject {
         let request = generation
         let desktop = desktopGeneration
         let scope = desktopScope
+        let displayIdentifier = self.displayIdentifier
         // Requests made during this scan keep their completions for the next scan.
         let completions = refreshCompletions
         refreshCompletions.removeAll()
@@ -407,9 +459,13 @@ final class SidebarWindowInventory: ObservableObject {
                 guard let self, self.running, request == self.generation else { return }
                 if desktop == self.desktopGeneration {
                     self.hasPermission = snapshot.hasPermission
-                    self.entries = Self.entries(for: applications, windowEntries: snapshot.entries, scope: scope)
+                    self.entries = Self.entries(for: applications, windowEntries: snapshot.entries, scope: scope,
+                                                displayIdentifier: displayIdentifier)
                     self.fullScreenDisplays = snapshot.fullScreenDisplays
-                    self.desktops = snapshot.desktops
+                    self.desktops = snapshot.desktops.filter {
+                        displayIdentifier == nil || $0.displayIdentifier == displayIdentifier
+                            || $0.displayIdentifier == "Main" || $0.displayIdentifier == nil
+                    }
                     self.canTransferDesktops = snapshot.canTransferDesktops
                     self.updatePermissionTimer()
                     if snapshot.needsWindowDiscovery {
@@ -787,6 +843,7 @@ private final class SidebarWindowReader: @unchecked Sendable {
             return snapshot
         }
         let listed = listedWindows()
+        let displayFrames = activeDisplayFrames()
         // Resolve the native capability on the worker queue, never during pointer input.
         snapshot.canTransferDesktops = SidebarSpaceTransferIsAvailable()
         snapshot.desktops = spaceReader.allDesktops()
@@ -824,6 +881,11 @@ private final class SidebarWindowReader: @unchecked Sendable {
                         } ?? false
                         previous.windowStates[id]?.desktops = desktops[id] ?? []
                         previous.windowStates[id]?.desktopLabel = desktops[id]?.first?.windowPrefix
+                        let bounds = listed[id].flatMap { $0.pid == running.processIdentifier ? $0.bounds : nil }
+                        if let display = SidebarWindowPolicy.displayIdentifier(desktops: desktops[id] ?? [],
+                            bounds: bounds, displayFrames: displayFrames) {
+                            previous.windowStates[id]?.displayIdentifier = display
+                        }
                     }
                     snapshot.entries.append(previous)
                     for window in previous.windows {
@@ -865,6 +927,9 @@ private final class SidebarWindowReader: @unchecked Sendable {
                         state.isOnScreen = listed[id].map { $0.pid == ownerPID && $0.onScreen } ?? false
                         state.desktops = desktops[id] ?? []
                         state.desktopLabel = desktops[id]?.first?.windowPrefix
+                        let bounds = listed[id].flatMap { $0.pid == ownerPID ? $0.bounds : nil }
+                        state.displayIdentifier = SidebarWindowPolicy.displayIdentifier(desktops: state.desktops,
+                            bounds: bounds, displayFrames: displayFrames) ?? state.displayIdentifier
                         windows.append(window)
                         states[id] = state
                     }
@@ -911,7 +976,10 @@ private final class SidebarWindowReader: @unchecked Sendable {
                     canMinimize: !fullScreen && !geometryFullScreen
                         && isMinimizedSettable(axWindow),
                     isOnScreen: match?.1.onScreen == true, desktops: desktops[id] ?? [],
-                    desktopLabel: desktops[id]?.first?.windowPrefix)
+                    desktopLabel: desktops[id]?.first?.windowPrefix,
+                    displayIdentifier: SidebarWindowPolicy.displayIdentifier(desktops: desktops[id] ?? [],
+                        bounds: match?.1.bounds ?? axWindow.getWindowFrame(), displayFrames: displayFrames)
+                        ?? previous?.windowStates[id]?.displayIdentifier)
                 let title = rawTitle ?? ""
                 let window = Window(axWindow, app, cachedTitle: title.isEmpty ? app.title : title)
                 window.cgWindowID = id
@@ -1271,6 +1339,15 @@ private final class SidebarWindowReader: @unchecked Sendable {
         sequence += 1
         recency[id] = sequence
         lastFocused[id.pid] = id
+    }
+
+    private func activeDisplayFrames() -> [String: CGRect] {
+        var displays = [CGDirectDisplayID](repeating: 0, count: 32)
+        var count: UInt32 = 0
+        guard CGGetActiveDisplayList(UInt32(displays.count), &displays, &count) == .success else { return [:] }
+        return displays.prefix(Int(count)).reduce(into: [:]) { result, display in
+            if let id = SidebarSettings.monitorID(display) { result[id] = CGDisplayBounds(display) }
+        }
     }
 
     private func displayContaining(_ bounds: CGRect) -> CGDirectDisplayID? {

@@ -5,6 +5,206 @@ import Testing
 @testable import octopus
 
 struct SidebarTests {
+    @MainActor @Test func currentDisplayFiltersMenusAndTargetsWithoutChangingDesktopScope() throws {
+        let running = NSRunningApplication.current
+        let app = Application(running)
+        let pid = running.processIdentifier
+        let first = SidebarDesktop(id: 101, order: 0, number: 1, displayIdentifier: "A")
+        let second = SidebarDesktop(id: 102, order: 1, number: 2, displayIdentifier: "A")
+        let other = SidebarDesktop(id: 201, order: 2, number: 3, displayIdentifier: "B")
+        func window(_ id: CGWindowID) -> Window {
+            let window = Window(AXUIElementCreateApplication(pid), app, cachedTitle: "Window \(id)")
+            window.cgWindowID = id
+            return window
+        }
+        let outside = SidebarWindowID(pid: pid, windowID: 20)
+        let entry = SidebarEntry(pid: pid, application: app, windows: [window(10), window(11), window(20), window(30)],
+            preferredID: outside, focusedID: outside, windowStates: [
+                10: SidebarWindowState(isMinimized: false, canMinimize: true, desktops: [first], displayIdentifier: "A"),
+                11: SidebarWindowState(isMinimized: true, canMinimize: true, isOnScreen: false,
+                                       desktops: [second], displayIdentifier: "A"),
+                20: SidebarWindowState(isMinimized: false, canMinimize: true, desktops: [other], displayIdentifier: "B"),
+                30: SidebarWindowState(isMinimized: false, canMinimize: true)
+            ])
+        for scope in SidebarDesktopScope.allCases {
+            let filtered = SidebarWindowInventory.entries(for: [running], windowEntries: [entry],
+                                                         scope: scope, displayIdentifier: "A")
+            #expect(filtered.flatMap(\.windows).compactMap(\.cgWindowID).sorted() == [10, 11])
+            #expect(filtered.allSatisfy { $0.focusedID == nil && $0.preferredID != outside })
+            #expect(filtered.allSatisfy { $0.windowStates[20] == nil && $0.windowStates[30] == nil })
+            #expect(filtered.contains { $0.windowStates[11]?.isMinimized == true })
+            #expect(filtered.count == (scope == .allDesktops ? 2 : 1))
+        }
+        let all = SidebarWindowInventory.entries(for: [running], windowEntries: [entry], scope: .allDesktops)
+        #expect(all.flatMap(\.windows).compactMap(\.cgWindowID).sorted() == [10, 11, 20, 30])
+        #expect(SidebarWindowInventory.entries(for: [running], windowEntries: [], scope: .allDesktops,
+                                              displayIdentifier: "A").isEmpty)
+        #expect(SidebarWindowInventory.entries(for: [running], windowEntries: [entry], scope: .allDesktops,
+                                              displayIdentifier: "disconnected").isEmpty)
+        let selected = try #require(SidebarWindowInventory.entries(for: [running], windowEntries: [entry],
+            scope: .allDesktops, displayIdentifier: "B").first)
+        #expect(selected.windows.compactMap(\.cgWindowID) == [20])
+        #expect(!selected.hasOtherWindows)
+        var multipleMemberships = entry
+        multipleMemberships.windowStates[20]?.desktops = [first, other]
+        let onB = SidebarWindowInventory.entries(for: [running], windowEntries: [multipleMemberships],
+                                                scope: .allDesktops, displayIdentifier: "B")
+        #expect(onB.count == 1 && onB.first?.desktop == other)
+    }
+
+    @Test func displayMembershipHandlesStaleBoundsSharedSpacesAndSpanningWindows() {
+        let frames = ["A": CGRect(x: 0, y: 0, width: 1000, height: 800),
+                      "B": CGRect(x: 1000, y: 0, width: 1000, height: 800)]
+        let desktop = SidebarDesktop(id: 101, order: 0, number: 1, displayIdentifier: "A")
+        let onB = CGRect(x: 1200, y: 30, width: 400, height: 300)
+        #expect(SidebarWindowPolicy.displayIdentifier(desktops: [desktop], bounds: onB, displayFrames: frames) == "A")
+        #expect(SidebarWindowPolicy.displayIdentifier(desktops: [desktop], bounds: nil, displayFrames: frames) == "A")
+        let shared = SidebarDesktop(id: 101, order: 0, number: 1, displayIdentifier: "Main")
+        #expect(SidebarWindowPolicy.displayIdentifier(desktops: [shared], bounds: onB, displayFrames: frames) == "B")
+        #expect(SidebarWindowPolicy.displayIdentifier(desktops: [], bounds: onB, displayFrames: frames) == "B")
+        #expect(SidebarWindowPolicy.displayIdentifier(desktops: [],
+            bounds: CGRect(x: 900, y: 30, width: 500, height: 300), displayFrames: frames) == "B")
+        #expect(SidebarWindowPolicy.displayIdentifier(desktops: [],
+            bounds: CGRect(x: -500, y: -500, width: 100, height: 100), displayFrames: frames) == nil)
+        #expect(SidebarWindowPolicy.displayIdentifier(desktops: [], bounds: nil, displayFrames: frames) == nil)
+    }
+
+    @Test func displayFilterLoadsOlderProfilesWithoutResettingTheirPreferences() throws {
+        let suite = "SidebarDisplayScopeMigration-\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        var original = SidebarConfiguration.factoryDefaults
+        original.enabled = false
+        original.side = .left
+        original.position = 0.25
+        original.desktopScope = .visibleDesktops
+        original.displayScope = .currentDisplay
+        original.snapDistance = 460
+        SidebarSettings.save(original, for: "A", name: "A", in: defaults)
+        #expect(SidebarSettings.configuration(for: "A", in: defaults) == original)
+        let encoded = try JSONEncoder().encode(SidebarDisplayPreference(name: "A", configuration: original))
+        var json = try #require(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        var configuration = try #require(json["configuration"] as? [String: Any])
+        configuration.removeValue(forKey: "displayScope")
+        json["configuration"] = configuration
+        defaults.set(["A": try JSONSerialization.data(withJSONObject: json)], forKey: SidebarSettings.displayPreferencesKey)
+        original.displayScope = .allDisplays
+        #expect(SidebarSettings.configuration(for: "A", in: defaults) == original)
+        #expect(SidebarDisplayScope.saved("unknown") == .allDisplays)
+        #expect(SidebarConfiguration.factoryDefaults.displayScope == .allDisplays)
+    }
+
+    @Test func displayPreferencesInheritOnceAndRemainIndependentAcrossRestarts() throws {
+        let suite = "SidebarDisplays-\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set("left", forKey: "sidebarSide")
+        defaults.set(0.25, forKey: "sidebarPosition")
+        defaults.set("hide", forKey: SidebarSettings.idleBehaviorKey)
+        defaults.set(false, forKey: "sidebarShowSingleWindowMenu")
+        defaults.set(12.0, forKey: "sidebarAppSpacing")
+        defaults.set(14.0, forKey: "sidebarFontSize")
+        defaults.set(2.0, forKey: "sidebarShadowOpacity")
+        defaults.set(400.0, forKey: "sidebarSnapDistance")
+        let original = SidebarConfiguration(defaults: defaults)
+        #expect(!defaults.bool(forKey: SidebarSettings.multiDisplayKey))
+        SidebarSettings.rememberDisplay(id: "A", name: "Same name", in: defaults)
+        SidebarSettings.rememberDisplay(id: "B", name: "Same name", in: defaults)
+        #expect(SidebarSettings.configuration(for: "A", in: defaults) == original)
+        #expect(SidebarSettings.configuration(for: "B", in: defaults) == original)
+
+        var changed = original
+        changed.enabled = false
+        changed.desktopScope = .visibleDesktops
+        changed.side = .right
+        changed.position = 0.75
+        changed.idleBehavior = .stayVisible
+        changed.showSingleWindowMenu = true
+        changed.appSpacing = 1
+        changed.fontSize = 9
+        changed.shadowOpacity = 0
+        changed.snapDistance = 20
+        SidebarSettings.save(changed, for: "A", name: "Same name", in: defaults)
+        let restarted = try #require(UserDefaults(suiteName: suite))
+        SidebarSettings.rememberDisplay(id: "A", name: "Renamed display", in: restarted)
+        #expect(SidebarSettings.configuration(for: "A", in: restarted) == changed)
+        #expect(SidebarSettings.configuration(for: "B", in: restarted) == original)
+        #expect(SidebarSettings.configuration(for: nil, in: restarted) == original)
+        #expect(SidebarSettings.displayPreferences(in: restarted)["A"]?.name == "Renamed display")
+        // An unchanged reconnect should not rewrite preferences and trigger another refresh.
+        let saved = restarted.dictionary(forKey: SidebarSettings.displayPreferencesKey)?["A"] as? Data
+        SidebarSettings.rememberDisplay(id: "A", name: "Renamed display", in: restarted)
+        #expect(restarted.dictionary(forKey: SidebarSettings.displayPreferencesKey)?["A"] as? Data == saved)
+
+        // Reset uses factory defaults, not the customized single-sidebar settings.
+        let factory = SidebarConfiguration.factoryDefaults
+        #expect(factory.enabled && factory.desktopScope == .allDesktops && factory.side == .right)
+        #expect(factory.position == 0.5 && factory.idleBehavior == .fade && factory.showSingleWindowMenu)
+        #expect(factory.appSpacing == SidebarSettings.defaultAppSpacing)
+        #expect(factory.fontSize == SidebarSettings.defaultFontSize)
+        #expect(factory.shadowOpacity == SidebarSettings.defaultShadowOpacity)
+        #expect(factory.snapDistance == SidebarSettings.defaultSnapDistance)
+        SidebarSettings.save(factory, for: "A", name: "Renamed display", in: restarted)
+        #expect(SidebarSettings.configuration(for: "A", in: restarted) == factory)
+        #expect(SidebarSettings.configuration(for: "B", in: restarted) == original)
+        #expect(SidebarSettings.configuration(for: nil, in: restarted) == original)
+    }
+
+    @Test func sidebarTargetsRespectOffDisconnectReconnectAndModeSwitches() throws {
+        let suite = "SidebarTargets-\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        #expect(SidebarSettings.targets(connectedDisplayIDs: ["A", "B"], in: defaults) == [.single])
+        #expect(SidebarSettings.targets(connectedDisplayIDs: [], in: defaults).isEmpty)
+        defaults.set(true, forKey: SidebarSettings.multiDisplayKey)
+        SidebarSettings.rememberDisplay(id: "A", name: "A", in: defaults)
+        SidebarSettings.rememberDisplay(id: "B", name: "B", in: defaults)
+        #expect(SidebarSettings.targets(connectedDisplayIDs: ["A", "B", "A"], in: defaults)
+            == [.display("A"), .display("B")])
+        var off = SidebarSettings.configuration(for: "B", in: defaults)
+        off.enabled = false
+        SidebarSettings.save(off, for: "B", name: "B", in: defaults)
+        #expect(SidebarSettings.targets(connectedDisplayIDs: ["A", "B"], in: defaults) == [.display("A")])
+        #expect(SidebarSettings.targets(connectedDisplayIDs: ["B"], in: defaults).isEmpty)
+        // Reordering displays does not alter their preferences or re-enable an Off display.
+        #expect(SidebarSettings.targets(connectedDisplayIDs: ["B", "A"], in: defaults) == [.display("A")])
+        defaults.set(false, forKey: "sidebarEnabled")
+        #expect(SidebarSettings.targets(connectedDisplayIDs: ["A", "B"], in: defaults).isEmpty)
+        SidebarSettings.rememberDisplay(id: "C", name: "C", in: defaults)
+        #expect(SidebarSettings.configuration(for: "C", in: defaults).enabled)
+        defaults.set(true, forKey: "sidebarEnabled")
+        #expect(SidebarSettings.targets(connectedDisplayIDs: ["A", "B"], in: defaults) == [.display("A")])
+        defaults.set(false, forKey: SidebarSettings.multiDisplayKey)
+        #expect(SidebarSettings.targets(connectedDisplayIDs: ["A", "B"], in: defaults) == [.single])
+        defaults.set(true, forKey: SidebarSettings.multiDisplayKey)
+        #expect(SidebarSettings.targets(connectedDisplayIDs: ["A", "B"], in: defaults) == [.display("A")])
+    }
+
+    @Test func damagedDisplayPreferencesDoNotLoseOtherDisplaysAndValuesAreBounded() throws {
+        let suite = "SidebarDisplayRecovery-\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        var configuration = SidebarConfiguration(defaults: defaults)
+        configuration.position = .nan
+        configuration.appSpacing = -10
+        configuration.fontSize = 100
+        configuration.shadowOpacity = .infinity
+        configuration.snapDistance = 900
+        SidebarSettings.save(configuration, for: "A", name: "A", in: defaults)
+        var saved = defaults.dictionary(forKey: SidebarSettings.displayPreferencesKey) ?? [:]
+        saved["broken"] = Data("invalid".utf8)
+        defaults.set(saved, forKey: SidebarSettings.displayPreferencesKey)
+        let loaded = SidebarSettings.configuration(for: "A", in: defaults)
+        #expect(loaded.position == 0.5)
+        #expect(loaded.appSpacing == 0)
+        #expect(loaded.fontSize == SidebarSettings.maximumFontSize)
+        #expect(loaded.shadowOpacity == SidebarSettings.defaultShadowOpacity)
+        #expect(loaded.snapDistance == SidebarSettings.maximumSnapDistance)
+        SidebarSettings.rememberDisplay(id: "broken", name: "Recovered", in: defaults)
+        #expect(SidebarSettings.configuration(for: "A", in: defaults) == loaded)
+        #expect(SidebarSettings.displayPreferences(in: defaults)["broken"]?.name == "Recovered")
+    }
+
     @MainActor @Test func appVisibilityButtonHidesOrShowsTheSelectedWindowOfAMultiWindowApp() {
         let app = Application(NSRunningApplication.current)
         let first = Window(AXUIElementCreateApplication(getpid()), app, cachedTitle: "First")

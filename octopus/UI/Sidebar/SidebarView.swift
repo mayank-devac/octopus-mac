@@ -8,6 +8,7 @@ final class SidebarViewState: ObservableObject {
     @Published var dragSections: [SidebarDesktopSection]?
     @Published var dropDesktopID: UInt64?
     @Published var monitors: [SidebarMonitor] = []
+    @Published var configuration = SidebarConfiguration()
     var dragDesktops: [SidebarDesktop]?
 }
 
@@ -15,8 +16,8 @@ struct SidebarView: View {
     @ObservedObject var inventory: SidebarWindowInventory
     @ObservedObject var state: SidebarViewState
     @ObservedObject private var mouseShortcuts = MouseShortcutStore.shared
-    @AppStorage("sidebarAppSpacing") private var appSpacing = SidebarSettings.defaultAppSpacing
-    @AppStorage("sidebarFontSize") private var labelFontSize = SidebarSettings.defaultFontSize
+    private var appSpacing: Double { state.configuration.appSpacing }
+    private var labelFontSize: Double { state.configuration.fontSize }
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.colorScheme) private var colorScheme
     var onClick: (SidebarEntryID) -> Void
@@ -67,7 +68,7 @@ struct SidebarView: View {
                                         .foregroundStyle(colorScheme == .dark ? Color.white : Color.black)
                                         .multilineTextAlignment(.center).lineLimit(3)
                                         .padding(.horizontal, 6).padding(.vertical, 2)
-                                        .background { SidebarFrostBackground() }
+                                        .background { SidebarFrostBackground(shadowOpacity: state.configuration.shadowOpacity) }
                                         .frame(maxWidth: .infinity).frame(height: SidebarMonitor.headerHeight)
                                         .overlay {
                                             SidebarGeometryAnchor(id: monitor.id, onAnchor: onMonitorAnchor)
@@ -79,13 +80,14 @@ struct SidebarView: View {
                                             .font(.system(size: max(CGFloat(labelFontSize) - 1, 8), weight: .medium))
                                             .foregroundStyle(colorScheme == .dark ? Color.white : Color.black)
                                             .padding(.horizontal, 6).padding(.vertical, 2)
-                                            .background { SidebarFrostBackground() }
+                                            .background { SidebarFrostBackground(shadowOpacity: state.configuration.shadowOpacity) }
                                             .frame(maxWidth: .infinity).frame(height: SidebarMonitor.emptyHeight)
                                     }
                                 }
                                 ForEach(Array(group.sections.enumerated()), id: \.element.id) { index, section in
                                     if index > 0 {
-                                        SidebarDesktopSeparator(title: section.desktop?.title ?? "Other apps")
+                                        SidebarDesktopSeparator(title: section.desktop?.title ?? "Other apps",
+                                                                shadowOpacity: state.configuration.shadowOpacity)
                                             .padding(.vertical, CGFloat(appSpacing) / 2)
                                     }
                                     desktopSection(section, indices: indices)
@@ -154,7 +156,7 @@ struct SidebarView: View {
                 .padding(.horizontal, labelPadding)
                 .padding(.vertical, 2)
                 .background {
-                    SidebarFrostBackground()
+                    SidebarFrostBackground(shadowOpacity: state.configuration.shadowOpacity)
                 }
                 .scaleEffect(scale(for: index), anchor: .top)
                 .frame(width: labelWidth + labelPadding * 2)
@@ -224,6 +226,7 @@ struct SidebarView: View {
 private struct SidebarDesktopSeparator: View {
     @Environment(\.colorScheme) private var colorScheme
     let title: String
+    let shadowOpacity: Double
 
     var body: some View {
         let lineColor: Color = colorScheme == .dark ? .white : .black
@@ -235,7 +238,7 @@ private struct SidebarDesktopSeparator: View {
         .padding(.horizontal, 4)
         .frame(height: SidebarLayout.desktopSeparatorHeight)
         .background {
-            SidebarFrostBackground()
+            SidebarFrostBackground(shadowOpacity: shadowOpacity)
                 .opacity(0.55)
         }
         .padding(.horizontal, 8)
@@ -266,7 +269,7 @@ private struct SidebarGeometryAnchor<ID: Hashable>: NSViewRepresentable {
 
 private struct SidebarFrostBackground: View {
     @Environment(\.colorScheme) private var colorScheme
-    @AppStorage("sidebarShadowOpacity") private var shadowOpacity = SidebarSettings.defaultShadowOpacity
+    var shadowOpacity: Double
 
     var body: some View {
         let isDarkFrost = colorScheme == .dark

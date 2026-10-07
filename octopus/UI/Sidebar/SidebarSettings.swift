@@ -1,11 +1,11 @@
 import AppKit
 import ColorSync
 
-enum SidebarSide: String, CaseIterable {
+enum SidebarSide: String, CaseIterable, Codable {
     case left, right
 }
 
-enum SidebarDesktopScope: String, CaseIterable {
+enum SidebarDesktopScope: String, CaseIterable, Codable {
     case visibleDesktops, allDesktops
 
     static func saved(_ value: String?) -> Self {
@@ -16,6 +16,21 @@ enum SidebarDesktopScope: String, CaseIterable {
         switch self {
         case .visibleDesktops: return "Visible desktops"
         case .allDesktops: return "All desktops"
+        }
+    }
+}
+
+enum SidebarDisplayScope: String, CaseIterable, Codable {
+    case allDisplays, currentDisplay
+
+    static func saved(_ value: String?) -> Self {
+        value.flatMap(Self.init(rawValue:)) ?? .allDisplays
+    }
+
+    var title: String {
+        switch self {
+        case .allDisplays: return "All displays"
+        case .currentDisplay: return "Current display"
         }
     }
 }
@@ -36,7 +51,7 @@ enum SidebarActiveAppClickAction: String, CaseIterable {
     }
 }
 
-enum SidebarIdleBehavior: String, CaseIterable {
+enum SidebarIdleBehavior: String, CaseIterable, Codable {
     case fade, hide, stayVisible
 
     static func saved(_ value: String?) -> Self {
@@ -64,7 +79,106 @@ struct SidebarClickGate {
     }
 }
 
+// A complete snapshot keeps display settings independent of the single-sidebar mode.
+struct SidebarConfiguration: Codable, Equatable {
+    var enabled: Bool
+    var desktopScope: SidebarDesktopScope
+    var displayScope: SidebarDisplayScope
+    var side: SidebarSide
+    var position: Double
+    var idleBehavior: SidebarIdleBehavior
+    var showSingleWindowMenu: Bool
+    var appSpacing: Double
+    var fontSize: Double
+    var shadowOpacity: Double
+    var snapDistance: Double
+
+    init(defaults: UserDefaults? = .standard) {
+        enabled = defaults?.object(forKey: "sidebarEnabled") as? Bool ?? true
+        desktopScope = .saved(defaults?.string(forKey: "sidebarDesktopScope"))
+        displayScope = .saved(defaults?.string(forKey: "sidebarDisplayScope"))
+        side = SidebarSide(rawValue: defaults?.string(forKey: "sidebarSide") ?? "") ?? .right
+        position = defaults?.object(forKey: "sidebarPosition") as? Double ?? 0.5
+        idleBehavior = .saved(defaults?.string(forKey: SidebarSettings.idleBehaviorKey))
+        showSingleWindowMenu = defaults?.object(forKey: "sidebarShowSingleWindowMenu") as? Bool ?? true
+        appSpacing = defaults?.object(forKey: "sidebarAppSpacing") as? Double ?? SidebarSettings.defaultAppSpacing
+        fontSize = defaults?.object(forKey: "sidebarFontSize") as? Double ?? SidebarSettings.defaultFontSize
+        shadowOpacity = defaults?.object(forKey: "sidebarShadowOpacity") as? Double ?? SidebarSettings.defaultShadowOpacity
+        snapDistance = defaults.map { SidebarSettings.snapDistance(in: $0) } ?? SidebarSettings.defaultSnapDistance
+        normalize()
+    }
+
+    // Passing no preference store uses the same fallbacks as a fresh installation.
+    static var factoryDefaults: Self { Self(defaults: nil) }
+
+    private enum CodingKeys: String, CodingKey {
+        case enabled, desktopScope, displayScope, side, position, idleBehavior
+        case showSingleWindowMenu, appSpacing, fontSize, shadowOpacity, snapDistance
+    }
+
+    init(from decoder: Decoder) throws {
+        self.init(defaults: nil)
+        let saved = try decoder.container(keyedBy: CodingKeys.self)
+        enabled = try saved.decodeIfPresent(Bool.self, forKey: .enabled) ?? enabled
+        desktopScope = try saved.decodeIfPresent(SidebarDesktopScope.self, forKey: .desktopScope) ?? desktopScope
+        // Profiles saved before the display filter retain all their existing choices.
+        displayScope = try saved.decodeIfPresent(SidebarDisplayScope.self, forKey: .displayScope) ?? .allDisplays
+        side = try saved.decodeIfPresent(SidebarSide.self, forKey: .side) ?? side
+        position = try saved.decodeIfPresent(Double.self, forKey: .position) ?? position
+        idleBehavior = try saved.decodeIfPresent(SidebarIdleBehavior.self, forKey: .idleBehavior) ?? idleBehavior
+        showSingleWindowMenu = try saved.decodeIfPresent(Bool.self, forKey: .showSingleWindowMenu) ?? showSingleWindowMenu
+        appSpacing = try saved.decodeIfPresent(Double.self, forKey: .appSpacing) ?? appSpacing
+        fontSize = try saved.decodeIfPresent(Double.self, forKey: .fontSize) ?? fontSize
+        shadowOpacity = try saved.decodeIfPresent(Double.self, forKey: .shadowOpacity) ?? shadowOpacity
+        snapDistance = try saved.decodeIfPresent(Double.self, forKey: .snapDistance) ?? snapDistance
+        normalize()
+    }
+
+    mutating func normalize() {
+        func clamp(_ value: Double, _ range: ClosedRange<Double>, fallback: Double) -> Double {
+            value.isFinite ? min(max(value, range.lowerBound), range.upperBound) : fallback
+        }
+        position = clamp(position, 0...1, fallback: 0.5)
+        appSpacing = clamp(appSpacing, 0...SidebarSettings.maximumAppSpacing, fallback: SidebarSettings.defaultAppSpacing)
+        fontSize = clamp(fontSize, SidebarSettings.minimumFontSize...SidebarSettings.maximumFontSize,
+                         fallback: SidebarSettings.defaultFontSize)
+        shadowOpacity = clamp(shadowOpacity, 0...SidebarSettings.maximumShadowOpacity,
+                              fallback: SidebarSettings.defaultShadowOpacity)
+        snapDistance = SidebarSettings.normalizedSnapDistance(snapDistance)
+    }
+
+    func saveSingleSidebar(in defaults: UserDefaults = .standard) {
+        let values: [String: Any] = [
+            "sidebarEnabled": enabled, "sidebarDesktopScope": desktopScope.rawValue,
+            "sidebarDisplayScope": displayScope.rawValue,
+            "sidebarSide": side.rawValue, "sidebarPosition": position,
+            SidebarSettings.idleBehaviorKey: idleBehavior.rawValue,
+            "sidebarShowSingleWindowMenu": showSingleWindowMenu, "sidebarAppSpacing": appSpacing,
+            "sidebarFontSize": fontSize, "sidebarShadowOpacity": shadowOpacity,
+            "sidebarSnapDistance": snapDistance
+        ]
+        for (key, value) in values { defaults.set(value, forKey: key) }
+    }
+}
+
+struct SidebarDisplayPreference: Codable, Equatable {
+    var name: String
+    var configuration: SidebarConfiguration
+}
+
+enum SidebarDisplayTarget: Hashable {
+    case single
+    case display(String)
+
+    var displayID: String? {
+        if case .display(let id) = self { return id }
+        return nil
+    }
+}
+
 enum SidebarSettings {
+    static let multiDisplayKey = "sidebarMultiDisplayEnabled"
+    static let displayPreferencesKey = "sidebarDisplayPreferences"
     static let defaultAppSpacing: Double = 4
     static let maximumAppSpacing: Double = 16
     static let defaultFontSize: Double = 11
@@ -100,7 +214,9 @@ enum SidebarSettings {
         migrateLegacyAutoHide()
         UserDefaults.standard.register(defaults: [
             "sidebarEnabled": true,
+            multiDisplayKey: false,
             "sidebarDesktopScope": SidebarDesktopScope.allDesktops.rawValue,
+            "sidebarDisplayScope": SidebarDisplayScope.allDisplays.rawValue,
             "sidebarSide": SidebarSide.right.rawValue,
             "sidebarPosition": 0.5,
             "sidebarMonitor": "primary",
@@ -112,13 +228,62 @@ enum SidebarSettings {
         ])
     }
 
+    static func displayPreferences(in defaults: UserDefaults = .standard) -> [String: SidebarDisplayPreference] {
+        let saved = defaults.dictionary(forKey: displayPreferencesKey) ?? [:]
+        return saved.reduce(into: [:]) { result, pair in
+            guard let data = pair.value as? Data,
+                  var preference = try? JSONDecoder().decode(SidebarDisplayPreference.self, from: data) else { return }
+            preference.configuration.normalize()
+            result[pair.key] = preference
+        }
+    }
+
+    static func configuration(for displayID: String?, in defaults: UserDefaults = .standard) -> SidebarConfiguration {
+        if let displayID, let saved = displayPreferences(in: defaults)[displayID] { return saved.configuration }
+        return SidebarConfiguration(defaults: defaults)
+    }
+
+    static func rememberDisplay(id: String, name: String, in defaults: UserDefaults = .standard) {
+        let preference = displayPreferences(in: defaults)[id]
+        var configuration = preference?.configuration ?? SidebarConfiguration(defaults: defaults)
+        // The global switch controls all sidebars; it is not a new display's Off preference.
+        if preference == nil { configuration.enabled = true }
+        save(configuration, for: id, name: name, in: defaults)
+    }
+
+    static func targets(connectedDisplayIDs: [String], in defaults: UserDefaults = .standard) -> Set<SidebarDisplayTarget> {
+        guard defaults.object(forKey: "sidebarEnabled") as? Bool ?? true,
+              !connectedDisplayIDs.isEmpty else { return [] }
+        guard defaults.bool(forKey: multiDisplayKey) else { return [.single] }
+        let preferences = displayPreferences(in: defaults)
+        return Set(connectedDisplayIDs.compactMap { id in
+            preferences[id]?.configuration.enabled == false ? nil : .display(id)
+        })
+    }
+
+    static func save(_ configuration: SidebarConfiguration, for displayID: String, name: String,
+                     in defaults: UserDefaults = .standard) {
+        var normalized = configuration
+        normalized.normalize()
+        let preference = SidebarDisplayPreference(name: name, configuration: normalized)
+        guard displayPreferences(in: defaults)[displayID] != preference else { return }
+        guard let data = try? JSONEncoder().encode(preference) else { return }
+        var saved = defaults.dictionary(forKey: displayPreferencesKey) ?? [:]
+        guard saved[displayID] as? Data != data else { return }
+        saved[displayID] = data
+        defaults.set(saved, forKey: displayPreferencesKey)
+    }
+
     static func displayID(_ screen: NSScreen) -> CGDirectDisplayID? {
         (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value
     }
 
     static func monitorID(_ screen: NSScreen) -> String? {
-        guard let displayID = displayID(screen),
-              let uuid = CGDisplayCreateUUIDFromDisplayID(displayID)?.takeRetainedValue() else { return nil }
+        displayID(screen).flatMap { monitorID($0) }
+    }
+
+    static func monitorID(_ displayID: CGDirectDisplayID) -> String? {
+        guard let uuid = CGDisplayCreateUUIDFromDisplayID(displayID)?.takeRetainedValue() else { return nil }
         return CFUUIDCreateString(nil, uuid) as String
     }
 

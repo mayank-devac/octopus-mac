@@ -38,6 +38,8 @@ final class CyclePanelController: NSObject {
     var onSidebarDismiss: (() -> Void)?
     var onSidebarDrag: ((SidebarWindowID, String, NSView, NSEvent) -> Void)?
     var onSidebarPlacement: ((SidebarWindowID, SidebarSnapTarget) -> Void)?
+    // Prevent another display's hover/refresh from dismissing or replacing this menu's actions.
+    var sidebarOwnerID: UUID?
     var sidebarApplicationID: pid_t? {
         presentation == .sidebar && panel.isVisible ? currentApplication?.pid : nil
     }

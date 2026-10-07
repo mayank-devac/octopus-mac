@@ -125,6 +125,13 @@ struct PreferencesShortcutsView: View {
             }
 
             Section {
+                Toggle("Use numpad digits for shortcuts", isOn: $modifierManager.numpadShortcutsEnabled)
+                    .toggleStyle(.checkbox)
+            } footer: {
+                Text("Also use numpad 0–9 for app and profile shortcuts. These combinations may conflict with other apps.")
+            }
+
+            Section {
                 Button("Reset all mouse shortcuts") {
                     recordingMouseAction = nil
                     mouseShortcutError = nil
@@ -169,12 +176,6 @@ struct PreferencesShortcutsView: View {
                 Text("On sidebar app icons only. Inactive apps focus first. Click Record, then click that button with your chosen mouse button; modifier keys are optional. Escape cancels. Hide and minimise must use different shortcuts.")
             }
 
-            Section {
-                Toggle("Use numpad digits for shortcuts", isOn: $modifierManager.numpadShortcutsEnabled)
-                    .toggleStyle(.checkbox)
-            } footer: {
-                Text("Also use numpad 0–9 for app and profile shortcuts. These combinations may conflict with other apps.")
-            }
         }
         .formStyle(.grouped)
         .onDisappear { recordingMouseAction = nil }
