@@ -9,7 +9,6 @@ struct PreferencesSidebarView: View {
     @AppStorage("sidebarMonitor") private var monitor = "primary"
     @AppStorage("sidebarAutoHide") private var autoHide = false
     @AppStorage("sidebarShowSingleWindowMenu") private var showSingleWindowMenu = false
-    @AppStorage("sidebarActiveAppClickAction") private var activeAppClickAction = SidebarActiveAppClickAction.minimize.rawValue
     @AppStorage("sidebarAppSpacing") private var appSpacing = SidebarSettings.defaultAppSpacing
     @AppStorage("sidebarSnapDistance") private var snapDistance = SidebarSettings.defaultSnapDistance
     @State private var screens = NSScreen.screens
@@ -47,11 +46,6 @@ struct PreferencesSidebarView: View {
                 }
                 Toggle("Automatically hide sidebar", isOn: $autoHide)
                 Toggle("Show window menu for apps with one window", isOn: $showSingleWindowMenu)
-                Picker("Clicking the active app", selection: $activeAppClickAction) {
-                    ForEach(SidebarActiveAppClickAction.allCases, id: \.rawValue) { action in
-                        Text(action.title).tag(action.rawValue)
-                    }
-                }
                 HStack {
                     Text("Gap between apps")
                     Slider(value: $appSpacing, in: 0...SidebarSettings.maximumAppSpacing, step: 1)
@@ -84,7 +78,6 @@ struct PreferencesSidebarView: View {
         .frame(height: 492)
         .onAppear {
             desktopScope = SidebarDesktopScope.saved(desktopScope).rawValue
-            activeAppClickAction = SidebarActiveAppClickAction.saved(activeAppClickAction).rawValue
             snapDistance = SidebarSettings.normalizedSnapDistance(snapDistance)
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didChangeScreenParametersNotification)) { _ in

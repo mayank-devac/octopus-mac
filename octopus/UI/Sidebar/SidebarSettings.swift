@@ -73,7 +73,6 @@ enum SidebarSettings {
             "sidebarMonitor": "primary",
             "sidebarAutoHide": false,
             "sidebarShowSingleWindowMenu": false,
-            "sidebarActiveAppClickAction": SidebarActiveAppClickAction.minimize.rawValue,
             "sidebarAppSpacing": defaultAppSpacing,
             "sidebarSnapDistance": defaultSnapDistance
         ])

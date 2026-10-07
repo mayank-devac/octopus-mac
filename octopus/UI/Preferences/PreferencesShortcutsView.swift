@@ -15,6 +15,9 @@ struct PreferencesShortcutsView: View {
         return ModifierManager()
     }()
     @State private var showingResetConfirmation = false
+    @StateObject private var mouseShortcuts = MouseShortcutStore.shared
+    @State private var recordingMouseAction: MouseShortcutAction?
+    @State private var mouseShortcutError: String?
 
     private var disabledCapabilityNote: String? {
         var disabledCapabilities: [String] = []
@@ -55,7 +58,7 @@ struct PreferencesShortcutsView: View {
                         .font(.body)
                         .foregroundColor(.secondary)
 
-                    Button("Reset shortcut modifiers") {
+                    Button("Reset keyboard modifiers") {
                         showingResetConfirmation = true
                     }
                     .buttonStyle(.bordered)
@@ -122,6 +125,46 @@ struct PreferencesShortcutsView: View {
             }
 
             Section {
+                ForEach(MouseShortcutAction.allCases, id: \.rawValue) { action in
+                    HStack {
+                        Text(action.title).frame(width: 155, alignment: .leading)
+                        let shortcut = mouseShortcuts.bindings[action]
+                        Text(shortcut.map { $0.title + (action == .place ? " + drag" : "") } ?? "Not assigned")
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        MouseShortcutRecorder(isRecording: recordingMouseAction == action,
+                            onBegin: { mouseShortcutError = nil; recordingMouseAction = action },
+                            onRecord: { shortcut in
+                                mouseShortcutError = mouseShortcuts.assign(shortcut, to: action)
+                                recordingMouseAction = nil
+                            }, onCancel: { recordingMouseAction = nil })
+                            .frame(width: 135, height: 26)
+                        Button("Reset") {
+                            if recordingMouseAction == action { recordingMouseAction = nil }
+                            mouseShortcutError = mouseShortcuts.reset(action)
+                        }
+                        .help("Restore \(action.defaultShortcut.title)\(action == .place ? " + drag" : "")")
+                        .accessibilityLabel("Reset \(action.title.lowercased()) mouse shortcut")
+                        Button {
+                            if recordingMouseAction == action { recordingMouseAction = nil }
+                            mouseShortcutError = mouseShortcuts.assign(nil, to: action)
+                        } label: { Image(systemName: "xmark.circle.fill") }
+                            .buttonStyle(.borderless)
+                            .disabled(shortcut == nil)
+                            .help("Remove this mouse shortcut")
+                            .accessibilityLabel("Remove \(action.title.lowercased()) mouse shortcut")
+                    }
+                }
+                if let mouseShortcutError {
+                    Text(mouseShortcutError).font(.caption).foregroundStyle(.red)
+                }
+            } header: {
+                Text("Mouse shortcuts")
+            } footer: {
+                Text("On sidebar app icons only. Inactive apps focus first. Click Record, then click that button with your chosen mouse button; modifier keys are optional. Escape cancels. Hide and minimise must use different shortcuts.")
+            }
+
+            Section {
                 Toggle("Use numpad digits for shortcuts", isOn: $modifierManager.numpadShortcutsEnabled)
                     .toggleStyle(.checkbox)
             } footer: {
@@ -129,8 +172,9 @@ struct PreferencesShortcutsView: View {
             }
         }
         .formStyle(.grouped)
+        .onDisappear { recordingMouseAction = nil }
         .frame(height: !modifierManager.activateEnabled || !modifierManager.bindEnabled || !modifierManager.profileEnabled ? 495 : 460)
-        .alert("Reset shortcut modifiers?", isPresented: $showingResetConfirmation) {
+        .alert("Reset keyboard modifiers?", isPresented: $showingResetConfirmation) {
             Button("Cancel", role: .cancel) {}
             Button("Reset", role: .destructive) {
                 modifierManager.resetToDefaults()

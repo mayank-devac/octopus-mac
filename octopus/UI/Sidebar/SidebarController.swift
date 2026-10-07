@@ -33,7 +33,6 @@ final class SidebarController {
         let monitor = UserDefaults.standard.string(forKey: "sidebarMonitor") ?? "primary"
         let autoHide = UserDefaults.standard.bool(forKey: "sidebarAutoHide")
         let showSingleWindowMenu = UserDefaults.standard.bool(forKey: "sidebarShowSingleWindowMenu")
-        let activeAppClickAction = SidebarActiveAppClickAction.saved(UserDefaults.standard.string(forKey: "sidebarActiveAppClickAction"))
         let appSpacing = UserDefaults.standard.double(forKey: "sidebarAppSpacing")
 
         func matchesExceptAppSpacing(_ other: Settings) -> Bool {
@@ -41,7 +40,6 @@ final class SidebarController {
                 && side == other.side && position == other.position
                 && monitor == other.monitor && autoHide == other.autoHide
                 && showSingleWindowMenu == other.showSingleWindowMenu
-                && activeAppClickAction == other.activeAppClickAction
         }
     }
 
@@ -63,7 +61,8 @@ final class SidebarController {
             onDrag: { [weak self] entryID, id, title, source, event in
                 self?.beginDrag(entryID, target: id, title: title, source: source, event: event)
             },
-            onPlacement: { [weak self] id, target in self?.dragController.place(id, at: target) }
+            onPlacement: { [weak self] id, target in self?.dragController.place(id, at: target) },
+            onMouseAction: { [weak self] entryID, action in self?.performMouseAction(action, entryID: entryID) }
         ))
         hostingView.sizingOptions = []
         panel.contentView = hostingView
@@ -295,9 +294,19 @@ final class SidebarController {
         guard let entry = inventory.entries.first(where: { $0.id == entryID }) else { return }
         let frontmostPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
         let action = SidebarIconClickPolicy.action(for: entry, frontmostPID: frontmostPID,
-                                                  setting: settings?.activeAppClickAction ?? .minimize)
+                                                  setting: .none)
         cycleController.dismissSidebar()
         if let action { inventory.perform(action, frontmostPID: frontmostPID) }
+        else { inventory.refresh() }
+    }
+
+    private func performMouseAction(_ action: MouseShortcutAction, entryID: SidebarEntryID) {
+        guard let entry = inventory.entries.first(where: { $0.id == entryID }) else { return }
+        let frontmostPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
+        let windowAction = SidebarIconMousePolicy.action(action, for: entry, frontmostPID: frontmostPID)
+        cancelPendingHover()
+        cycleController.dismissSidebar()
+        if let windowAction { inventory.perform(windowAction, frontmostPID: frontmostPID) }
         else { inventory.refresh() }
     }
 

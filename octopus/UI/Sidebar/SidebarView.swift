@@ -10,6 +10,7 @@ final class SidebarViewState: ObservableObject {
 struct SidebarView: View {
     @ObservedObject var inventory: SidebarWindowInventory
     @ObservedObject var state: SidebarViewState
+    @ObservedObject private var mouseShortcuts = MouseShortcutStore.shared
     @AppStorage("sidebarAppSpacing") private var appSpacing = SidebarSettings.defaultAppSpacing
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.colorScheme) private var colorScheme
@@ -17,6 +18,7 @@ struct SidebarView: View {
     var onAnchor: (SidebarEntryID, NSView?) -> Void
     var onDrag: (SidebarEntryID, SidebarWindowID?, String, NSView, NSEvent) -> Void = { _, _, _, _, _ in }
     var onPlacement: (SidebarWindowID, SidebarSnapTarget) -> Void = { _, _ in }
+    var onMouseAction: (SidebarEntryID, MouseShortcutAction) -> Void = { _, _ in }
 
     var body: some View {
         Group {
@@ -60,6 +62,7 @@ struct SidebarView: View {
     private func item(_ entry: SidebarEntry, index: Int) -> some View {
         let title = entry.preferredWindow?.title ?? entry.application.title
         let dragTarget = SidebarIconDragPolicy.target(for: entry)
+        let mouseBindings = mouseShortcuts.bindings
         let maximumLabelScale: CGFloat = reduceMotion ? 1 : 1 + SidebarLayout.magnificationGrowth
         // Reserve width for the largest zoom so labels keep the same wrapping during hover.
         let labelPadding: CGFloat = 4
@@ -100,16 +103,24 @@ struct SidebarView: View {
             SidebarPointerRegion(
                 onClick: { onClick(entry.id) },
                 onAnchor: { onAnchor(entry.id, $0) },
-                onDrag: { onDrag(entry.id, dragTarget, title, $0, $1) }
+                onDrag: { onDrag(entry.id, dragTarget, title, $0, $1) },
+                dragShortcut: mouseBindings.place,
+                onMouseClick: { shortcut in
+                    if let action = mouseBindings.clickAction(for: shortcut) { onMouseAction(entry.id, action) }
+                    else if shortcut == .left { onClick(entry.id) }
+                }
             )
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("\(entry.application.title): \(title), \(entry.desktop?.title ?? "Other apps")")
-        .accessibilityHint(entry.preferredID == nil ? "Activate app" : entry.visibleIDs.isEmpty ? "Restore window"
-                           : "Focus window, or apply the active-app click setting")
+        .accessibilityHint(entry.preferredID == nil ? "Activate app" : entry.visibleIDs.isEmpty ? "Restore window" : "Focus window")
         .accessibilityAddTraits(.isButton)
         .accessibilityAction { onClick(entry.id) }
         .accessibilityActions {
+            Button("Hide app") { onMouseAction(entry.id, .hide) }
+            if dragTarget != nil {
+                Button("Minimise or restore window") { onMouseAction(entry.id, .minimize) }
+            }
             if let id = dragTarget {
                 ForEach(SidebarSnapTarget.allCases, id: \.self) { target in
                     Button(target.title) { onPlacement(id, target) }
@@ -226,6 +237,8 @@ struct SidebarPointerRegion: NSViewRepresentable {
     var onClick: () -> Void
     var onAnchor: (NSView?) -> Void
     var onDrag: ((NSView, NSEvent) -> Void)? = nil
+    var dragShortcut: MouseShortcut? = .left
+    var onMouseClick: ((MouseShortcut) -> Void)? = nil
 
     func makeNSView(context: Context) -> PointerView {
         let view = PointerView()
@@ -238,6 +251,8 @@ struct SidebarPointerRegion: NSViewRepresentable {
         view.onClick = onClick
         view.onAnchor = onAnchor
         view.onDrag = onDrag
+        view.dragShortcut = dragShortcut
+        view.onMouseClick = onMouseClick
     }
 
     static func dismantleNSView(_ view: PointerView, coordinator: ()) {
@@ -248,21 +263,45 @@ struct SidebarPointerRegion: NSViewRepresentable {
         var onClick: (() -> Void)?
         var onAnchor: ((NSView?) -> Void)?
         var onDrag: ((NSView, NSEvent) -> Void)?
+        var dragShortcut: MouseShortcut? = .left
+        var onMouseClick: ((MouseShortcut) -> Void)?
         private var clickGate = SidebarClickGate()
-        private var press: (point: CGPoint, click: (() -> Void)?, drag: ((NSView, NSEvent) -> Void)?)?
+        private var press: (point: CGPoint, button: Int, event: NSEvent, click: (() -> Void)?, drag: ((NSView, NSEvent) -> Void)?)?
         override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
         override func mouseDown(with event: NSEvent) {
+            startPress(event)
+        }
+        override func rightMouseDown(with event: NSEvent) { startPress(event) }
+        override func otherMouseDown(with event: NSEvent) { startPress(event) }
+        private func startPress(_ event: NSEvent) {
             // Suppress only very fast repeats, even if macOS groups later clicks together.
             press = nil
             guard clickGate.accepts(timestamp: event.timestamp, clickCount: event.clickCount) else { return }
-            press = (event.locationInWindow, onClick, onDrag)
+            let shortcut = MouseShortcut(button: event.buttonNumber, modifiers: event.modifierFlags)
+            let click: (() -> Void)?
+            if let onMouseClick { click = { onMouseClick(shortcut) } }
+            else { click = shortcut == .left ? onClick : nil }
+            press = (event.locationInWindow, event.buttonNumber, event, click,
+                     shortcut == dragShortcut ? onDrag : nil)
         }
         override func mouseDragged(with event: NSEvent) {
-            guard let press, Self.hasStartedDrag(from: press.point, to: event.locationInWindow) else { return }
+            continuePress(event)
+        }
+        override func rightMouseDragged(with event: NSEvent) { continuePress(event) }
+        override func otherMouseDragged(with event: NSEvent) { continuePress(event) }
+        private func continuePress(_ event: NSEvent) {
+            guard let press, event.buttonNumber == press.button,
+                  Self.hasStartedDrag(from: press.point, to: event.locationInWindow) else { return }
             self.press = nil
-            press.drag?(self, event)
+            press.drag?(self, press.event)
         }
         override func mouseUp(with event: NSEvent) {
+            endPress(event)
+        }
+        override func rightMouseUp(with event: NSEvent) { endPress(event) }
+        override func otherMouseUp(with event: NSEvent) { endPress(event) }
+        private func endPress(_ event: NSEvent) {
+            guard event.buttonNumber == press?.button else { return }
             let click = press?.click
             press = nil
             if bounds.contains(convert(event.locationInWindow, from: nil)) { click?() }

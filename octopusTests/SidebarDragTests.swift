@@ -44,13 +44,13 @@ struct SidebarDragTests {
             (CGPoint(x: screen.minX + 100, y: screen.minY + 100), .bottomLeft),
             (CGPoint(x: screen.maxX - 100, y: screen.minY + 100), .bottomRight)]
         for (point, target) in points {
-            #expect(SidebarPlacementGeometry.snap(at: point, screen: screen) == target)
+            #expect(SidebarPlacementGeometry.snap(at: point, screen: screen, distance: 120) == target)
         }
         for point in [CGPoint(x: screen.minX + 121, y: screen.midY),
                       CGPoint(x: screen.maxX - 121, y: screen.midY),
                       CGPoint(x: screen.midX, y: screen.maxY - 121),
                       CGPoint(x: screen.midX, y: screen.minY + 121)] {
-            #expect(SidebarPlacementGeometry.snap(at: point, screen: screen) == nil)
+            #expect(SidebarPlacementGeometry.snap(at: point, screen: screen, distance: 120) == nil)
         }
     }
 
@@ -70,22 +70,22 @@ struct SidebarDragTests {
     }
 
     @Test func snapDistanceRejectsInvalidValuesAndStaysWithinTheSliderRange() {
-        #expect(SidebarSettings.normalizedSnapDistance(0) == 24)
-        #expect(SidebarSettings.normalizedSnapDistance(500) == 300)
+        #expect(SidebarSettings.normalizedSnapDistance(0) == SidebarSettings.minimumSnapDistance)
+        #expect(SidebarSettings.normalizedSnapDistance(SidebarSettings.maximumSnapDistance + 50) == SidebarSettings.maximumSnapDistance)
         #expect(SidebarSettings.normalizedSnapDistance(180) == 180)
-        #expect(SidebarSettings.normalizedSnapDistance(.nan) == 120)
-        #expect(SidebarSettings.normalizedSnapDistance(.infinity) == 120)
+        #expect(SidebarSettings.normalizedSnapDistance(.nan) == SidebarSettings.defaultSnapDistance)
+        #expect(SidebarSettings.normalizedSnapDistance(.infinity) == SidebarSettings.defaultSnapDistance)
     }
 
     @Test func snapDistanceUsesTheDefaultAndPersistsTheUsersChoice() throws {
         let name = "SidebarDragTests.snapDistance.\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: name))
         defer { defaults.removePersistentDomain(forName: name) }
-        #expect(SidebarSettings.snapDistance(in: defaults) == 120)
+        #expect(SidebarSettings.snapDistance(in: defaults) == SidebarSettings.defaultSnapDistance)
         defaults.set(192.0, forKey: "sidebarSnapDistance")
         #expect(SidebarSettings.snapDistance(in: try #require(UserDefaults(suiteName: name))) == 192)
         defaults.set(900.0, forKey: "sidebarSnapDistance")
-        #expect(SidebarSettings.snapDistance(in: defaults) == 300)
+        #expect(SidebarSettings.snapDistance(in: defaults) == SidebarSettings.maximumSnapDistance)
     }
 
     @Test func coordinatesUseThePrimaryDisplayForEveryMonitor() {
