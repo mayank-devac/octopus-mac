@@ -15,6 +15,8 @@ struct CyclePanelView: View {
     var onWindowAction: (CyclePanelItem.ID) -> Void = { _ in }
     var onHideApp: () -> Void = {}
     var onHideAnchor: (NSView?) -> Void = { _ in }
+    var onQuitApp: () -> Void = {}
+    var onQuitAnchor: (NSView?) -> Void = { _ in }
     var onDrag: (SidebarWindowID, String, NSView, NSEvent) -> Void = { _, _, _, _ in }
     var onPlacement: (CyclePanelItem.ID, SidebarSnapTarget) -> Void = { _, _ in }
 
@@ -66,18 +68,34 @@ struct CyclePanelView: View {
             }
             if state.showsSidebarActions {
                 Divider()
-                Button(action: onHideApp) {
-                    Text("Hide app")
-                        .frame(maxWidth: .infinity)
-                        .frame(height: SidebarLayout.menuActionHeight)
-                        .contentShape(Rectangle())
-                }
+                HStack(spacing: 0) {
+                    Button(action: onHideApp) {
+                        Text("Hide app")
+                            .frame(maxWidth: .infinity)
+                            .frame(height: SidebarLayout.menuActionHeight)
+                            .contentShape(Rectangle())
+                    }
                     .buttonStyle(SidebarActionButtonStyle(isHovered: state.sidebarPointerTarget == .hideApp))
                     .focusEffectDisabled()
                     .disabled(state.sidebarAppIsHidden)
                     .help("Hide all windows of \(state.applicationTitle)")
                     .accessibilityLabel("Hide \(state.applicationTitle)")
                     .background(CyclePanelRowAnchor(onAnchor: onHideAnchor))
+
+                    Divider().frame(height: SidebarLayout.menuActionHeight - 12)
+
+                    Button(action: onQuitApp) {
+                        Text("Quit")
+                            .frame(maxWidth: .infinity)
+                            .frame(height: SidebarLayout.menuActionHeight)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(SidebarActionButtonStyle(isHovered: state.sidebarPointerTarget == .quitApp))
+                    .focusEffectDisabled()
+                    .help("Quit \(state.applicationTitle)")
+                    .accessibilityLabel("Quit \(state.applicationTitle)")
+                    .background(CyclePanelRowAnchor(onAnchor: onQuitAnchor))
+                }
             }
         }
         .frame(maxWidth: .infinity)
@@ -164,7 +182,7 @@ private struct SidebarActionButtonStyle: ButtonStyle {
 // Provides the visible row's native coordinates, including scrolling and clipping.
 // These views provide geometry only. A single panel-level pointer path selects rows
 // and highlights buttons, so overlapping controls cannot swallow or replay hover events.
-private struct CyclePanelRowAnchor: NSViewRepresentable {
+struct CyclePanelRowAnchor: NSViewRepresentable {
     var onAnchor: (NSView?) -> Void
 
     func makeNSView(context: Context) -> AnchorView {

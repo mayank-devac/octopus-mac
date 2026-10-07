@@ -17,6 +17,10 @@ final class SidebarController {
     private var revealWork: DispatchWorkItem?
     private var hideWork: DispatchWorkItem?
     private var anchors: [SidebarEntryID: NSView] = [:]
+    private var desktopAnchors: [UInt64: NSView] = [:]
+    private var monitorAnchors: [String: NSView] = [:]
+    private let desktopMenu = SidebarDesktopMenu()
+    private var lastDragScroll: TimeInterval = 0
     private var hoveredEntryID: SidebarEntryID?
     private var settings: Settings?
     private var screen: NSScreen?
@@ -65,7 +69,10 @@ final class SidebarController {
             onPlacement: { [weak self] id, target in self?.dragController.place(id, at: target) },
             onMouseAction: { [weak self] entryID, action, target in
                 self?.performMouseAction(action, entryID: entryID, target: target)
-            }
+            },
+            onDesktopAnchor: { [weak self] id, view in self?.desktopAnchors[id] = view },
+            onDesktopTransfer: { [weak self] id, desktop in self?.inventory.moveToDesktop(id, to: desktop) },
+            onMonitorAnchor: { [weak self] id, view in self?.monitorAnchors[id] = view }
         ))
         hostingView.sizingOptions = []
         panel.contentView = hostingView
@@ -87,18 +94,38 @@ final class SidebarController {
             guard let self else { return [] }
             var frames = self.panel.isVisible ? [self.panel.frame] : []
             if self.cycleController.sidebarEntryID != nil { frames.append(self.cycleController.panel.frame) }
+            frames.append(contentsOf: self.desktopMenu.interactionFrames)
             return frames
+        }
+        dragController.desktopDropTarget = { [weak self] point, source in self?.desktopDropTarget(at: point, source: source) }
+        dragController.sidebarDragContains = { [weak self] point in
+            guard let self else { return false }
+            return self.sidebarFrame.contains(point) || self.desktopMenu.contains(point)
+        }
+        dragController.onSidebarDragUpdate = { [weak self] point in self?.scrollSidebarDuringDrag(at: point) }
+        dragController.onDesktopHover = { [weak self] desktopID in
+            guard let self, self.viewState.dropDesktopID != desktopID else { return }
+            self.viewState.dropDesktopID = desktopID
         }
         dragController.onInteractionChange = { [weak self] dragging in
             guard let self else { return }
             if dragging {
+                self.viewState.dragDesktops = self.inventory.desktops
+                self.viewState.dragSections = SidebarDesktopSection.make(entries: self.inventory.entries,
+                    desktops: self.inventory.desktops, scope: self.inventory.desktopScope)
+                self.viewState.highlightedEntryID = nil
                 self.cancelPendingHover()
                 for work in [self.dismissWork, self.hideWork, self.revealWork] { work?.cancel() }
                 self.dismissWork = nil
                 self.hideWork = nil
                 self.revealWork = nil
             } else {
+                self.desktopMenu.hide()
+                self.viewState.dragDesktops = nil
+                self.viewState.dragSections = nil
+                self.viewState.dropDesktopID = nil
                 self.cycleController.dismissSidebar()
+                self.layout()
                 self.updatePointer()
             }
         }
@@ -124,6 +151,7 @@ final class SidebarController {
         cycleController.onSidebarPlacement = nil
         dragController.stop()
         inventory.onPlacementResult = nil
+        inventory.onDesktopTransferResult = nil
     }
 
     private func applySettings() {
@@ -135,7 +163,7 @@ final class SidebarController {
         let wasEnabled = settings?.enabled ?? false
         settings = next
         inventory.setDesktopScope(next.desktopScope)
-        if !spacingOnlyChange { cancelInteraction() }
+        if !spacingOnlyChange || dragController.isActive { cancelInteraction() }
         guard next.enabled else { stopSidebar(); return }
         if !wasEnabled {
             inventory.start()
@@ -179,11 +207,21 @@ final class SidebarController {
     private func layout() {
         guard let settings, settings.enabled, let target = SidebarSettings.selectedScreen() else { return }
         screen = target
+        let monitors = NSScreen.screens.enumerated().compactMap { index, screen -> SidebarMonitor? in
+            guard let id = SidebarSettings.monitorID(screen) else { return nil }
+            return SidebarMonitor(id: id, name: screen.localizedName, isPrimary: index == 0)
+        }
+        if viewState.monitors != monitors { viewState.monitors = monitors }
         let usable = isFullScreen ? target.frame : target.visibleFrame
+        let sections = viewState.dragSections ?? SidebarDesktopSection.make(entries: inventory.entries,
+            desktops: inventory.desktops, scope: inventory.desktopScope)
+        let groups = SidebarMonitorGroup.make(sections: sections, desktops: inventory.desktops,
+            monitors: monitors, scope: inventory.desktopScope)
         let frame = SidebarLayout.sidebarFrame(in: usable, count: inventory.entries.count,
                                               side: settings.side, position: settings.position,
                                               appSpacing: SidebarLayout.appSpacing,
-                                              separatorCount: inventory.separatorIndices.count)
+                                              contentHeight: inventory.desktopScope == .allDesktops
+                                                ? SidebarMonitorGroup.contentHeight(groups, spacing: SidebarLayout.appSpacing) : nil)
         sidebarFrame = frame
         if viewState.side != settings.side { viewState.side = settings.side }
         // Grow only toward the desktop so icons and click targets stay at the edge.
@@ -201,6 +239,12 @@ final class SidebarController {
 
     private func inventoryChanged() {
         guard settings?.enabled == true else { return }
+        if let desktops = viewState.dragDesktops, desktops.contains(where: { desktop in
+            return !inventory.desktops.contains(where: {
+                $0.id == desktop.id && $0.displayIdentifier == desktop.displayIdentifier
+                    && ($0.number != nil) == (desktop.number != nil)
+            })
+        }) { dragController.cancel() }
         dragController.validateInventory()
         guard !dragController.isActive else { return }
         layout()
@@ -217,6 +261,58 @@ final class SidebarController {
             }
         }
         updatePointer()
+    }
+
+    private func desktopDropTarget(at point: CGPoint, source: SidebarDesktop?) -> SidebarDesktopDropTarget? {
+        guard inventory.desktopScope == .allDesktops, panel.isVisible, let source else {
+            desktopMenu.hide(); return nil
+        }
+        let sections = viewState.dragSections ?? []
+        let groups = SidebarMonitorGroup.make(sections: sections, desktops: viewState.dragDesktops ?? [],
+            monitors: viewState.monitors, scope: inventory.desktopScope)
+        let hoveredMonitor = groups.first { group in
+            guard let id = group.monitor?.id, let view = monitorAnchors[id],
+                  let frame = SidebarDesktopDropTarget.visibleFrame(of: view, within: sidebarFrame) else { return false }
+            return frame.contains(point)
+        }
+        if let group = hoveredMonitor, group.monitor?.id == source.displayIdentifier,
+           group.desktops.contains(where: { SidebarDesktopTransferPolicy.allows(source: source, destination: $0) }),
+           let id = group.monitor?.id, let view = monitorAnchors[id],
+           let anchor = SidebarDesktopDropTarget.visibleFrame(of: view, within: sidebarFrame), let screen {
+            cycleController.dismissSidebar()
+            desktopMenu.show(desktops: group.desktops, sourceID: source.id, anchor: anchor,
+                side: viewState.side, screen: screen.visibleFrame)
+        } else if hoveredMonitor != nil || !desktopMenu.contains(point) {
+            desktopMenu.hide()
+        }
+        if desktopMenu.frame?.contains(point) == true { return desktopMenu.target(at: point) }
+        _ = desktopMenu.target(at: point)
+        let targets = sections.compactMap { section -> SidebarDesktopDropTarget? in
+            guard let desktop = section.desktop, let view = desktopAnchors[desktop.id],
+                  let frame = SidebarDesktopDropTarget.visibleFrame(of: view, within: sidebarFrame) else { return nil }
+            return SidebarDesktopDropTarget(desktop: desktop, frame: frame)
+        }
+        let excluded = cycleController.sidebarEntryID == nil ? [] : [cycleController.panel.frame]
+        return SidebarDesktopDropTarget.resolve(at: point, targets: targets, sidebar: sidebarFrame, excluded: excluded)
+    }
+
+    private func scrollSidebarDuringDrag(at point: CGPoint) {
+        desktopMenu.scroll(at: point)
+        guard sidebarFrame.contains(point), inventory.desktopScope == .allDesktops,
+              ProcessInfo.processInfo.systemUptime - lastDragScroll >= 0.06,
+              let scroll = (Array(desktopAnchors.values) + Array(monitorAnchors.values))
+                .compactMap({ $0.enclosingScrollView }).first,
+              let document = scroll.documentView else { return }
+        let direction: CGFloat
+        if point.y > sidebarFrame.maxY - 22 { direction = document.isFlipped ? -1 : 1 }
+        else if point.y < sidebarFrame.minY + 22 { direction = document.isFlipped ? 1 : -1 }
+        else { return }
+        lastDragScroll = ProcessInfo.processInfo.systemUptime
+        let clip = scroll.contentView
+        var bounds = clip.bounds
+        bounds.origin.y += direction * 10
+        clip.scroll(to: clip.constrainBoundsRect(bounds).origin)
+        scroll.reflectScrolledClipView(clip)
     }
 
     private func iconFrame(_ entryID: SidebarEntryID) -> CGRect? {
@@ -456,14 +552,8 @@ final class SidebarController {
     }
 
     private func beginDrag(_ entryID: SidebarEntryID, target: SidebarWindowID?, title: String, source: NSView, event: NSEvent) {
-        guard let target else {
-            dragController.showFeedback("No current window is available to move. Choose a window from the app's list.")
-            if let entry = inventory.entries.first(where: { $0.id == entryID }), let icon = iconFrame(entryID) {
-                showMenu(entry, icon: icon)
-            }
-            return
-        }
-        dragController.begin(id: target, title: title, source: source, event: event)
+        guard let target else { return }
+        dragController.begin(id: target, title: title, source: source, event: event, allowDesktopTransfer: true)
     }
 }
 

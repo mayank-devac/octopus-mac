@@ -1,6 +1,6 @@
 # Sidebar window dragging
 
-Implemented on 2026-10-07. The latest app build succeeded and all 63 sidebar, drag and mouse-shortcut tests passed. Mayank requested code and automated verification only for the foreground-focus fix; live cross-app behaviour remains unverified.
+Implemented on 2026-10-07. The existing placement baseline passed 63 sidebar, drag and mouse-shortcut tests. Desktop-transfer verification is recorded below; live cross-app behaviour remains unverified.
 
 ## What changed
 
@@ -10,7 +10,23 @@ Implemented on 2026-10-07. The latest app build succeeded and all 63 sidebar, dr
 - Left/right sides select halves, the bottom side selects bottom-half, the top side maximises within the desktop, and corners select quarters. **Preferences → Sidebar → Snap distance** currently allows 20–460 points in 20-point steps, defaulting to 200; these existing values were preserved during the mouse-shortcut change. The chosen distance is saved and captured at the start of each drag so preview and drop agree. Zones remain capped at one-quarter of the display dimension on small displays; corners take precedence. Returning towards the centre clears snapping and resumes free movement.
 - Free movement preserves size, uses the pointer as the window's top-centre, and keeps its title bar reachable. Placement respects the Dock and menu bar, negative monitor origins and AppKit/Accessibility coordinate differences.
 - VoiceOver exposes named placement actions on eligible icons and popup titles; those actions use the same validated placement path.
-- Escape, dropping over the sidebar/popup, desktop/display changes, permission loss or a disappearing target cancel without selecting a replacement window. Temporary preview and drop windows close when the interaction finishes.
+- Escape, invalid sidebar/popup drops, desktop/display changes, permission loss or a disappearing target cancel without selecting a replacement window. Valid app-icon drops into another desktop section use the separate transfer action below. Temporary preview and drop windows close when the interaction finishes.
+
+## Transfers between desktop sections
+
+- App icons use the existing configured placement drag (right drag by default). Dropping within an ordinary desktop section transfers only the window named under the pressed icon. Popup title drags retain their existing positioning behaviour. Outside-sidebar icon drops still use placement and snapping.
+- All desktops groups occupied desktop sections under Primary/Secondary headings with the actual monitor name. The original gradient separators divide desktops without visible desktop-number labels. Empty desktops have no sidebar rows; dragging a valid app icon onto its monitor heading opens all ordinary desktops in the existing window-list panel/row style, including empty destinations. Active and inactive desktops on the source window's monitor are eligible; Visible desktops retains its existing scope. Full-screen destinations, other monitors, hidden/minimised sources, modal windows, attached sheets, nonstandard/floating windows and multiple-desktop membership are rejected.
+- Sidebar rows, sections and the desktop catalogue freeze while dragging. A translucent app icon follows the pointer inside the sidebar and desktop popup; valid destination sections/rows retain the blue highlight. Transfer instructions and unavailable-target previews are absent, and unsupported drags fail quietly. Clipped native section bounds exclude popup overlap and drawing padding. Native periodic drag updates allow bounded edge scrolling without a background timer. The popup's narrow heading-to-list corridor keeps it open while crossing the gap, without capturing neighbouring app icons. Settings changes, removed desktops and missing windows cancel the drag.
+- `SidebarDesktopTransfer.swift` owns eligibility, section construction, clipped hit testing and membership verification. `SidebarSpaceTransfer.m` isolates the runtime SkyLight operation and its local-symbol lookup; the header is the app target's Swift bridge. It uses the same operation as yabai without a service, Dock injection or SIP changes.
+- `SidebarDesktopMenu.swift` reuses `CyclePanel`, `CyclePanelRow` and `CyclePanelRowAnchor` for the drag-only desktop list. Monitor and desktop anchors are separate, so hovering a monitor chooses from all of its desktops while occupied sidebar sections remain direct drop targets.
+- `SidebarWindowInventory` prepares placement and transfer separately, revalidates live identity/state/membership before submitting one move, then observes membership with a two-second deadline. It never resubmits automatically, activates or raises the app, restores/unhides it, or writes its frame. macOS decides stacking order. Unconfirmed completion refreshes the inventory without a transfer message or speculative rollback.
+- VoiceOver exposes matching named desktop-transfer actions. Runtime API resolution runs on the worker queue. A read-only native probe confirmed the transfer API is available on this Mac; actual Space transfers, focus preservation and live dragging remain unverified.
+
+Automated desktop-transfer verification: **72 tests passed, 0 failed, 0 skipped** across `SidebarDesktopTransferTests`, `SidebarDragTests`, `SidebarTests` and `MouseShortcutTests`, confirmed from `/tmp/octopus-drag-verification/Logs/Test/Test-octopus-2026.10.07_16-06-50-+0530.xcresult`. The build succeeded. `/tmp/octopus-desktop-transfer-tests.log` records the run; the read-only API probe is `/tmp/octopus-desktop-transfer-availability`.
+
+The final popup-scroll guard rebuilt successfully and passed **30 desktop-transfer/drag tests**, with no failures or skips, confirmed from `/tmp/octopus-drag-verification/Logs/Test/Test-octopus-2026.10.07_16-08-57-+0530.xcresult`; log: `/tmp/octopus-desktop-transfer-final-tests.log`.
+
+The monitor-heading/desktop-popup revision rebuilt successfully and passed **74 focused tests**, with no failures or skips, confirmed from `/tmp/octopus-drag-verification/Logs/Test/Test-octopus-2026.10.07_16-56-17-+0530.xcresult`; log: `/tmp/octopus-monitor-drag-final-tests.log`. Coverage includes empty desktops remaining in the popup catalogue, primary/secondary monitor naming, and the popup crossing corridor excluding adjacent app icons. Live pointer and transfer behaviour remains unverified.
 
 ## Mouse shortcuts
 

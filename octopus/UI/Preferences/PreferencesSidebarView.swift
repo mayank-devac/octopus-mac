@@ -8,8 +8,9 @@ struct PreferencesSidebarView: View {
     @AppStorage("sidebarPosition") private var position = 0.5
     @AppStorage("sidebarMonitor") private var monitor = "primary"
     @AppStorage("sidebarAutoHide") private var autoHide = false
-    @AppStorage("sidebarShowSingleWindowMenu") private var showSingleWindowMenu = false
+    @AppStorage("sidebarShowSingleWindowMenu") private var showSingleWindowMenu = true
     @AppStorage("sidebarAppSpacing") private var appSpacing = SidebarSettings.defaultAppSpacing
+    @AppStorage("sidebarFontSize") private var fontSize = SidebarSettings.defaultFontSize
     @AppStorage("sidebarSnapDistance") private var snapDistance = SidebarSettings.defaultSnapDistance
     @State private var screens = NSScreen.screens
 
@@ -56,6 +57,15 @@ struct PreferencesSidebarView: View {
                         .frame(width: 38, alignment: .trailing)
                 }
                 HStack {
+                    Text("Font size")
+                    Slider(value: $fontSize, in: SidebarSettings.minimumFontSize...SidebarSettings.maximumFontSize, step: 1)
+                        .accessibilityLabel("Sidebar label font size")
+                    Text("\(Int(fontSize)) pt")
+                        .monospacedDigit()
+                        .foregroundStyle(.secondary)
+                        .frame(width: 38, alignment: .trailing)
+                }
+                HStack {
                     Text("Snap distance")
                     Slider(value: Binding(
                         get: { SidebarSettings.normalizedSnapDistance(snapDistance) },
@@ -75,7 +85,7 @@ struct PreferencesSidebarView: View {
             .disabled(!enabled)
         }
         .formStyle(.grouped)
-        .frame(height: 492)
+        .frame(height: 530)
         .onAppear {
             desktopScope = SidebarDesktopScope.saved(desktopScope).rawValue
             snapDistance = SidebarSettings.normalizedSnapDistance(snapDistance)

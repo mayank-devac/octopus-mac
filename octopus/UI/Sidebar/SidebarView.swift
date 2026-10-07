@@ -5,6 +5,10 @@ import SwiftUI
 final class SidebarViewState: ObservableObject {
     @Published var highlightedEntryID: SidebarEntryID?
     @Published var side: SidebarSide = .right
+    @Published var dragSections: [SidebarDesktopSection]?
+    @Published var dropDesktopID: UInt64?
+    @Published var monitors: [SidebarMonitor] = []
+    var dragDesktops: [SidebarDesktop]?
 }
 
 struct SidebarView: View {
@@ -12,6 +16,7 @@ struct SidebarView: View {
     @ObservedObject var state: SidebarViewState
     @ObservedObject private var mouseShortcuts = MouseShortcutStore.shared
     @AppStorage("sidebarAppSpacing") private var appSpacing = SidebarSettings.defaultAppSpacing
+    @AppStorage("sidebarFontSize") private var labelFontSize = SidebarSettings.defaultFontSize
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.colorScheme) private var colorScheme
     var onClick: (SidebarEntryID) -> Void
@@ -19,9 +24,24 @@ struct SidebarView: View {
     var onDrag: (SidebarEntryID, SidebarWindowID?, String, NSView, NSEvent) -> Void = { _, _, _, _, _ in }
     var onPlacement: (SidebarWindowID, SidebarSnapTarget) -> Void = { _, _ in }
     var onMouseAction: (SidebarEntryID, MouseShortcutAction, SidebarWindowID?) -> Void = { _, _, _ in }
+    var onDesktopAnchor: (UInt64, NSView?) -> Void = { _, _ in }
+    var onDesktopTransfer: (SidebarWindowID, SidebarDesktop) -> Void = { _, _ in }
+    var onMonitorAnchor: (String, NSView?) -> Void = { _, _ in }
+
+    private var sections: [SidebarDesktopSection] {
+        state.dragSections ?? SidebarDesktopSection.make(entries: inventory.entries,
+            desktops: inventory.desktops, scope: inventory.desktopScope)
+    }
+
+    private var displayedEntries: [SidebarEntry] { sections.flatMap(\.entries) }
+    private var groups: [SidebarMonitorGroup] {
+        SidebarMonitorGroup.make(sections: sections, desktops: state.dragDesktops ?? inventory.desktops,
+            monitors: state.monitors, scope: inventory.desktopScope)
+    }
 
     var body: some View {
-        Group {
+        let indices = Dictionary(uniqueKeysWithValues: displayedEntries.enumerated().map { ($0.element.id, $0.offset) })
+        return Group {
             if !inventory.hasPermission {
                 Button(action: openAccessibilitySettings) {
                     VStack(spacing: 6) {
@@ -32,18 +52,45 @@ struct SidebarView: View {
                 }
                 .buttonStyle(.plain)
                 .help("Allow octopus in System Settings → Privacy & Security → Accessibility")
-            } else if inventory.entries.isEmpty {
+            } else if groups.isEmpty || (inventory.desktopScope == .visibleDesktops && inventory.entries.isEmpty) {
                 Text("No windows")
                     .font(.caption)
                     .frame(maxWidth: .infinity, minHeight: 76)
             } else {
                 ScrollView(.vertical) {
                     VStack(spacing: CGFloat(appSpacing)) {
-                        ForEach(Array(inventory.entries.enumerated()), id: \.element.id) { index, entry in
-                            if inventory.separatorIndices.contains(index) {
-                                SidebarDesktopSeparator(title: entry.desktop?.title ?? "Other apps")
+                        ForEach(groups) { group in
+                            VStack(spacing: 0) {
+                                if let monitor = group.monitor {
+                                    Text(monitor.title)
+                                        .font(.system(size: max(CGFloat(labelFontSize) - 1, 8), weight: .medium))
+                                        .foregroundStyle(colorScheme == .dark ? Color.black : Color.white)
+                                        .multilineTextAlignment(.center).lineLimit(3)
+                                        .padding(.horizontal, 6).padding(.vertical, 2)
+                                        .background { SidebarFrostBackground().opacity(0.8) }
+                                        .frame(maxWidth: .infinity).frame(height: SidebarMonitor.headerHeight)
+                                        .overlay {
+                                            SidebarGeometryAnchor(id: monitor.id, onAnchor: onMonitorAnchor)
+                                                .allowsHitTesting(false)
+                                        }
+                                        .help(monitor.title)
+                                    if group.sections.allSatisfy({ $0.entries.isEmpty }) {
+                                        Text("Empty")
+                                            .font(.system(size: max(CGFloat(labelFontSize) - 1, 8), weight: .medium))
+                                            .foregroundStyle(colorScheme == .dark ? Color.black : Color.white)
+                                            .padding(.horizontal, 6).padding(.vertical, 2)
+                                            .background { SidebarFrostBackground().opacity(0.8) }
+                                            .frame(maxWidth: .infinity).frame(height: SidebarMonitor.emptyHeight)
+                                    }
+                                }
+                                ForEach(Array(group.sections.enumerated()), id: \.element.id) { index, section in
+                                    if index > 0 {
+                                        SidebarDesktopSeparator(title: section.desktop?.title ?? "Other apps")
+                                            .padding(.vertical, CGFloat(appSpacing) / 2)
+                                    }
+                                    desktopSection(section, indices: indices)
+                                }
                             }
-                            item(entry, index: index)
                         }
                     }
                     .padding(.vertical, SidebarLayout.verticalPadding)
@@ -57,6 +104,24 @@ struct SidebarView: View {
         .frame(maxHeight: .infinity)
         .background(Color.clear)
         .frame(maxWidth: .infinity, alignment: state.side == .left ? .leading : .trailing)
+    }
+
+    private func desktopSection(_ section: SidebarDesktopSection, indices: [SidebarEntryID: Int]) -> some View {
+        VStack(spacing: CGFloat(appSpacing)) {
+            ForEach(section.entries) { entry in
+                item(entry, index: indices[entry.id] ?? 0)
+            }
+        }
+        .background {
+            if let desktop = section.desktop, state.dropDesktopID == desktop.id {
+                RoundedRectangle(cornerRadius: 8).fill(Color.accentColor.opacity(0.22))
+            }
+        }
+        .overlay {
+            if let desktop = section.desktop {
+                SidebarGeometryAnchor(id: desktop.id, onAnchor: onDesktopAnchor).allowsHitTesting(false)
+            }
+        }
     }
 
     private func item(_ entry: SidebarEntry, index: Int) -> some View {
@@ -80,9 +145,10 @@ struct SidebarView: View {
             .frame(height: SidebarLayout.iconSlotHeight)
 
             Text(title)
-                .font(.system(size: 11, weight: .medium))
+                .font(.system(size: CGFloat(labelFontSize), weight: .medium))
                 .foregroundStyle(colorScheme == .dark ? Color.black : Color.white)
                 .lineLimit(2)
+                .allowsTightening(true)
                 .multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)
                 .padding(.horizontal, labelPadding)
@@ -125,13 +191,21 @@ struct SidebarView: View {
                 ForEach(SidebarSnapTarget.allCases, id: \.self) { target in
                     Button(target.title) { onPlacement(id, target) }
                 }
+                if inventory.canTransferDesktops, !entry.isHidden,
+                   entry.windowStates[id.windowID]?.isMinimized == false, let source = entry.desktop {
+                    ForEach(inventory.desktops.filter {
+                        SidebarDesktopTransferPolicy.allows(source: source, destination: $0)
+                    }, id: \.id) { desktop in
+                        Button("Move to \(desktop.title)") { onDesktopTransfer(id, desktop) }
+                    }
+                }
             }
         }
     }
 
     private func scale(for index: Int) -> CGFloat {
-        guard !reduceMotion,
-              let highlighted = inventory.entries.firstIndex(where: { $0.id == state.highlightedEntryID }) else { return 1 }
+        guard state.dragSections == nil, !reduceMotion,
+              let highlighted = displayedEntries.firstIndex(where: { $0.id == state.highlightedEntryID }) else { return 1 }
         switch abs(index - highlighted) {
         case 0: return 1 + SidebarLayout.magnificationGrowth
         case 1: return 1.1
@@ -151,15 +225,10 @@ private struct SidebarDesktopSeparator: View {
 
     var body: some View {
         let lineColor: Color = colorScheme == .dark ? .black : .white
-        LinearGradient(
-            stops: [
-                .init(color: .clear, location: 0),
-                .init(color: lineColor.opacity(0.65), location: 0.2),
-                .init(color: lineColor.opacity(0.65), location: 0.8),
-                .init(color: .clear, location: 1)
-            ],
-            startPoint: .leading, endPoint: .trailing
-        )
+        LinearGradient(stops: [
+            .init(color: .clear, location: 0), .init(color: lineColor.opacity(0.65), location: 0.2),
+            .init(color: lineColor.opacity(0.65), location: 0.8), .init(color: .clear, location: 1)
+        ], startPoint: .leading, endPoint: .trailing)
         .frame(height: 1)
         .padding(.horizontal, 4)
         .frame(height: SidebarLayout.desktopSeparatorHeight)
@@ -170,9 +239,27 @@ private struct SidebarDesktopSeparator: View {
         .padding(.horizontal, 8)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(title)
-        .help(title)
         .allowsHitTesting(false)
     }
+}
+
+private struct SidebarGeometryAnchor<ID: Hashable>: NSViewRepresentable {
+    let id: ID
+    let onAnchor: (ID, NSView?) -> Void
+
+    final class AnchorView: NSView {
+        var onRemoval: (() -> Void)?
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+    }
+
+    func makeNSView(context: Context) -> AnchorView {
+        let view = AnchorView()
+        view.onRemoval = { onAnchor(id, nil) }
+        onAnchor(id, view)
+        return view
+    }
+    func updateNSView(_ view: AnchorView, context: Context) {}
+    static func dismantleNSView(_ view: AnchorView, coordinator: ()) { view.onRemoval?() }
 }
 
 private struct SidebarFrostBackground: View {
@@ -180,13 +267,19 @@ private struct SidebarFrostBackground: View {
 
     var body: some View {
         let isDarkFrost = colorScheme == .light
-        let blurRadius: CGFloat = isDarkFrost ? 8 : 7
-        let surfacePadding: CGFloat = isDarkFrost ? 4 : 2
+        let blurRadius: CGFloat = isDarkFrost ? 4 : 3.5
+        let surfacePadding: CGFloat = isDarkFrost ? 1 : 0
         let fadeMargin = blurRadius * 3
         // Leave three blur radii inside the canvas so the fade reaches
         // transparency before the native effect's rectangular bounds.
-        SidebarLabelBackground()
-            .opacity(0.53)
+        Group {
+            if isDarkFrost {
+                // A neutral tint keeps the shadow consistent regardless of the wallpaper colour.
+                Color(white: 0.06).opacity(0.5)
+            } else {
+                SidebarLabelBackground().opacity(0.38)
+            }
+        }
             .mask {
                 ZStack {
                     Capsule(style: .continuous)
@@ -200,7 +293,7 @@ private struct SidebarFrostBackground: View {
                         Capsule(style: .continuous)
                             .fill(.white)
                             .padding(fadeMargin + 1)
-                            .blur(radius: 9)
+                            .blur(radius: 4)
                             .opacity(0.90)
                     }
                 }

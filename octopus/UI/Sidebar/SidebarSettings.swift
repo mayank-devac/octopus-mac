@@ -51,6 +51,9 @@ struct SidebarClickGate {
 enum SidebarSettings {
     static let defaultAppSpacing: Double = 4
     static let maximumAppSpacing: Double = 16
+    static let defaultFontSize: Double = 11
+    static let minimumFontSize: Double = 9
+    static let maximumFontSize: Double = 15
     static let defaultSnapDistance: Double = 200
     static let minimumSnapDistance: Double = 20
     static let maximumSnapDistance: Double = 460
@@ -72,8 +75,9 @@ enum SidebarSettings {
             "sidebarPosition": 0.5,
             "sidebarMonitor": "primary",
             "sidebarAutoHide": false,
-            "sidebarShowSingleWindowMenu": false,
+            "sidebarShowSingleWindowMenu": true,
             "sidebarAppSpacing": defaultAppSpacing,
+            "sidebarFontSize": defaultFontSize,
             "sidebarSnapDistance": defaultSnapDistance
         ])
     }
@@ -120,10 +124,11 @@ enum SidebarLayout {
     }
 
     static func sidebarFrame(in visibleFrame: CGRect, count: Int, side: SidebarSide, position: Double,
-                             appSpacing: CGFloat = SidebarLayout.appSpacing, separatorCount: Int = 0) -> CGRect {
+                             appSpacing: CGFloat = SidebarLayout.appSpacing, separatorCount: Int = 0,
+                             contentHeight: CGFloat? = nil) -> CGRect {
         let gaps = CGFloat(max(0, count - 1)) * appSpacing
         let separators = CGFloat(max(0, separatorCount)) * (desktopSeparatorHeight + appSpacing)
-        let height = min(max(rowHeight, CGFloat(count) * rowHeight + gaps + separators + 16), visibleFrame.height)
+        let height = min(max(rowHeight, contentHeight ?? (CGFloat(count) * rowHeight + gaps + separators + 16)), visibleFrame.height)
         let width = min(Self.width, visibleFrame.width)
         return CGRect(
             x: side == .left ? visibleFrame.minX : visibleFrame.maxX - width,

@@ -6,15 +6,23 @@ final class SidebarDragController: NSObject, NSDraggingSource {
     private let inventory: SidebarWindowInventory
     private var sessionID: UUID?
     private var target: SidebarPlacementTarget?
+    private var transferTarget: SidebarDesktopTransferTarget?
+    private var allowDesktopTransfer = false
     private var windowID: SidebarWindowID?
     private var title = ""
     private var dropPanels: [NSPanel] = []
     private var previewPanel: NSPanel?
+    private var dragIconPanel: NSPanel?
+    private var dragIcon: NSImage?
     private var feedbackPanel: NSPanel?
     private var feedbackWork: DispatchWorkItem?
     private var generation = 0
     private var snapDistance = SidebarSettings.defaultSnapDistance
     var excludedFrames: () -> [CGRect] = { [] }
+    var desktopDropTarget: (CGPoint, SidebarDesktop?) -> SidebarDesktopDropTarget? = { _, _ in nil }
+    var sidebarDragContains: (CGPoint) -> Bool = { _ in false }
+    var onSidebarDragUpdate: ((CGPoint) -> Void)?
+    var onDesktopHover: ((UInt64?) -> Void)?
     var onInteractionChange: ((Bool) -> Void)?
     var isActive: Bool { sessionID != nil }
 
@@ -23,7 +31,7 @@ final class SidebarDragController: NSObject, NSDraggingSource {
         super.init()
     }
 
-    func begin(id: SidebarWindowID, title: String, source: NSView, event: NSEvent) {
+    func begin(id: SidebarWindowID, title: String, source: NSView, event: NSEvent, allowDesktopTransfer: Bool = false) {
         guard !isActive, AXIsProcessTrusted() else { return }
         dismissFeedback()
         // Preview and drop must use the same distance throughout this drag.
@@ -34,6 +42,10 @@ final class SidebarDragController: NSObject, NSDraggingSource {
         windowID = id
         self.title = title
         target = nil
+        transferTarget = nil
+        self.allowDesktopTransfer = allowDesktopTransfer
+        dragIcon = NSRunningApplication(processIdentifier: id.pid)?.icon
+            ?? NSImage(systemSymbolName: "app.fill", accessibilityDescription: nil)
         onInteractionChange?(true)
         installDropSurfaces()
         let pasteboard = NSPasteboardItem()
@@ -44,14 +56,14 @@ final class SidebarDragController: NSObject, NSDraggingSource {
         item.setDraggingFrame(NSRect(origin: location, size: image.size), contents: image)
         let session = source.beginDraggingSession(with: [item], event: event, source: self)
         session.animatesToStartingPositionsOnCancelOrFail = false
-        inventory.preparePlacement(id) { [weak self] prepared in
+        inventory.prepareDrag(id, allowDesktopTransfer: allowDesktopTransfer) { [weak self] placement, transfer in
             guard let self, self.sessionID == nonce else { return }
-            guard let prepared else {
+            guard placement != nil || transfer != nil else {
                 self.cancel()
-                self.showFeedback("This window cannot be moved on the current desktop.")
                 return
             }
-            self.target = prepared
+            self.target = placement
+            self.transferTarget = transfer
             _ = self.update(at: NSEvent.mouseLocation)
         }
     }
@@ -157,22 +169,35 @@ final class SidebarDragController: NSObject, NSDraggingSource {
         return info.draggingPasteboard.string(forType: Self.pasteboardType) == nonce.uuidString
     }
 
-    fileprivate func update(at point: CGPoint) -> NSDragOperation {
-        guard isActive, AXIsProcessTrusted(),
+    fileprivate func update(at point: CGPoint, scroll: Bool = true) -> NSDragOperation {
+        guard isActive else { return [] }
+        guard AXIsProcessTrusted() else { cancel(); return [] }
+        if scroll && allowDesktopTransfer { onSidebarDragUpdate?(point) }
+        let destination = allowDesktopTransfer ? desktopDropTarget(point, transferTarget?.sourceDesktop) : nil
+        if allowDesktopTransfer, sidebarDragContains(point) || destination != nil {
+            previewPanel?.orderOut(nil)
+            if transferTarget != nil { showDragIcon(at: point) } else { dragIconPanel?.orderOut(nil) }
+            let valid = destination.flatMap { destination in
+                transferTarget.map { SidebarDesktopTransferPolicy.allows(source: $0.sourceDesktop, destination: destination.desktop) }
+            } ?? false
+            onDesktopHover?(valid ? destination?.desktop.id : nil)
+            return valid ? .private : []
+        }
+        dragIconPanel?.orderOut(nil)
+        onDesktopHover?(nil)
+        guard
               !excludedFrames().contains(where: { $0.contains(point) }),
               let screen = NSScreen.screens.first(where: { $0.frame.contains(point) }),
               !inventory.fullScreenDisplays.contains(SidebarSettings.displayID(screen) ?? 0) else {
             previewPanel?.orderOut(nil); return []
         }
         guard let target else {
-            showPreview(frame: CGRect(x: point.x - 100, y: point.y - 48, width: 200, height: 40),
-                        label: "Checking window…", valid: false)
+            previewPanel?.orderOut(nil)
             return []
         }
         let snap = SidebarPlacementGeometry.snap(at: point, screen: screen.frame, distance: snapDistance)
         guard snap == nil || target.canResize else {
-            showPreview(frame: CGRect(x: point.x - 140, y: point.y - 48, width: 280, height: 40),
-                        label: "Fixed-size window — move away from the edge", valid: false)
+            previewPanel?.orderOut(nil)
             return []
         }
         let frame = snap.map { SidebarPlacementGeometry.frame(for: $0, in: screen.visibleFrame) }
@@ -182,7 +207,15 @@ final class SidebarDragController: NSObject, NSDraggingSource {
     }
 
     fileprivate func drop(at point: CGPoint) -> Bool {
-        guard update(at: point) == .private, let target,
+        guard update(at: point, scroll: false) == .private else { return false }
+        if allowDesktopTransfer, let destination = desktopDropTarget(point, transferTarget?.sourceDesktop), let transferTarget {
+            let request = SidebarDesktopTransferRequest(sourceDesktop: transferTarget.sourceDesktop,
+                destinationDesktop: destination.desktop, desktopGeneration: transferTarget.desktopGeneration)
+            finish()
+            inventory.moveToDesktop(transferTarget.id, request: request)
+            return true
+        }
+        guard let target,
               let screen = NSScreen.screens.first(where: { $0.frame.contains(point) }) else { return false }
         let snap = SidebarPlacementGeometry.snap(at: point, screen: screen.frame, distance: snapDistance)
         let frame = snap.map { SidebarPlacementGeometry.frame(for: $0, in: screen.visibleFrame) }
@@ -209,13 +242,36 @@ final class SidebarDragController: NSObject, NSDraggingSource {
         previewPanel = panel
     }
 
+    private func showDragIcon(at point: CGPoint) {
+        guard let image = dragIcon else { return }
+        let frame = CGRect(x: point.x - 20, y: point.y - 20, width: 40, height: 40)
+        let panel = dragIconPanel ?? Self.panel(frame: frame, ignoresMouse: true)
+        if dragIconPanel == nil {
+            let view = NSImageView(frame: CGRect(origin: .zero, size: frame.size))
+            view.image = image
+            view.imageScaling = .scaleProportionallyUpOrDown
+            panel.contentView = view
+            panel.alphaValue = 0.85
+            panel.level = NSWindow.Level(rawValue: NSWindow.Level.floating.rawValue + 2)
+            dragIconPanel = panel
+        }
+        panel.setFrame(frame, display: true)
+        if !panel.isVisible { panel.orderFrontRegardless() }
+    }
+
     private func finish() {
         generation += 1
         sessionID = nil
         target = nil
+        transferTarget = nil
+        allowDesktopTransfer = false
+        onDesktopHover?(nil)
         windowID = nil
         previewPanel?.close()
         previewPanel = nil
+        dragIconPanel?.close()
+        dragIconPanel = nil
+        dragIcon = nil
         dropPanels.forEach { $0.close() }
         dropPanels.removeAll()
         onInteractionChange?(false)
@@ -245,6 +301,7 @@ final class SidebarDragController: NSObject, NSDraggingSource {
     private final class DropView: NSView {
         weak var controller: SidebarDragController?
         override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation { draggingUpdated(sender) }
+        override func wantsPeriodicDraggingUpdates() -> Bool { true }
         override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
             guard let controller, controller.accepts(sender), let window else { return [] }
             return controller.update(at: window.convertToScreen(CGRect(origin: sender.draggingLocation, size: .zero)).origin)
@@ -274,8 +331,15 @@ final class SidebarDragController: NSObject, NSDraggingSource {
             style.lineBreakMode = .byTruncatingTail
             let text = NSAttributedString(string: label, attributes: [
                 .font: NSFont.systemFont(ofSize: 13, weight: .semibold), .foregroundColor: NSColor.labelColor,
-                .backgroundColor: NSColor.windowBackgroundColor.withAlphaComponent(0.92), .paragraphStyle: style])
-            text.draw(in: textRect)
+                .paragraphStyle: style])
+            let horizontalPadding: CGFloat = 8
+            let labelRect = CGRect(x: textRect.minX, y: textRect.minY,
+                width: min(textRect.width, ceil(text.size().width) + horizontalPadding * 2), height: textRect.height)
+            NSColor.windowBackgroundColor.withAlphaComponent(0.92).setFill()
+            NSBezierPath(roundedRect: labelRect, xRadius: 4, yRadius: 4).fill()
+            let paddedTextRect = CGRect(x: labelRect.minX + horizontalPadding, y: labelRect.minY + 3,
+                width: max(0, labelRect.width - horizontalPadding * 2), height: labelRect.height - 6)
+            text.draw(in: paddedTextRect)
         }
     }
 }

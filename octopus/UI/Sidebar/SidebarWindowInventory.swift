@@ -206,10 +206,13 @@ final class SidebarWindowInventory: ObservableObject {
     @Published private(set) var entries: [SidebarEntry] = []
     @Published private(set) var hasPermission = AXIsProcessTrusted()
     @Published private(set) var fullScreenDisplays: Set<CGDirectDisplayID> = []
+    @Published private(set) var desktops: [SidebarDesktop] = []
+    @Published private(set) var canTransferDesktops = false
     private(set) var desktopScope = SidebarDesktopScope.allDesktops
     var onChange: (() -> Void)?
     var onDesktopChange: (() -> Void)?
     var onPlacementResult: ((SidebarPlacementResult) -> Void)?
+    var onDesktopTransferResult: ((String?) -> Void)?
 
     private lazy var reader = SidebarWindowReader(onChange: { [weak self] in
         DispatchQueue.main.async { self?.refresh() }
@@ -225,6 +228,7 @@ final class SidebarWindowInventory: ObservableObject {
     private var running = false
     private var refreshCompletions: [() -> Void] = []
     private var pendingActions: [pid_t: SidebarPendingAction] = [:]
+    private var pendingDesktopTransfer: SidebarPendingAction?
     private struct ForegroundFocus {
         let id: SidebarWindowID
         let token: SidebarPendingAction
@@ -356,6 +360,8 @@ final class SidebarWindowInventory: ObservableObject {
         presentationObserver = nil
         reader.queue.async { [reader] in reader.removeObservers() }
         entries = []
+        desktops = []
+        canTransferDesktops = false
         fullScreenDisplays = []
     }
 
@@ -394,6 +400,8 @@ final class SidebarWindowInventory: ObservableObject {
                     self.hasPermission = snapshot.hasPermission
                     self.entries = Self.entries(for: applications, windowEntries: snapshot.entries, scope: scope)
                     self.fullScreenDisplays = snapshot.fullScreenDisplays
+                    self.desktops = snapshot.desktops
+                    self.canTransferDesktops = snapshot.canTransferDesktops
                     self.updatePermissionTimer()
                     if snapshot.needsWindowDiscovery {
                         self.scheduleDiscoveryRefresh()
@@ -439,6 +447,87 @@ final class SidebarWindowInventory: ObservableObject {
                 completion(target)
             }
         }
+    }
+
+    func prepareDrag(_ id: SidebarWindowID, allowDesktopTransfer: Bool,
+                     completion: @escaping (SidebarPlacementTarget?, SidebarDesktopTransferTarget?) -> Void) {
+        guard running, hasPermission, pendingActions[id.pid] == nil else { completion(nil, nil); return }
+        let desktop = desktopGeneration
+        let transferAvailable = allowDesktopTransfer && pendingDesktopTransfer == nil && canTransferDesktops
+        reader.queue.async { [weak self, reader] in
+            let placement = reader.placementTarget(id, desktop: desktop)
+            let transfer = transferAvailable ? reader.desktopTransferTarget(id, desktop: desktop) : nil
+            DispatchQueue.main.async {
+                guard let self, self.running, self.hasPermission, desktop == self.desktopGeneration else {
+                    completion(nil, nil); return
+                }
+                completion(placement, transfer)
+            }
+        }
+    }
+
+    // This action intentionally has no route into requestForeground or placement.
+    func moveToDesktop(_ id: SidebarWindowID, to destination: SidebarDesktop) {
+        prepareDrag(id, allowDesktopTransfer: true) { [weak self] _, target in
+            guard let self else { return }
+            guard let target else {
+                self.onDesktopTransferResult?("Desktop transfer is unavailable for this window."); return
+            }
+            self.moveToDesktop(id, request: SidebarDesktopTransferRequest(sourceDesktop: target.sourceDesktop,
+                destinationDesktop: destination, desktopGeneration: target.desktopGeneration))
+        }
+    }
+
+    func moveToDesktop(_ id: SidebarWindowID, request: SidebarDesktopTransferRequest) {
+        guard running, hasPermission, canTransferDesktops, pendingActions[id.pid] == nil,
+              pendingDesktopTransfer == nil, request.desktopGeneration == desktopGeneration else {
+            onDesktopTransferResult?("Desktop transfer is unavailable or busy."); return
+        }
+        let token = SidebarPendingAction(frontmostPID: NSWorkspace.shared.frontmostApplication?.processIdentifier)
+        pendingActions[id.pid] = token
+        pendingDesktopTransfer = token
+        reader.queue.async { [weak self, reader] in
+            let failure = reader.submitDesktopTransfer(id, request: request, token: token)
+            DispatchQueue.main.async {
+                guard let self, self.running, self.pendingActions[id.pid] === token else { return }
+                if let failure {
+                    self.finishDesktopTransfer(id, token: token, message: failure)
+                } else {
+                    self.verifyDesktopTransfer(id, request: request, token: token,
+                        deadline: ProcessInfo.processInfo.systemUptime + 2)
+                }
+            }
+        }
+    }
+
+    private func verifyDesktopTransfer(_ id: SidebarWindowID, request: SidebarDesktopTransferRequest,
+                                       token: SidebarPendingAction, deadline: TimeInterval) {
+        guard running, !token.isCancelled, pendingActions[id.pid] === token else { return }
+        reader.queue.async { [weak self, reader] in
+            let membership = reader.desktopTransferMembership(id)
+            DispatchQueue.main.async {
+                guard let self, self.running, !token.isCancelled, self.pendingActions[id.pid] === token else { return }
+                let result = SidebarDesktopTransferPolicy.verify(membership: membership ?? [],
+                    destinationID: request.destinationDesktop.id,
+                    expired: membership == nil || ProcessInfo.processInfo.systemUptime >= deadline)
+                switch result {
+                case .moved: self.finishDesktopTransfer(id, token: token, message: nil)
+                case .unconfirmed:
+                    self.finishDesktopTransfer(id, token: token, message: "Couldn’t confirm the desktop move. Check the window’s location.")
+                case .pending:
+                    // Retry observations only. Never submit the move a second time.
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) { [weak self] in
+                        self?.verifyDesktopTransfer(id, request: request, token: token, deadline: deadline)
+                    }
+                }
+            }
+        }
+    }
+
+    private func finishDesktopTransfer(_ id: SidebarWindowID, token: SidebarPendingAction, message: String?) {
+        if pendingDesktopTransfer === token { pendingDesktopTransfer = nil }
+        onDesktopTransferResult?(message)
+        refreshAndUnlock(id.pid, token: token)
     }
 
     func perform(_ action: SidebarWindowAction, frontmostPID: pid_t? = NSWorkspace.shared.frontmostApplication?.processIdentifier) {
@@ -535,6 +624,7 @@ final class SidebarWindowInventory: ObservableObject {
             return false
         }
         foregroundFocus = foregroundFocus.filter { pid, request in pendingActions[pid] === request.token }
+        if pendingDesktopTransfer?.isCancelled == true { pendingDesktopTransfer = nil }
     }
 
     private func scheduleDiscoveryRefresh() {
@@ -592,6 +682,8 @@ private final class SidebarWindowReader: @unchecked Sendable {
         var entries: [SidebarEntry] = []
         var fullScreenDisplays: Set<CGDirectDisplayID> = []
         var needsWindowDiscovery = false
+        var desktops: [SidebarDesktop] = []
+        var canTransferDesktops = false
     }
 
     private struct ListedWindow {
@@ -682,7 +774,10 @@ private final class SidebarWindowReader: @unchecked Sendable {
             return snapshot
         }
         let listed = listedWindows()
-        let desktops = spaceReader.read(windowIDs: Set(listed.filter { $0.value.normalLevel }.keys))
+        // Resolve the native capability on the worker queue, never during pointer input.
+        snapshot.canTransferDesktops = SidebarSpaceTransferIsAvailable()
+        snapshot.desktops = spaceReader.allDesktops()
+        let desktops = spaceReader.read(windowIDs: Set(listed.filter { $0.value.normalLevel }.keys), catalog: snapshot.desktops)
         let visible = listed.filter { $0.value.onScreen && $0.value.normalLevel }
         // Some games/video windows do not expose AXFullScreen. Only use geometry as a
         // fallback when AppKit independently confirms that their active app is full screen.
@@ -874,6 +969,47 @@ private final class SidebarWindowReader: @unchecked Sendable {
             windowDesktops: memberships, visibleDesktops: spaceReader.visibleDesktopIDs()) else { return nil }
         return SidebarPlacementTarget(id: id, frame: frame, canResize: isSettable(element, attribute: .size),
                                       isMinimized: minimized, desktopGeneration: desktop)
+    }
+
+    func desktopTransferTarget(_ id: SidebarWindowID, desktop: Int) -> SidebarDesktopTransferTarget? {
+        dispatchPrecondition(condition: .onQueue(queue))
+        guard desktopGeneration == desktop, AXIsProcessTrusted(), let known = validatedWindow(id),
+              known.element.getAttributeValue(.subrole) as String? == kAXStandardWindowSubrole as String,
+              let info = (CGWindowListCopyWindowInfo(.optionIncludingWindow, id.windowID) as? [[String: Any]])?.first,
+              (info[kCGWindowNumber as String] as? NSNumber)?.uint32Value == id.windowID,
+              (info[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value == id.pid,
+              (info[kCGWindowLayer as String] as? NSNumber)?.intValue == 0 else { return nil }
+        let element = known.element
+        AXUIElementSetMessagingTimeout(element, 0.2)
+        guard let fullScreen: Bool = placementAttribute(element, "AXFullScreen", unsupported: false),
+              let modal: Bool = placementAttribute(element, "AXModal", unsupported: false),
+              let sheets: [AXUIElement] = placementAttribute(element, "AXSheets", unsupported: []),
+              let minimized: Bool = placementAttribute(element, kAXMinimizedAttribute, unsupported: false) else { return nil }
+        let memberships = spaceReader.read(windowIDs: [id.windowID])[id.windowID] ?? []
+        guard let source = SidebarDesktopTransferPolicy.source(desktops: memberships,
+            hidden: known.application.isHidden, minimized: minimized,
+            fullScreen: fullScreen || fullScreenWindows.contains(id), modal: modal,
+            hasSheets: !sheets.isEmpty, canMove: isSettable(element, attribute: .position)) else { return nil }
+        return SidebarDesktopTransferTarget(id: id, sourceDesktop: source, desktopGeneration: desktop)
+    }
+
+    func submitDesktopTransfer(_ id: SidebarWindowID, request: SidebarDesktopTransferRequest,
+                               token: SidebarPendingAction) -> String? {
+        dispatchPrecondition(condition: .onQueue(queue))
+        guard token.isCurrent, let target = desktopTransferTarget(id, desktop: request.desktopGeneration),
+              target.sourceDesktop.id == request.sourceDesktop.id,
+              let destination = spaceReader.allDesktops().first(where: { $0.id == request.destinationDesktop.id }),
+              SidebarDesktopTransferPolicy.allows(source: target.sourceDesktop, destination: destination),
+              destination.displayIdentifier == request.destinationDesktop.displayIdentifier,
+              token.isCurrent else { return "This window or desktop is no longer available for transfer." }
+        return SidebarSpaceTransferSubmit(id.windowID, destination.id)
+            ? nil : "Desktop transfer is not supported on this macOS version."
+    }
+
+    func desktopTransferMembership(_ id: SidebarWindowID) -> Set<UInt64>? {
+        dispatchPrecondition(condition: .onQueue(queue))
+        guard AXIsProcessTrusted(), validatedWindow(id) != nil else { return nil }
+        return Set((spaceReader.read(windowIDs: [id.windowID])[id.windowID] ?? []).map(\.id))
     }
 
     private func placementAttribute<T>(_ element: AXUIElement, _ attribute: String, unsupported: T) -> T? {

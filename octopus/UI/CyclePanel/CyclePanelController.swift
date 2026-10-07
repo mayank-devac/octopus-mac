@@ -31,6 +31,7 @@ final class CyclePanelController: NSObject {
     private var sidebarAnchor: (icon: CGRect, screen: CGRect, side: SidebarSide)?
     private var sidebarRowAnchors: [CyclePanelItem.ID: NSView] = [:]
     private var sidebarHideAnchor: NSView?
+    private var sidebarQuitAnchor: NSView?
     private var sidebarActionClickGate = SidebarClickGate()
     var onSidebarActivate: ((SidebarWindowID) -> Void)?
     var onSidebarWindowAction: ((SidebarWindowAction) -> Void)?
@@ -103,6 +104,12 @@ final class CyclePanelController: NSObject {
             self.onSidebarWindowAction?(.hide(SidebarWindowID(pid: pid, windowID: id)))
         }, onHideAnchor: { [weak self] view in
             self?.sidebarHideAnchor = view
+        }, onQuitApp: { [weak self] in
+            guard let self, self.presentation == .sidebar, let pid = self.currentApplication?.pid else { return }
+            self.hideSwitcher()
+            NSRunningApplication(processIdentifier: pid)?.terminate()
+        }, onQuitAnchor: { [weak self] view in
+            self?.sidebarQuitAnchor = view
         }, onDrag: { [weak self] id, title, source, event in
             guard let self, self.presentation == .sidebar else { return }
             self.onSidebarDrag?(id, title, source, event)
@@ -206,12 +213,14 @@ final class CyclePanelController: NSObject {
     func updateSidebarPointer(at point: CGPoint) {
         guard presentation == .sidebar, panel.isVisible else { return }
         let target = panel.frame.contains(point) ? Self.sidebarPointerTarget(
-            at: point, items: state.items, anchors: sidebarRowAnchors, hideAnchor: sidebarHideAnchor) : nil
+            at: point, items: state.items, anchors: sidebarRowAnchors, hideAnchor: sidebarHideAnchor,
+            quitAnchor: sidebarQuitAnchor) : nil
         state.setSidebarPointerTarget(target)
     }
 
     static func sidebarPointerTarget(at point: CGPoint, items: [CyclePanelItem],
-                                     anchors: [CyclePanelItem.ID: NSView], hideAnchor: NSView?) -> SidebarPointerTarget? {
+                                     anchors: [CyclePanelItem.ID: NSView], hideAnchor: NSView?,
+                                     quitAnchor: NSView? = nil) -> SidebarPointerTarget? {
         for item in items {
             guard let view = anchors[item.id], let window = view.window else { continue }
             // Since macOS 14, unclipped NSViews can report a visibleRect larger than
@@ -230,6 +239,13 @@ final class CyclePanelController: NSObject {
             if !visibleBounds.isEmpty,
                window.convertToScreen(view.convert(visibleBounds, to: nil)).contains(point) {
                 return .hideApp
+            }
+        }
+        if let view = quitAnchor, let window = view.window {
+            let visibleBounds = view.bounds.intersection(view.visibleRect)
+            if !visibleBounds.isEmpty,
+               window.convertToScreen(view.convert(visibleBounds, to: nil)).contains(point) {
+                return .quitApp
             }
         }
         return nil

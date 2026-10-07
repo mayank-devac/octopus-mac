@@ -5,6 +5,7 @@ struct SidebarDesktop: Hashable {
     let id: UInt64
     let order: Int
     let number: Int?
+    var displayIdentifier: String? = nil
 
     var title: String { number.map { "Desktop \($0)" } ?? "Full screen" }
     var windowPrefix: String { number.map { "\($0). " } ?? "Full screen · " }
@@ -50,16 +51,22 @@ final class SidebarSpaceReader {
                       let type = (space["type"] as? NSNumber)?.intValue, type == 0 || type == 4,
                       id != 0, seen.insert(id).inserted else { continue }
                 if type == 0 { number += 1 }
-                result.append(SidebarDesktop(id: id, order: result.count, number: type == 0 ? number : nil))
+                result.append(SidebarDesktop(id: id, order: result.count, number: type == 0 ? number : nil,
+                    displayIdentifier: display["Display Identifier"] as? String))
             }
         }
         return result
     }
 
-    func read(windowIDs: Set<CGWindowID>) -> [CGWindowID: [SidebarDesktop]] {
-        guard let connection, let displays, let windowSpaces,
-              let raw = displays(connection())?.takeRetainedValue() as? [[String: Any]] else { return [:] }
-        let desktops = Self.desktops(from: raw)
+    func allDesktops() -> [SidebarDesktop] {
+        guard let connection, let displays,
+              let raw = displays(connection())?.takeRetainedValue() as? [[String: Any]] else { return [] }
+        return Self.desktops(from: raw)
+    }
+
+    func read(windowIDs: Set<CGWindowID>, catalog: [SidebarDesktop]? = nil) -> [CGWindowID: [SidebarDesktop]] {
+        guard let connection, let windowSpaces else { return [:] }
+        let desktops = catalog ?? allDesktops()
         let byID = Dictionary(uniqueKeysWithValues: desktops.map { ($0.id, $0) })
         var result: [CGWindowID: [SidebarDesktop]] = [:]
         for windowID in windowIDs {
