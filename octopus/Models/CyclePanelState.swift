@@ -73,6 +73,14 @@ final class CyclePanelState: ObservableObject {
     @Published private(set) var sidebarAppIsHidden = false
     @Published private(set) var sidebarPointerTarget: SidebarPointerTarget?
     private(set) var shouldScrollToSelection = true
+
+    var sidebarAppVisibilityTitle: String { sidebarAppIsHidden ? "Show app" : "Hide app" }
+
+    func sidebarAppVisibilityAction(pid: pid_t) -> SidebarWindowAction? {
+        guard showsSidebarActions, let id = currentWindow?.cgWindowID, id != kCGNullWindowID else { return nil }
+        let target = SidebarWindowID(pid: pid, windowID: id)
+        return sidebarAppIsHidden ? .focus(target) : .hide(target)
+    }
     
     var windows: [Window] {
         items.compactMap { item in

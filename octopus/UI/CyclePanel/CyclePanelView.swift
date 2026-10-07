@@ -13,7 +13,7 @@ struct CyclePanelView: View {
     var onActivate: (CyclePanelItem.ID) -> Void = { _ in }
     var onAnchor: (CyclePanelItem.ID, NSView?) -> Void = { _, _ in }
     var onWindowAction: (CyclePanelItem.ID) -> Void = { _ in }
-    var onHideApp: () -> Void = {}
+    var onToggleAppVisibility: () -> Void = {}
     var onHideAnchor: (NSView?) -> Void = { _ in }
     var onQuitApp: () -> Void = {}
     var onQuitAnchor: (NSView?) -> Void = { _ in }
@@ -69,17 +69,17 @@ struct CyclePanelView: View {
             if state.showsSidebarActions {
                 Divider()
                 HStack(spacing: 0) {
-                    Button(action: onHideApp) {
-                        Text("Hide app")
+                    Button(action: onToggleAppVisibility) {
+                        Text(state.sidebarAppVisibilityTitle)
                             .frame(maxWidth: .infinity)
                             .frame(height: SidebarLayout.menuActionHeight)
                             .contentShape(Rectangle())
                     }
                     .buttonStyle(SidebarActionButtonStyle(isHovered: state.sidebarPointerTarget == .hideApp))
                     .focusEffectDisabled()
-                    .disabled(state.sidebarAppIsHidden)
-                    .help("Hide all windows of \(state.applicationTitle)")
-                    .accessibilityLabel("Hide \(state.applicationTitle)")
+                    .help(state.sidebarAppIsHidden ? "Show \(state.applicationTitle) and focus the selected window"
+                          : "Hide all windows of \(state.applicationTitle)")
+                    .accessibilityLabel("\(state.sidebarAppIsHidden ? "Show" : "Hide") \(state.applicationTitle)")
                     .background(CyclePanelRowAnchor(onAnchor: onHideAnchor))
 
                     Divider().frame(height: SidebarLayout.menuActionHeight - 12)

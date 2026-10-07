@@ -1,5 +1,12 @@
 # octopus Mistakes and Prevention
 
+## 2026-10-07 — Cross-Desktop focus and minimise
+
+- **Mistake:** Adding a targeted private focus request left an earlier `AXMain`/`AXRaise` in the production focus path; unit-test success was previously treated as stronger evidence than it was. The icon and popup minimise decisions also ignored whether the target window was on a visible Desktop.
+- **Fix:** Request the exact window before the follow-up raise; focus remote targets before minimising; recheck live visibility in the action executor; make popup labels describe focus versus restore/minimise.
+- **Prevention:** Trace the complete click sequence, confirm the running build's checkout, and verify icon and popup behaviour in the real app. Never use a successful build/private-API return as proof of a flicker-free Space transition. Respect repository-only checks and no `osascript`/standalone probes; each responsible process needs its own relevant permissions.
+- **Evidence:** Final result bundle reports 67 passed / 0 failed / 0 skipped, and Mayank confirmed both paths work without flicker on the launched final build. [Full incident, history, evidence and remaining limits](cross-desktop-focus.md).
+
 ## 2026-10-05 — Sidebar and window-menu UI
 
 ### Changed too many interaction details together

@@ -5,6 +5,30 @@ import Testing
 @testable import octopus
 
 struct SidebarTests {
+    @MainActor @Test func appVisibilityButtonHidesOrShowsTheSelectedWindowOfAMultiWindowApp() {
+        let app = Application(NSRunningApplication.current)
+        let first = Window(AXUIElementCreateApplication(getpid()), app, cachedTitle: "First")
+        first.cgWindowID = 10
+        let second = Window(AXUIElementCreateApplication(getpid()), app, cachedTitle: "Second")
+        second.cgWindowID = 20
+        let state = CyclePanelState()
+        let target = SidebarWindowID(pid: getpid(), windowID: 20)
+        let normal = SidebarWindowState(isMinimized: false, canMinimize: true)
+        let states = [CGWindowID(10): normal, CGWindowID(20): normal]
+        state.setWindows([first, second], applicationTitle: "Example", selectedID: 20,
+                         sidebarWindowStates: states, sidebarAppIsHidden: true)
+        #expect(state.sidebarAppVisibilityTitle == "Show app")
+        let show = state.sidebarAppVisibilityAction(pid: getpid())
+        #expect(show == .focus(target))
+        state.reset()
+        #expect(show == .focus(target))
+        #expect(state.sidebarAppVisibilityAction(pid: getpid()) == nil)
+        state.setWindows([first, second], applicationTitle: "Example", selectedID: 20,
+                         sidebarWindowStates: states, sidebarAppIsHidden: false)
+        #expect(state.sidebarAppVisibilityTitle == "Hide app")
+        #expect(state.sidebarAppVisibilityAction(pid: getpid()) == .hide(target))
+    }
+
     @Test func browserMenusKeepTheSameRealWindowsWhenOpenAndMinimised() {
         let frame = CGRect(x: 0, y: 30, width: 1920, height: 1050)
         let realTitles = ["New Tab - Brave - Personal", "Google - Brave - ü"]

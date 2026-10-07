@@ -1,5 +1,7 @@
 # Sidebar window dragging
 
+Current focus/minimise behaviour and verification are documented in [Cross-Desktop focus incident](cross-desktop-focus.md); that report supersedes this file's historical descriptions of early raises and app-wide foreground activation for sidebar focus.
+
 Implemented on 2026-10-07. The existing placement baseline passed 63 sidebar, drag and mouse-shortcut tests. Desktop-transfer verification is recorded below; live cross-app behaviour remains unverified.
 
 ## What changed

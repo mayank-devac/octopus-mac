@@ -96,12 +96,13 @@ final class CyclePanelController: NSObject {
             let focusOrRestore = self.state.sidebarAppIsHidden || status.isMinimized || !status.isOnScreen
             guard status.canMinimize || (focusOrRestore && !status.isMinimized) else { return }
             self.onSidebarWindowAction?(focusOrRestore ? .focus(target) : .minimize(target, requireFocused: false))
-        }, onHideApp: { [weak self] in
+        }, onToggleAppVisibility: { [weak self] in
             guard let self, self.presentation == .sidebar,
                   let pid = self.currentApplication?.pid,
-                  let id = self.state.currentWindow?.cgWindowID else { return }
+                  let action = self.state.sidebarAppVisibilityAction(pid: pid) else { return }
+            // Capture the action before dismissing the panel resets its visibility state.
             self.hideSwitcher()
-            self.onSidebarWindowAction?(.hide(SidebarWindowID(pid: pid, windowID: id)))
+            self.onSidebarWindowAction?(action)
         }, onHideAnchor: { [weak self] view in
             self?.sidebarHideAnchor = view
         }, onQuitApp: { [weak self] in
