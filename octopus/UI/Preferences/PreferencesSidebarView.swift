@@ -7,7 +7,7 @@ struct PreferencesSidebarView: View {
     @AppStorage("sidebarSide") private var side = SidebarSide.right.rawValue
     @AppStorage("sidebarPosition") private var position = 0.5
     @AppStorage("sidebarMonitor") private var monitor = "primary"
-    @AppStorage("sidebarAutoHide") private var autoHide = false
+    @AppStorage(SidebarSettings.idleBehaviorKey) private var idleBehavior = SidebarIdleBehavior.fade.rawValue
     @AppStorage("sidebarShowSingleWindowMenu") private var showSingleWindowMenu = true
     @AppStorage("sidebarAppSpacing") private var appSpacing = SidebarSettings.defaultAppSpacing
     @AppStorage("sidebarFontSize") private var fontSize = SidebarSettings.defaultFontSize
@@ -19,12 +19,17 @@ struct PreferencesSidebarView: View {
         Form {
             Toggle("Show window sidebar", isOn: $enabled)
             Section {
-                Picker("Apps from", selection: $desktopScope) {
+                Picker("Apps Window from", selection: $desktopScope) {
                     ForEach(SidebarDesktopScope.allCases, id: \.rawValue) { scope in
                         Text(scope.title).tag(scope.rawValue)
                     }
                 }
-                Toggle("Automatically hide sidebar", isOn: $autoHide)
+                Picker("When not Sidebar in use", selection: $idleBehavior) {
+                    ForEach(SidebarIdleBehavior.allCases, id: \.rawValue) { behavior in
+                        Text(behavior.title).tag(behavior.rawValue)
+                    }
+                }
+                .help("Fade makes the idle sidebar more transparent so you can see through the icons. Hide shows it only when the pointer reaches the screen edge. Stay visible keeps it fully opaque.")
                 Toggle("Show window menu for apps with one window", isOn: $showSingleWindowMenu)
                 HStack {
                     Text("Snap distance")
@@ -105,6 +110,7 @@ struct PreferencesSidebarView: View {
         .frame(height: 640)
         .onAppear {
             desktopScope = SidebarDesktopScope.saved(desktopScope).rawValue
+            idleBehavior = SidebarIdleBehavior.saved(idleBehavior).rawValue
             snapDistance = SidebarSettings.normalizedSnapDistance(snapDistance)
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didChangeScreenParametersNotification)) { _ in

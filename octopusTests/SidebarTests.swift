@@ -91,6 +91,28 @@ struct SidebarTests {
         #expect(result[2].windowPrefix == "2. ")
     }
 
+    @Test func legacyAutoHideMigratesToIdleBehaviorWithoutOverridingANewChoice() throws {
+        let suite = "SidebarIdleMigration-\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(true, forKey: "sidebarAutoHide")
+        SidebarSettings.migrateLegacyAutoHide(in: defaults)
+        #expect(defaults.string(forKey: SidebarSettings.idleBehaviorKey) == "hide")
+        #expect(defaults.object(forKey: "sidebarAutoHide") == nil)
+
+        defaults.set(false, forKey: "sidebarAutoHide")
+        SidebarSettings.migrateLegacyAutoHide(in: defaults)
+        #expect(defaults.string(forKey: SidebarSettings.idleBehaviorKey) == "hide")
+
+        defaults.removeObject(forKey: SidebarSettings.idleBehaviorKey)
+        defaults.set(false, forKey: "sidebarAutoHide")
+        SidebarSettings.migrateLegacyAutoHide(in: defaults)
+        #expect(defaults.string(forKey: SidebarSettings.idleBehaviorKey) == "stayVisible")
+
+        #expect(SidebarIdleBehavior.saved(nil) == .fade)
+        #expect(SidebarIdleBehavior.saved("bogus") == .fade)
+    }
+
     @Test func windowOnEveryDesktopOfADisplayCollapsesToTheVisibleDesktop() {
         let a1 = SidebarDesktop(id: 5, order: 0, number: 1, displayIdentifier: "a")
         let a2 = SidebarDesktop(id: 6, order: 1, number: 2, displayIdentifier: "a")

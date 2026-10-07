@@ -28,6 +28,7 @@ final class SidebarController {
     private var sidebarFrame = CGRect.zero
     private var wasFullScreen = false
     private var pointerWasInSidebar = false
+    private var idleOpacityTarget: CGFloat = 1
 
     private struct Settings: Equatable {
         let enabled = UserDefaults.standard.bool(forKey: "sidebarEnabled")
@@ -35,14 +36,14 @@ final class SidebarController {
         let side = SidebarSide(rawValue: UserDefaults.standard.string(forKey: "sidebarSide") ?? "right") ?? .right
         let position = UserDefaults.standard.double(forKey: "sidebarPosition")
         let monitor = UserDefaults.standard.string(forKey: "sidebarMonitor") ?? "primary"
-        let autoHide = UserDefaults.standard.bool(forKey: "sidebarAutoHide")
+        let idleBehavior = SidebarIdleBehavior.saved(UserDefaults.standard.string(forKey: SidebarSettings.idleBehaviorKey))
         let showSingleWindowMenu = UserDefaults.standard.bool(forKey: "sidebarShowSingleWindowMenu")
         let appSpacing = UserDefaults.standard.double(forKey: "sidebarAppSpacing")
 
         func matchesExceptAppSpacing(_ other: Settings) -> Bool {
             enabled == other.enabled && desktopScope == other.desktopScope
                 && side == other.side && position == other.position
-                && monitor == other.monitor && autoHide == other.autoHide
+                && monitor == other.monitor && idleBehavior == other.idleBehavior
                 && showSingleWindowMenu == other.showSingleWindowMenu
         }
     }
@@ -110,6 +111,7 @@ final class SidebarController {
         dragController.onInteractionChange = { [weak self] dragging in
             guard let self else { return }
             if dragging {
+                self.updateIdleOpacity(inUse: true)
                 self.viewState.dragDesktops = self.inventory.desktops
                 self.viewState.dragSections = SidebarDesktopSection.make(entries: self.inventory.entries,
                     desktops: self.inventory.desktops, scope: self.inventory.desktopScope)
@@ -182,6 +184,8 @@ final class SidebarController {
         layout()
         if spacingOnlyChange { return }
         if shouldAutoHide { panel.orderOut(nil) } else { panel.orderFrontRegardless() }
+        updateIdleOpacity(inUse: false)
+        updatePointer()
     }
 
     private func stopSidebar() {
@@ -202,7 +206,19 @@ final class SidebarController {
         return inventory.fullScreenDisplays.contains(id)
     }
 
-    private var shouldAutoHide: Bool { settings?.autoHide == true || isFullScreen }
+    private var shouldAutoHide: Bool { settings?.idleBehavior == .hide || isFullScreen }
+
+    // Fade mode dims the idle sidebar so content behind the icons stays visible.
+    private func updateIdleOpacity(inUse: Bool) {
+        let target = settings?.idleBehavior == .fade && !inUse ? SidebarSettings.idleSidebarOpacity : 1
+        guard idleOpacityTarget != target else { return }
+        idleOpacityTarget = target
+        let duration = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? 0 : 0.15
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = duration
+            panel.animator().alphaValue = target
+        }
+    }
 
     private func layout() {
         guard let settings, settings.enabled, let target = SidebarSettings.selectedScreen() else { return }
@@ -536,6 +552,8 @@ final class SidebarController {
             hideWork?.cancel()
             hideWork = nil
         }
+
+        updateIdleOpacity(inUse: inSidebar || inMenu || cycleController.sidebarEntryID != nil)
     }
 
     private func cancelInteraction() {

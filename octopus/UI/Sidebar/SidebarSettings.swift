@@ -36,6 +36,22 @@ enum SidebarActiveAppClickAction: String, CaseIterable {
     }
 }
 
+enum SidebarIdleBehavior: String, CaseIterable {
+    case fade, hide, stayVisible
+
+    static func saved(_ value: String?) -> Self {
+        value.flatMap(Self.init(rawValue:)) ?? .fade
+    }
+
+    var title: String {
+        switch self {
+        case .fade: return "Fade"
+        case .hide: return "Hide"
+        case .stayVisible: return "Stay visible"
+        }
+    }
+}
+
 struct SidebarClickGate {
     static let interval: TimeInterval = 0.23
     private var lastAcceptedTimestamp: TimeInterval?
@@ -56,6 +72,8 @@ enum SidebarSettings {
     static let maximumFontSize: Double = 15
     static let defaultSnapDistance: Double = 200
     static let defaultShadowOpacity: Double = 1
+    static let idleSidebarOpacity: CGFloat = 0.35
+    static let idleBehaviorKey = "sidebarIdleBehavior"
     static let maximumShadowOpacity: Double = 5
     static let minimumSnapDistance: Double = 20
     static let maximumSnapDistance: Double = 460
@@ -69,14 +87,24 @@ enum SidebarSettings {
         normalizedSnapDistance(defaults.object(forKey: "sidebarSnapDistance") as? Double ?? defaultSnapDistance)
     }
 
+    // The former on/off "sidebarAutoHide" maps to Hide / Stay visible; an unset value gets the new default.
+    static func migrateLegacyAutoHide(in defaults: UserDefaults = .standard) {
+        guard let legacy = defaults.object(forKey: "sidebarAutoHide") as? Bool else { return }
+        if defaults.object(forKey: idleBehaviorKey) == nil {
+            defaults.set((legacy ? SidebarIdleBehavior.hide : .stayVisible).rawValue, forKey: idleBehaviorKey)
+        }
+        defaults.removeObject(forKey: "sidebarAutoHide")
+    }
+
     static func registerDefaults() {
+        migrateLegacyAutoHide()
         UserDefaults.standard.register(defaults: [
             "sidebarEnabled": true,
             "sidebarDesktopScope": SidebarDesktopScope.allDesktops.rawValue,
             "sidebarSide": SidebarSide.right.rawValue,
             "sidebarPosition": 0.5,
             "sidebarMonitor": "primary",
-            "sidebarAutoHide": false,
+            idleBehaviorKey: SidebarIdleBehavior.fade.rawValue,
             "sidebarShowSingleWindowMenu": true,
             "sidebarAppSpacing": defaultAppSpacing,
             "sidebarFontSize": defaultFontSize,
