@@ -49,6 +49,7 @@ final class SidebarController {
         panel.isOpaque = false
         panel.backgroundColor = .clear
         panel.hasShadow = false
+        panel.animationBehavior = .none
         panel.level = .floating
         panel.hidesOnDeactivate = false
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
@@ -62,7 +63,9 @@ final class SidebarController {
                 self?.beginDrag(entryID, target: id, title: title, source: source, event: event)
             },
             onPlacement: { [weak self] id, target in self?.dragController.place(id, at: target) },
-            onMouseAction: { [weak self] entryID, action in self?.performMouseAction(action, entryID: entryID) }
+            onMouseAction: { [weak self] entryID, action, target in
+                self?.performMouseAction(action, entryID: entryID, target: target)
+            }
         ))
         hostingView.sizingOptions = []
         panel.contentView = hostingView
@@ -300,10 +303,10 @@ final class SidebarController {
         else { inventory.refresh() }
     }
 
-    private func performMouseAction(_ action: MouseShortcutAction, entryID: SidebarEntryID) {
+    private func performMouseAction(_ action: MouseShortcutAction, entryID: SidebarEntryID, target: SidebarWindowID?) {
         guard let entry = inventory.entries.first(where: { $0.id == entryID }) else { return }
         let frontmostPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
-        let windowAction = SidebarIconMousePolicy.action(action, for: entry, frontmostPID: frontmostPID)
+        let windowAction = SidebarIconMousePolicy.action(action, for: entry, frontmostPID: frontmostPID, target: target)
         cancelPendingHover()
         cycleController.dismissSidebar()
         if let windowAction { inventory.perform(windowAction, frontmostPID: frontmostPID) }
@@ -387,8 +390,8 @@ final class SidebarController {
                     self.cycleController.dismissSidebar()
                 }
                 dismissWork = work
-                // Allow a brief accidental exit; returning to the menu cancels this work.
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: work)
+                // Dismiss on the next UI turn without a fixed hover grace delay.
+                DispatchQueue.main.async(execute: work)
             }
         } else {
             dismissWork?.cancel()
@@ -415,7 +418,7 @@ final class SidebarController {
             revealWork = nil
         }
 
-        // Keep auto-hide from bypassing the window menu's dismissal grace period.
+        // Hide the sidebar only after its window menu has closed.
         if shouldAutoHide, panel.isVisible, !inSidebar, !inMenu, !inEdge,
            cycleController.sidebarEntryID == nil {
             if hideWork == nil {

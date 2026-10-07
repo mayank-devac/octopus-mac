@@ -1,16 +1,33 @@
 # Sidebar window dragging
 
-Implemented on 2026-10-07. The latest app build succeeded and all 48 sidebar/drag tests passed, including configurable snap distance and multi-window icon dragging. Live cross-app pointer verification remains blocked by Computer Use approval, so production interaction readiness is not yet verified.
+Implemented on 2026-10-07. The latest app build succeeded and all 63 sidebar, drag and mouse-shortcut tests passed. Mayank requested code and automated verification only for the foreground-focus fix; live cross-app behaviour remains unverified.
 
 ## What changed
 
 - Dragging an app's sidebar icon moves the current window whose title is displayed under that icon, including apps with several windows. The hover popup remains available for clicking or dragging a different window's title row. Missing/stale current-window identities are rejected rather than replaced; the minimise/restore button remains independent.
 - Clicking now commits on mouse-up. Moving more than six points starts dragging and suppresses the click. The original window ID and title are captured in the mouse-down callback, even if the inventory changes before dragging starts.
 - The drag shows a translucent outline and window title. The real window changes only after a valid drop. Hover menus, magnification updates and auto-hide pause during dragging.
-- Left/right sides select halves, the bottom side selects bottom-half, the top side maximises within the desktop, and corners select quarters. **Preferences → Sidebar → Snap distance** allows 24–300 points in 12-point steps, defaulting to 120. The chosen distance is saved and captured at the start of each drag so preview and drop agree. Zones remain capped at one-quarter of the display dimension on small displays; corners take precedence. Returning towards the centre clears snapping and resumes free movement.
+- Left/right sides select halves, the bottom side selects bottom-half, the top side maximises within the desktop, and corners select quarters. **Preferences → Sidebar → Snap distance** currently allows 20–460 points in 20-point steps, defaulting to 200; these existing values were preserved during the mouse-shortcut change. The chosen distance is saved and captured at the start of each drag so preview and drop agree. Zones remain capped at one-quarter of the display dimension on small displays; corners take precedence. Returning towards the centre clears snapping and resumes free movement.
 - Free movement preserves size, uses the pointer as the window's top-centre, and keeps its title bar reachable. Placement respects the Dock and menu bar, negative monitor origins and AppKit/Accessibility coordinate differences.
 - VoiceOver exposes named placement actions on eligible icons and popup titles; those actions use the same validated placement path.
 - Escape, dropping over the sidebar/popup, desktop/display changes, permission loss or a disappearing target cancel without selecting a replacement window. Temporary preview and drop windows close when the interaction finishes.
+
+## Mouse shortcuts
+
+**Preferences → Shortcuts → Mouse shortcuts** applies only to sidebar app icons. Window-list rows keep their existing left-click focus and left-drag behaviour; ordinary mouse input in other apps is unaffected.
+
+| Action | Default |
+| --- | --- |
+| Minimise / restore current window | Right click |
+| Move, resize and snap current window | Right click + drag |
+| Focus an inactive app, hide an active app | Left click |
+
+- Each row has **Record**, **Reset** and **× remove**. Click Record, then click the recorder itself using the desired mouse button; Control, Option, Shift and Command are optional. Escape or moving focus away cancels recording. Recording stops immediately when captured, preventing release from rearming the control.
+- Hide and minimise cannot share the same button/modifier combination. Rejected recordings preserve the previous binding and explain the conflict. Placement may share a click binding because moving beyond six points cancels the click and starts only the matching drag action.
+- Reset restores only that row's default. If Hide or Minimise's default is already assigned to the other action, Reset is rejected with the same explanation; it never silently swaps or overwrites another row.
+- **Reset all mouse shortcuts** restores the complete default set together, including swapped or disabled bindings, clears recorder/error state and preserves keyboard shortcuts.
+- Removing a binding remains disabled across restarts. If Hide is removed, unassigned plain left-click still focuses the app. Right-click restores an already minimised/hidden target. Minimise keeps the exact window identity captured at press and rejects a closed target, even if another window becomes preferred.
+- The old Sidebar “Clicking the active app” picker was removed because these mouse rows now own those actions. The keyboard reset control is explicitly labelled “Reset keyboard modifiers” and does not reset mouse rows.
 
 ## How it connects
 
@@ -18,10 +35,37 @@ Implemented on 2026-10-07. The latest app build succeeded and all 48 sidebar/dra
 - `SidebarDragController.swift` owns the native drag session, preview, temporary drop surfaces and quiet feedback. Its custom pasteboard data contains only a random session token. A drop must come from this controller and match the token; foreign drops and Escape never commit placement. The outline ignores mouse events, while transparent drop surfaces exist only during dragging.
 - `SidebarWindowPlacement.swift` holds pure snap/coordinate geometry, eligibility rules and a testable placement writer. No external app or package was added.
 - `SidebarSettings.swift` registers and validates the snap-distance preference, including safe defaults for missing or non-finite values. `PreferencesSidebarView.swift` adds one accessible slider using the existing settings layout.
+- `MouseShortcuts.swift` provides the shared observable bindings, validation, uniqueness checks and per-row reset. The `sidebarMouseShortcut.minimize`, `.place` and `.hide` keys save the button/modifier combination; an empty string disables the action. Invalid preferences use safe defaults, and duplicate saved click bindings disable minimise rather than triggering both actions.
+- `MouseShortcutRecorder.swift` captures only on its native button, with no global input monitor or new permission. `SidebarPointerRegion` handles left, right and additional mouse buttons, freezing callbacks, modifiers and the initiating event at press. Native drag initiation receives that original mouse-down event, matching [AppKit's drag API](https://developer.apple.com/documentation/appkit/nsview/begindraggingsession%28with%3Aevent%3Asource%3A%29).
 - `SidebarWindowInventory.swift` handles preparation and the `.place` action on its existing serial AX queue. It revalidates live identity, permissions, ordinary desktop membership, writable position/size, fullscreen/modal status and attached sheets before mutation.
 - `SidebarSpaces.swift` reads the currently visible ordinary Space IDs through the existing dynamically loaded private API. Unknown desktop membership disables placement rather than guessing, including for hidden/minimised windows.
 - Hidden/minimised windows restore only after validation. Placement uses size-position-size when resizing is supported, reads the resulting frame, and corrects an off-display position where possible. AX calls have a 0.2-second timeout; the write sequence has a 1.2-second deadline. No continuous AX calls or unbounded retries run during pointer movement.
 - `AXUIElement.swift` now checks CF value types before decoding position and size, preventing malformed responses from being interpreted as AXValue objects.
+
+## Delays and foreground restoration
+
+Removed the 200 ms icon-magnification animation and 150 ms popup-dismissal grace. Sidebar, preview and feedback panels now explicitly disable native show/hide animations. Hover, reveal and dismissal work still use the next UI turn when needed for correct event/layout ordering; there is no fixed sleep before a click or drag action.
+
+The source-wide timing audit found these remaining times:
+
+| Time | Purpose and decision |
+| --- | --- |
+| 230 ms | Suppress very fast grouped repeat clicks; the first accepted click is immediate. Keep for toggle safety. |
+| 50 ms, up to six retries | Existing settings-window readiness checks in `MenuBarView`; only needed while SwiftUI is creating the settings window. Keep for reliable settings opening. |
+| 500 ms | Existing profile-save batching in `ProfileManager`; UI updates immediately and termination calls `saveNow`. Keep to avoid repeated disk writes. |
+| 300 ms | Continue an unfinished, finite remote-window discovery scan. Keep to avoid continuous AX/CPU churn. |
+| 1 s | Accessibility-status polling in General settings, and sidebar permission checks only while permission is missing. Keep for permission recovery/status. |
+| 1 s maximum | New foreground-request expiry. Activation starts immediately; expiration cancels stale intent, and the final raise checks the same deadline. A timer is created only if activation is still outstanding. |
+| 50–200 ms maximum | AX request timeouts in discovery and normal window access; fast replies return immediately. Keep to bound unresponsive apps. |
+| 75 ms maximum | Discovery work-slice budget, not a sleep. Keep to bound each scan. |
+| 1.2 s maximum | Placement write-sequence budget, not a sleep. Keep to stop stalled/partial operations. |
+| 3 s visible | Automatic feedback-message dismissal; input and actions remain usable throughout. Keep so messages are readable and do not linger. |
+
+Clicks commit on mouse-up so right-click and right-drag remain exclusive; the six-point drag threshold is distance, not time. macOS's own Dock/minimise/restore animations are outside these app-controlled waits and were not changed.
+
+Restoration and placement now mark the validated target as the app's main window where supported, perform a best-effort early raise, yield activation and request activation with all app windows brought forward. A temporary early raise failure such as `cannotComplete` no longer prevents activation; invalid elements and lost permission still reject it. This follows [Apple's cooperative activation guidance](https://developer.apple.com/documentation/appkit/passing-control-from-one-app-to-another-with-cooperative-activation).
+
+The existing workspace activation notification, or an immediate frontmost check, triggers a second raise of the exact validated window after its app is actually foreground. Requests are claimed once, cancel with the existing action lifecycle, expire after one second, and recheck identity, permission and foreground state before raising. No app is launched/reopened, no arbitrary restore sleep is added, and ordinary window size is preserved. macOS can still refuse activation, and a normal window cannot override another app's higher-level always-on-top surface.
 
 ## Reference source
 
@@ -39,6 +83,12 @@ The near-side preview update subsequently rebuilt the app and ran **16 drag test
 
 The configurable-distance and multi-window update ran **48 sidebar/drag tests: 48 passed, 0 failed, 0 skipped**, confirmed from `/tmp/octopus-drag-verification/Logs/Test/Test-octopus-2026.10.07_04-44-52-+0530.xcresult`. These include choosing the displayed window rather than the first window, rejecting missing/stale targets, distance-dependent activation, saved-value persistence and invalid-value normalization. Its log is `/tmp/octopus-drag-settings-tests.log`; the subsequent final app build also succeeded.
 
+The mouse-shortcut update ran **60 tests: 60 passed, 0 failed, 0 skipped**, confirmed from `/tmp/octopus-drag-verification/Logs/Test/Test-octopus-2026.10.07_05-46-49-+0530.xcresult`. Added checks cover defaults, duplicate rejection, clear/reset persistence, reset conflicts, modifier combinations, extra buttons, right-click versus right-drag, press-time binding capture, recorder capture/Escape/left-release behaviour, inactive-app focus, minimise/restore and target changes or closure. Logs are `/tmp/octopus-mouse-shortcuts-tests.log` and `/tmp/octopus-mouse-shortcuts-build.log`; the final app build succeeded.
+
+The immediate-interaction/foreground/reset-all update ran **63 tests: 63 passed, 0 failed, 0 skipped**, confirmed from `/tmp/octopus-drag-verification/Logs/Test/Test-octopus-2026.10.07_06-25-02-+0530.xcresult`. Added checks cover reset-all with swapped/disabled bindings, activation handoff order, rejection/cancellation and temporary versus invalid early-raise errors. Logs are `/tmp/octopus-immediate-focus-tests.log` and `/tmp/octopus-immediate-focus-build.log`; the final app build succeeded. Native covered-window restoration was not exercised because Mayank selected code and automated checks only.
+
+The first synthetic right-mouse fixtures reported `buttonNumber == 0` despite their right-mouse type. Tests now construct correctly typed, CG-backed events with explicit buttons and AppKit screen-coordinate conversion, without posting events to the desktop. Snap tests use the current declared defaults/range instead of historical constants, while the 120-point geometry examples specify that distance explicitly.
+
 Tests cover snap regions, work-area reservations, coordinate conversion, oversized windows, ordinary desktop metadata, unsupported/off-desktop windows, current-window icon targets, native press/drag/release behaviour, original callback capture, cancellation, fixed-size movement, minimum-size adjustment, invalid requests and partial write failures. The existing sidebar regression suite also passed.
 
 An existing popup test expected a 36-point offset although unchanged `SidebarLayout.menuFrame` uses 18 points. Its assertion was corrected to the verified baseline; popup layout behaviour was preserved.
@@ -50,7 +100,8 @@ Reproduce the focused checks from the repository root:
 ```sh
 xcodebuild -project octopus.xcodeproj -scheme octopus -configuration Debug \
   -destination 'platform=macOS' -derivedDataPath /tmp/octopus-drag-verification \
-  -only-testing:octopusTests/SidebarTests -only-testing:octopusTests/SidebarDragTests test
+  -only-testing:octopusTests/SidebarTests -only-testing:octopusTests/SidebarDragTests \
+  -only-testing:octopusTests/MouseShortcutTests test
 
 xcodebuild -project octopus.xcodeproj -scheme octopus -configuration Debug \
   -destination 'platform=macOS' -derivedDataPath /tmp/octopus-drag-verification build
@@ -61,5 +112,5 @@ xcodebuild -project octopus.xcodeproj -scheme octopus -configuration Debug \
 - Native fullscreen windows, modal windows, attached sheets and other Spaces are excluded. The app never launches or reopens another app to manufacture a target window. No SIP changes or new system permissions were introduced.
 - Fixed-size windows support free movement; snap areas explain that resizing is unavailable. Apps can impose minimum sizes or character-cell increments; adjusted/partial results produce quiet explanatory feedback.
 - AX position and size are separate operations. A slow app can partially accept placement, and rollback is not promised. Other tiling managers may subsequently rearrange the window; Octopus does not fight them.
-- Computer Use rejected access to the built app with **“Computer Use was not approved to use octopus.”** An approval request was issued, but live UI checks could not proceed. No alternate UI-control method was used to bypass that rejection.
-- Still required: live dragging and final frame checks with Safari, Finder, Terminal and Chromium/Electron; multi-window app-icon and popup dragging; the settings slider's live appearance and behaviour; minimise/restore; repeated drags; rapid pointer reversals; popup action buttons and scrolling; Escape and excluded-area drops; closing the target mid-drag; permission loss; display/desktop changes; VoiceOver and mixed-display arrangements. These scenarios have not been claimed as passed.
+- Earlier Computer Use access was rejected with **“Computer Use was not approved to use octopus.”** For the later focus fix Mayank explicitly chose code and automated verification only. No alternate UI-control method was used to bypass the rejection or that preference.
+- Still required: live dragging and final frame checks with Safari, Finder, Terminal and Chromium/Electron; right-button native drag completion/cancellation; live mouse recorder, clear/reset and conflict feedback; settings scrolling/appearance; multi-window app-icon and popup dragging; minimise/restore; repeated drags; rapid pointer reversals; popup action buttons and scrolling; Escape and excluded-area drops; closing the target mid-drag; permission loss; display/desktop changes; VoiceOver and mixed-display arrangements. These scenarios have not been claimed as passed.

@@ -11,12 +11,13 @@ enum SidebarIconDragPolicy {
 
 enum SidebarIconMousePolicy {
     static func action(_ shortcutAction: MouseShortcutAction, for entry: SidebarEntry,
-                       frontmostPID: pid_t?) -> SidebarWindowAction? {
+                       frontmostPID: pid_t?, target: SidebarWindowID?) -> SidebarWindowAction? {
         switch shortcutAction {
         case .hide:
             return SidebarIconClickPolicy.action(for: entry, frontmostPID: frontmostPID, setting: .hide)
         case .minimize:
-            guard let id = SidebarIconDragPolicy.target(for: entry) else { return nil }
+            guard let id = target, id.pid == entry.pid,
+                  entry.windows.contains(where: { $0.cgWindowID == id.windowID }) else { return nil }
             let minimized = entry.windowStates[id.windowID]?.isMinimized == true
             return entry.isHidden || minimized ? .focus(id) : .minimize(id, requireFocused: false)
         case .place: return nil // Placement is a drag, never a click.

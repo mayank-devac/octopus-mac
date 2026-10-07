@@ -233,6 +233,7 @@ final class SidebarDragController: NSObject, NSDraggingSource {
         panel.backgroundColor = .clear
         panel.isOpaque = false
         panel.hasShadow = false
+        panel.animationBehavior = .none
         panel.hidesOnDeactivate = false
         panel.ignoresMouseEvents = ignoresMouse
         panel.level = NSWindow.Level(rawValue: NSWindow.Level.floating.rawValue + 1)

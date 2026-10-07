@@ -18,7 +18,7 @@ struct SidebarView: View {
     var onAnchor: (SidebarEntryID, NSView?) -> Void
     var onDrag: (SidebarEntryID, SidebarWindowID?, String, NSView, NSEvent) -> Void = { _, _, _, _, _ in }
     var onPlacement: (SidebarWindowID, SidebarSnapTarget) -> Void = { _, _ in }
-    var onMouseAction: (SidebarEntryID, MouseShortcutAction) -> Void = { _, _ in }
+    var onMouseAction: (SidebarEntryID, MouseShortcutAction, SidebarWindowID?) -> Void = { _, _, _ in }
 
     var body: some View {
         Group {
@@ -106,7 +106,7 @@ struct SidebarView: View {
                 onDrag: { onDrag(entry.id, dragTarget, title, $0, $1) },
                 dragShortcut: mouseBindings.place,
                 onMouseClick: { shortcut in
-                    if let action = mouseBindings.clickAction(for: shortcut) { onMouseAction(entry.id, action) }
+                    if let action = mouseBindings.clickAction(for: shortcut) { onMouseAction(entry.id, action, dragTarget) }
                     else if shortcut == .left { onClick(entry.id) }
                 }
             )
@@ -117,9 +117,9 @@ struct SidebarView: View {
         .accessibilityAddTraits(.isButton)
         .accessibilityAction { onClick(entry.id) }
         .accessibilityActions {
-            Button("Hide app") { onMouseAction(entry.id, .hide) }
+            Button("Hide app") { onMouseAction(entry.id, .hide, dragTarget) }
             if dragTarget != nil {
-                Button("Minimise or restore window") { onMouseAction(entry.id, .minimize) }
+                Button("Minimise or restore window") { onMouseAction(entry.id, .minimize, dragTarget) }
             }
             if let id = dragTarget {
                 ForEach(SidebarSnapTarget.allCases, id: \.self) { target in

@@ -6,6 +6,27 @@ struct SidebarDragTests {
     private let screen = CGRect(x: -1440, y: 120, width: 1440, height: 900)
     private let area = CGRect(x: -1440, y: 160, width: 1440, height: 830)
 
+    @Test func foregroundActivationYieldsBeforeRequestingAndHonoursRejection() {
+        #expect(SidebarFocusActivation.canRequestAfterRaise(.cannotComplete))
+        #expect(!SidebarFocusActivation.canRequestAfterRaise(.invalidUIElement))
+        #expect(!SidebarFocusActivation.canRequestAfterRaise(.apiDisabled))
+        var steps: [String] = []
+        let accepted = SidebarFocusActivation.request(canContinue: { true },
+            yieldActivation: { steps.append("yield") }, activate: { steps.append("activate all windows"); return false })
+        #expect(!accepted)
+        #expect(steps == ["yield", "activate all windows"])
+    }
+
+    @Test func cancelledFocusCannotActivateOrStealFocusAfterYield() {
+        var current = true
+        var activations = 0
+        let accepted = SidebarFocusActivation.request(canContinue: { current },
+            yieldActivation: { current = false }, activate: { activations += 1; return true })
+        #expect(!accepted && activations == 0)
+        #expect(!SidebarFocusActivation.request(canContinue: { false }, yieldActivation: {}, activate: { activations += 1; return true }))
+        #expect(activations == 0)
+    }
+
     @Test func screenEdgesAndCornersChooseTheExpectedLayouts() {
         #expect(SidebarPlacementGeometry.snap(at: CGPoint(x: -1430, y: 1010), screen: screen) == .topLeft)
         #expect(SidebarPlacementGeometry.snap(at: CGPoint(x: -10, y: 1010), screen: screen) == .topRight)

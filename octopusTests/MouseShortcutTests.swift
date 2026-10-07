@@ -3,21 +3,21 @@ import Testing
 @testable import octopus
 
 struct MouseShortcutTests {
-    @MainActor @Test func defaultsUseDistinctClicksAndShareRightClickWithDragging() throws {
+    @MainActor @Test func defaultsUseDistinctClicksAndShareLeftClickWithDragging() throws {
         try withStore { store, _ in
-            #expect(store.bindings.hide == .left)
-            #expect(store.bindings.minimize == .right)
-            #expect(store.bindings.place == .right)
-            #expect(store.bindings.clickAction(for: .left) == .hide)
-            #expect(store.bindings.clickAction(for: .right) == .minimize)
+            #expect(store.bindings.hide == .right)
+            #expect(store.bindings.minimize == .left)
+            #expect(store.bindings.place == .left)
+            #expect(store.bindings.clickAction(for: .left) == .minimize)
+            #expect(store.bindings.clickAction(for: .right) == .hide)
         }
     }
 
     @MainActor @Test func duplicateHideAndMinimiseAssignmentsAreRejectedWithoutChangingAnything() throws {
         try withStore { store, defaults in
-            #expect(store.assign(.right, to: .hide) != nil)
-            #expect(store.assign(.left, to: .minimize) != nil)
-            #expect(store.bindings.hide == .left && store.bindings.minimize == .right)
+            #expect(store.assign(.left, to: .hide) != nil)
+            #expect(store.assign(.right, to: .minimize) != nil)
+            #expect(store.bindings.hide == .right && store.bindings.minimize == .left)
             #expect(defaults.string(forKey: MouseShortcutAction.hide.key) == nil)
             #expect(store.assign(.left, to: .place) == nil)
             #expect(store.bindings.place == .left)
@@ -40,7 +40,7 @@ struct MouseShortcutTests {
         try withStore { store, defaults in
             let modifiedLeft = MouseShortcut(button: 0, modifiers: [.control, .capsLock])
             #expect(store.assign(modifiedLeft, to: .minimize) == nil)
-            #expect(store.bindings.hide == .left)
+            #expect(store.bindings.hide == .right)
             #expect(modifiedLeft.modifiers == .control)
             let sideButton = MouseShortcut(button: 4, modifiers: [.option, .shift])
             #expect(store.assign(sideButton, to: .place) == nil)
@@ -52,27 +52,39 @@ struct MouseShortcutTests {
     @MainActor @Test func resetRestoresEachDefaultAndRejectsConflictsWithoutChangingOtherRows() throws {
         try withStore { store, defaults in
             #expect(store.assign(nil, to: .hide) == nil)
-            #expect(store.assign(.left, to: .minimize) == nil)
+            #expect(store.assign(.right, to: .minimize) == nil)
             #expect(store.reset(.hide) != nil)
-            #expect(store.bindings.hide == nil && store.bindings.minimize == .left)
+            #expect(store.bindings.hide == nil && store.bindings.minimize == .right)
             #expect(store.reset(.minimize) == nil)
             #expect(store.reset(.hide) == nil)
             #expect(store.assign(nil, to: .place) == nil)
             #expect(store.reset(.place) == nil)
             let reloaded = MouseShortcutBindings(defaults: defaults)
-            #expect(reloaded.hide == .left && reloaded.minimize == .right && reloaded.place == .right)
+            #expect(reloaded.hide == .right && reloaded.minimize == .left && reloaded.place == .left)
         }
     }
 
     @MainActor @Test func invalidOrDuplicateStoredValuesCannotTriggerTwoClickActions() throws {
         try withStore { _, defaults in
-            defaults.set(MouseShortcut.left.saved, forKey: MouseShortcutAction.minimize.key)
+            defaults.set(MouseShortcut.right.saved, forKey: MouseShortcutAction.minimize.key)
             let duplicate = MouseShortcutBindings(defaults: defaults)
-            #expect(duplicate.hide == .left && duplicate.minimize == nil)
+            #expect(duplicate.hide == .right && duplicate.minimize == nil)
             defaults.set("broken", forKey: MouseShortcutAction.minimize.key)
-            #expect(MouseShortcutBindings(defaults: defaults).minimize == .right)
+            #expect(MouseShortcutBindings(defaults: defaults).minimize == .left)
             #expect(MouseShortcut(saved: "33:0") == nil)
             #expect(MouseShortcut(saved: "1:1") == nil)
+        }
+    }
+
+    @MainActor @Test func resetAllRestoresSwappedAndDisabledBindingsTogether() throws {
+        try withStore { store, defaults in
+            #expect(store.assign(nil, to: .hide) == nil)
+            #expect(store.assign(.right, to: .minimize) == nil)
+            #expect(store.assign(.left, to: .hide) == nil)
+            #expect(store.assign(nil, to: .place) == nil)
+            store.resetAll()
+            #expect(store.bindings.hide == .right && store.bindings.minimize == .left && store.bindings.place == .left)
+            #expect(MouseShortcutBindings(defaults: defaults) == store.bindings)
         }
     }
 
@@ -162,13 +174,20 @@ struct MouseShortcutTests {
         window.cgWindowID = 11
         let id = SidebarWindowID(pid: pid, windowID: 11)
         let entry = SidebarEntry(pid: pid, application: app, windows: [window], preferredID: id)
-        #expect(SidebarIconMousePolicy.action(.hide, for: entry, frontmostPID: pid + 1) == .focus(id))
-        #expect(SidebarIconMousePolicy.action(.hide, for: entry, frontmostPID: pid) == .hide(id))
-        #expect(SidebarIconMousePolicy.action(.minimize, for: entry, frontmostPID: pid + 1) == .minimize(id, requireFocused: false))
+        #expect(SidebarIconMousePolicy.action(.hide, for: entry, frontmostPID: pid + 1, target: id) == .focus(id))
+        #expect(SidebarIconMousePolicy.action(.hide, for: entry, frontmostPID: pid, target: id) == .hide(id))
+        #expect(SidebarIconMousePolicy.action(.minimize, for: entry, frontmostPID: pid + 1, target: id) == .minimize(id, requireFocused: false))
         let minimized = SidebarEntry(pid: pid, application: app, windows: [window], preferredID: id,
                                      windowStates: [11: SidebarWindowState(isMinimized: true, canMinimize: true)])
-        #expect(SidebarIconMousePolicy.action(.minimize, for: minimized, frontmostPID: pid) == .focus(id))
-        #expect(SidebarIconMousePolicy.action(.place, for: entry, frontmostPID: pid) == nil)
+        #expect(SidebarIconMousePolicy.action(.minimize, for: minimized, frontmostPID: pid, target: id) == .focus(id))
+        #expect(SidebarIconMousePolicy.action(.place, for: entry, frontmostPID: pid, target: id) == nil)
+        let replacement = Window(AXUIElementCreateApplication(pid), app)
+        replacement.cgWindowID = 22
+        let changed = SidebarEntry(pid: pid, application: app, windows: [window, replacement],
+                                   preferredID: SidebarWindowID(pid: pid, windowID: 22))
+        #expect(SidebarIconMousePolicy.action(.minimize, for: changed, frontmostPID: pid, target: id) == .minimize(id, requireFocused: false))
+        let closed = SidebarEntry(pid: pid, application: app, windows: [replacement], preferredID: changed.preferredID)
+        #expect(SidebarIconMousePolicy.action(.minimize, for: closed, frontmostPID: pid, target: id) == nil)
     }
 
     @MainActor private func withStore(_ body: (MouseShortcutStore, UserDefaults) throws -> Void) throws {

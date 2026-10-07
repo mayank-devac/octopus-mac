@@ -123,6 +123,19 @@ final class SidebarPendingAction: @unchecked Sendable {
     }
 }
 
+enum SidebarFocusActivation {
+    static func canRequestAfterRaise(_ error: AXError) -> Bool {
+        error != .invalidUIElement && error != .apiDisabled
+    }
+
+    static func request(canContinue: () -> Bool, yieldActivation: () -> Void, activate: () -> Bool) -> Bool {
+        guard canContinue() else { return false }
+        yieldActivation()
+        guard canContinue() else { return false }
+        return activate()
+    }
+}
+
 enum SidebarWindowPolicy {
     static func isEligible(onScreen: Bool, normalLevel: Bool, standardWindow: Bool,
                            minimized: Bool, hidden: Bool, ownProcess: Bool,
@@ -212,6 +225,12 @@ final class SidebarWindowInventory: ObservableObject {
     private var running = false
     private var refreshCompletions: [() -> Void] = []
     private var pendingActions: [pid_t: SidebarPendingAction] = [:]
+    private struct ForegroundFocus {
+        let id: SidebarWindowID
+        let token: SidebarPendingAction
+        let expiresAt: TimeInterval
+    }
+    private var foregroundFocus: [pid_t: ForegroundFocus] = [:]
 
     var separatorIndices: Set<Int> {
         Self.separatorIndices(entries: entries, scope: desktopScope)
@@ -308,6 +327,10 @@ final class SidebarWindowInventory: ObservableObject {
                         self.desktopGeneration += 1
                         if self.desktopScope == .visibleDesktops { self.entries = [] }
                         self.onDesktopChange?()
+                    }
+                    if note.name == NSWorkspace.didActivateApplicationNotification,
+                       let pid = NSWorkspace.shared.frontmostApplication?.processIdentifier {
+                        self.finishForegroundFocus(pid)
                     }
                     self.refresh()
                 }
@@ -438,26 +461,70 @@ final class SidebarWindowInventory: ObservableObject {
                         || (self.desktopScope == .allDesktops && token.hasStartedFocus) else { return }
                 switch result {
                 case .activate(let application):
-                    // The reader has validated the running app or restored/raised its window.
-                    // macOS decides whether activation switches to a different Space.
                     if token.canFinishFocus(on: pid), !application.isTerminated {
-                        _ = application.activate()
+                        self.requestForeground(application, target: action.target, token: token)
+                        return
                     }
                 case .placement(let result, let application):
-                    if case .placed = result, let application, token.canFinishFocus(on: pid), !application.isTerminated {
-                        _ = application.activate()
-                    }
                     self.onPlacementResult?(result)
+                    if case .placed = result, let application, token.canFinishFocus(on: pid), !application.isTerminated {
+                        self.requestForeground(application, target: action.target, token: token)
+                        return
+                    }
                 // Stale or unsupported requests stay quiet; refresh below reconciles the UI.
                 case .rejected, .completed: break
                 }
                 // Keep the click guard until the new inventory is published, not just until
                 // AX returns; a second click must never act on the pre-minimise snapshot.
-                self.refresh { [weak self] in
-                    guard let self, self.pendingActions[pid] === token else { return }
-                    self.pendingActions[pid] = nil
-                }
+                self.refreshAndUnlock(pid, token: token)
             }
+        }
+    }
+
+    private func requestForeground(_ application: NSRunningApplication, target: SidebarWindowID?, token: SidebarPendingAction) {
+        let pid = application.processIdentifier
+        if let target {
+            foregroundFocus[pid] = ForegroundFocus(id: target, token: token,
+                                                  expiresAt: ProcessInfo.processInfo.systemUptime + 1)
+        }
+        let accepted = SidebarFocusActivation.request(
+            canContinue: { token.canFinishFocus(on: pid) && !application.isTerminated },
+            yieldActivation: { NSApp.yieldActivation(to: application) },
+            activate: { application.activate(options: [.activateAllWindows]) })
+        guard accepted, target != nil else {
+            foregroundFocus[pid] = nil
+            refreshAndUnlock(pid, token: token)
+            return
+        }
+        finishForegroundFocus(pid)
+        guard let waiting = foregroundFocus[pid], waiting.token === token else { return }
+        // Expiry only cancels stale intent; it never postpones an activation or raise.
+        let remaining = max(0, waiting.expiresAt - ProcessInfo.processInfo.systemUptime)
+        DispatchQueue.main.asyncAfter(deadline: .now() + remaining) { [weak self] in
+            guard let self, self.foregroundFocus[pid]?.token === token else { return }
+            self.foregroundFocus[pid] = nil
+            token.cancel()
+            self.refreshAndUnlock(pid, token: token)
+        }
+    }
+
+    private func finishForegroundFocus(_ pid: pid_t) {
+        guard let request = foregroundFocus[pid], pendingActions[pid] === request.token,
+              request.token.canFinishFocus(on: pid),
+              ProcessInfo.processInfo.systemUptime < request.expiresAt,
+              NSWorkspace.shared.frontmostApplication?.processIdentifier == pid else { return }
+        foregroundFocus[pid] = nil // Claim once, even if activation notifications repeat.
+        reader.queue.async { [weak self, reader] in
+            reader.raiseForegroundWindow(request.id, token: request.token, expiresAt: request.expiresAt)
+            DispatchQueue.main.async { self?.refreshAndUnlock(pid, token: request.token) }
+        }
+    }
+
+    private func refreshAndUnlock(_ pid: pid_t, token: SidebarPendingAction) {
+        guard running, pendingActions[pid] === token else { return }
+        refresh { [weak self] in
+            guard let self, self.pendingActions[pid] === token else { return }
+            self.pendingActions[pid] = nil
         }
     }
 
@@ -467,6 +534,7 @@ final class SidebarWindowInventory: ObservableObject {
             token.cancel()
             return false
         }
+        foregroundFocus = foregroundFocus.filter { pid, request in pendingActions[pid] === request.token }
     }
 
     private func scheduleDiscoveryRefresh() {
@@ -878,11 +946,12 @@ private final class SidebarWindowReader: @unchecked Sendable {
                 return .placement(.failed("This app took too long to finish placement; the window may have moved."), nil)
             }
             guard case .placed = result else { return .placement(result, nil) }
-            guard token.canFinishFocus(on: id.pid), validatedWindow(id) != nil, token.beginFocus(),
-                  AXUIElementPerformAction(element, kAXRaiseAction as CFString) == .success else {
+            guard token.canFinishFocus(on: id.pid), validatedWindow(id) != nil, token.beginFocus() else {
                 return .placement(.failed("Window placement finished, but the app could not bring it forward."), nil)
             }
-            recordFocus(id)
+            guard prepareWindowForActivation(element) else {
+                return .placement(.failed("This window is no longer available to bring forward."), nil)
+            }
             return .placement(result, running)
         case .hide:
             guard !running.isHidden, token.isCurrent else { return .rejected }
@@ -914,9 +983,31 @@ private final class SidebarWindowReader: @unchecked Sendable {
             guard token.canFinishFocus(on: id.pid) else { return .rejected }
             if running.isHidden, !running.unhide() { return .rejected }
             guard token.canFinishFocus(on: id.pid), !running.isTerminated,
-                  AXUIElementPerformAction(element, kAXRaiseAction as CFString) == .success else { return .rejected }
-            recordFocus(id)
+                  validatedWindow(id) != nil, prepareWindowForActivation(element) else { return .rejected }
             return .activate(running)
+        }
+    }
+
+    private func prepareWindowForActivation(_ element: AXUIElement) -> Bool {
+        if isSettable(element, attribute: .main) {
+            _ = AXUIElementSetAttributeValue(element, kAXMainAttribute as CFString, kCFBooleanTrue)
+        }
+        // A restore animation may reject this early raise. Still request app activation.
+        let result = AXUIElementPerformAction(element, kAXRaiseAction as CFString)
+        return SidebarFocusActivation.canRequestAfterRaise(result)
+    }
+
+    func raiseForegroundWindow(_ id: SidebarWindowID, token: SidebarPendingAction, expiresAt: TimeInterval) {
+        dispatchPrecondition(condition: .onQueue(queue))
+        guard token.canFinishFocus(on: id.pid),
+              ProcessInfo.processInfo.systemUptime < expiresAt,
+              NSWorkspace.shared.frontmostApplication?.processIdentifier == id.pid,
+              let known = validatedWindow(id), !known.application.isTerminated else { return }
+        AXUIElementSetMessagingTimeout(known.element, 0.2)
+        guard token.canFinishFocus(on: id.pid), ProcessInfo.processInfo.systemUptime < expiresAt,
+              NSWorkspace.shared.frontmostApplication?.processIdentifier == id.pid else { return }
+        if AXUIElementPerformAction(known.element, kAXRaiseAction as CFString) == .success {
+            recordFocus(id)
         }
     }
 

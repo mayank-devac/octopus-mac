@@ -125,6 +125,11 @@ struct PreferencesShortcutsView: View {
             }
 
             Section {
+                Button("Reset all mouse shortcuts") {
+                    recordingMouseAction = nil
+                    mouseShortcutError = nil
+                    mouseShortcuts.resetAll()
+                }
                 ForEach(MouseShortcutAction.allCases, id: \.rawValue) { action in
                     HStack {
                         Text(action.title).frame(width: 155, alignment: .leading)

@@ -46,7 +46,12 @@ enum MouseShortcutAction: String, CaseIterable {
     }
 
     var key: String { "sidebarMouseShortcut.\(rawValue)" }
-    var defaultShortcut: MouseShortcut { self == .hide ? .left : .right }
+    var defaultShortcut: MouseShortcut {
+        switch self {
+        case .hide: return .right
+        case .minimize, .place: return .left
+        }
+    }
 }
 
 struct MouseShortcutBindings: Equatable {
@@ -122,5 +127,13 @@ final class MouseShortcutStore: ObservableObject {
     @discardableResult
     func reset(_ action: MouseShortcutAction) -> String? {
         assign(action.defaultShortcut, to: action)
+    }
+
+    func resetAll() {
+        // Restore the full set together; intermediate click conflicts must not block it.
+        for action in MouseShortcutAction.allCases {
+            defaults.set(action.defaultShortcut.saved, forKey: action.key)
+        }
+        bindings = MouseShortcutBindings(defaults: defaults)
     }
 }
