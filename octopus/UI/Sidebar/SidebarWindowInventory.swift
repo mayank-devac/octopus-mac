@@ -790,7 +790,9 @@ private final class SidebarWindowReader: @unchecked Sendable {
         // Resolve the native capability on the worker queue, never during pointer input.
         snapshot.canTransferDesktops = SidebarSpaceTransferIsAvailable()
         snapshot.desktops = spaceReader.allDesktops()
+        let visibleDesktops = spaceReader.visibleDesktopIDs()
         let desktops = spaceReader.read(windowIDs: Set(listed.filter { $0.value.normalLevel }.keys), catalog: snapshot.desktops)
+            .mapValues { SidebarSpaceReader.collapsingAllDesktopsMembership($0, catalog: snapshot.desktops, visible: visibleDesktops) }
         let visible = listed.filter { $0.value.onScreen && $0.value.normalLevel }
         // Some games/video windows do not expose AXFullScreen. Only use geometry as a
         // fallback when AppKit independently confirms that their active app is full screen.
@@ -1078,19 +1080,22 @@ private final class SidebarWindowReader: @unchecked Sendable {
             }
             guard token.canFinishFocus(on: id.pid) else { return .rejected }
             if running.isHidden, !running.unhide() { return .placement(.failed("This app could not be shown."), nil) }
-            let deadline = ProcessInfo.processInfo.systemUptime + 1.2
-            let result = SidebarPlacementWriter.apply(request,
-                canContinue: { token.canFinishFocus(on: id.pid) && !running.isTerminated && ProcessInfo.processInfo.systemUptime < deadline },
-                readFrame: { element.getWindowFrame() },
-                writePosition: { position in
-                    var position = position
-                    guard let value = AXValueCreate(.cgPoint, &position) else { return false }
-                    return AXUIElementSetAttributeValue(element, kAXPositionAttribute as CFString, value) == .success
-                }, writeSize: { size in
-                    var size = size
-                    guard let value = AXValueCreate(.cgSize, &size) else { return false }
-                    return AXUIElementSetAttributeValue(element, kAXSizeAttribute as CFString, value) == .success
-                })
+            // Enough for the writer's confirmation passes; still bounded for unresponsive apps.
+            let deadline = ProcessInfo.processInfo.systemUptime + 2
+            let result = Self.withoutEnhancedUserInterface(pid: id.pid) {
+                SidebarPlacementWriter.apply(request,
+                    canContinue: { token.canFinishFocus(on: id.pid) && !running.isTerminated && ProcessInfo.processInfo.systemUptime < deadline },
+                    readFrame: { element.getWindowFrame() },
+                    writePosition: { position in
+                        var position = position
+                        guard let value = AXValueCreate(.cgPoint, &position) else { return false }
+                        return AXUIElementSetAttributeValue(element, kAXPositionAttribute as CFString, value) == .success
+                    }, writeSize: { size in
+                        var size = size
+                        guard let value = AXValueCreate(.cgSize, &size) else { return false }
+                        return AXUIElementSetAttributeValue(element, kAXSizeAttribute as CFString, value) == .success
+                    })
+            }
             if result == .cancelled, !token.isCancelled, ProcessInfo.processInfo.systemUptime >= deadline {
                 return .placement(.failed("This app took too long to finish placement; the window may have moved."), nil)
             }
@@ -1144,6 +1149,21 @@ private final class SidebarWindowReader: @unchecked Sendable {
             // requestForeground owns activation and the follow-up raise.
             return .activate(running)
         }
+    }
+
+    // With AXEnhancedUserInterface on, apps animate AX frame writes, so the size/position
+    // writes overlap and some are dropped. Rectangle suspends it for the same reason
+    // (clone/Rectangle/AccessibilityElement.swift `performWindowAdjustment`).
+    private static func withoutEnhancedUserInterface<T>(pid: pid_t, _ body: () -> T) -> T {
+        let attribute = "AXEnhancedUserInterface" as CFString
+        let application = AXUIElementCreateApplication(pid)
+        AXUIElementSetMessagingTimeout(application, 0.2)
+        var value: CFTypeRef?
+        let wasEnabled = AXUIElementCopyAttributeValue(application, attribute, &value) == .success
+            && (value as? Bool) == true
+        if wasEnabled { _ = AXUIElementSetAttributeValue(application, attribute, kCFBooleanFalse) }
+        defer { if wasEnabled { _ = AXUIElementSetAttributeValue(application, attribute, kCFBooleanTrue) } }
+        return body()
     }
 
     private func prepareWindowForActivation(_ element: AXUIElement) -> Bool {

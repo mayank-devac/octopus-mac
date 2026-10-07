@@ -78,6 +78,26 @@ final class SidebarSpaceReader {
         return result
     }
 
+    // A window assigned to every desktop of a display (Finder, or any app set to
+    // "Assign To: All Desktops") reports one membership per desktop. Listing it in
+    // each group duplicates the same window, so keep it only on the desktop the
+    // display is showing; it follows the user when the desktop changes.
+    static func collapsingAllDesktopsMembership(_ membership: [SidebarDesktop], catalog: [SidebarDesktop],
+                                                visible: Set<UInt64>) -> [SidebarDesktop] {
+        guard membership.count > 1 else { return membership }
+        var result: [SidebarDesktop] = []
+        for (display, members) in Dictionary(grouping: membership, by: \.displayIdentifier) {
+            let all = catalog.filter { $0.number != nil && $0.displayIdentifier == display }
+            let memberIDs = Set(members.map(\.id))
+            guard display != nil, members.count > 1, all.allSatisfy({ memberIDs.contains($0.id) }) else {
+                result += members
+                continue
+            }
+            result.append(members.first { visible.contains($0.id) } ?? members[0])
+        }
+        return result.sorted { $0.order < $1.order }
+    }
+
     // Do not infer hidden/minimised windows' desktop from their old screen bounds.
     func visibleDesktopIDs() -> Set<UInt64> {
         guard let connection, let displays,

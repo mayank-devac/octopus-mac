@@ -91,6 +91,28 @@ struct SidebarTests {
         #expect(result[2].windowPrefix == "2. ")
     }
 
+    @Test func windowOnEveryDesktopOfADisplayCollapsesToTheVisibleDesktop() {
+        let a1 = SidebarDesktop(id: 5, order: 0, number: 1, displayIdentifier: "a")
+        let a2 = SidebarDesktop(id: 6, order: 1, number: 2, displayIdentifier: "a")
+        let a3 = SidebarDesktop(id: 7, order: 2, number: 3, displayIdentifier: "a")
+        let b1 = SidebarDesktop(id: 8, order: 3, number: 4, displayIdentifier: "b")
+        let b2 = SidebarDesktop(id: 9, order: 4, number: 5, displayIdentifier: "b")
+        let catalog = [a1, a2, a3, b1, b2]
+        func collapse(_ membership: [SidebarDesktop], visible: Set<UInt64>) -> [SidebarDesktop] {
+            SidebarSpaceReader.collapsingAllDesktopsMembership(membership, catalog: catalog, visible: visible)
+        }
+        // Sticky on display b only: one row, on b's visible desktop.
+        #expect(collapse([b1, b2], visible: [5, 9]) == [b2])
+        // No visible desktop known: deterministic fallback to the first.
+        #expect(collapse([b1, b2], visible: []) == [b1])
+        // Sticky on both displays: one row per display.
+        #expect(collapse([a1, a2, a3, b1, b2], visible: [6, 8]) == [a2, b1])
+        // Partial membership and single-desktop windows are real placements.
+        #expect(collapse([a1, a2], visible: [5]) == [a1, a2])
+        #expect(collapse([a1], visible: [5]) == [a1])
+        #expect(collapse([], visible: []).isEmpty)
+    }
+
     @MainActor @Test func repeatedAppIconsHaveDistinctIdentitiesAndOnlyTheirDesktopsWindows() throws {
         let running = NSRunningApplication.current
         let pid = running.processIdentifier

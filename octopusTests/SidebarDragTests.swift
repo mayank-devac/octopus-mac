@@ -241,7 +241,69 @@ struct SidebarDragTests {
             readFrame: { operations.append("read"); return request.frame },
             writePosition: { _ in operations.append("position"); return true },
             writeSize: { _ in operations.append("size"); return true })
-        #expect(operations == ["size", "position", "size", "read"])
+        // The opening read decides whether the window is already on the target display.
+        #expect(operations == ["read", "size", "position", "size", "read"])
+        #expect(result == .placed(request.frame, adjusted: false))
+    }
+
+    @Test func aWindowOnAnotherDisplayLandsOnTheTargetDisplayBeforeBeingResized() {
+        let request = request()
+        var frame = CGRect(x: -1400, y: 20, width: 1000, height: 700)
+        var operations: [String] = []
+        let result = SidebarPlacementWriter.apply(request, canContinue: { true }, readFrame: { frame },
+            writePosition: { position in operations.append("position \(Int(position.x))"); frame.origin = position; return true },
+            writeSize: { size in operations.append("size \(Int(size.width))"); frame.size = size; return true }, wait: {})
+        // No shrunken intermediate on the source display: move across, then size-position-size.
+        #expect(operations == ["position 0", "size 500", "position 500", "size 500"])
+        #expect(result == .placed(request.frame, adjusted: false))
+    }
+
+    @Test func droppedSizeWritesAreReassertedInsteadOfShiftingTheWindowToTheLeft() {
+        let request = request()
+        // The app ignores the first two size writes (the window is still changing display).
+        var frame = CGRect(x: 0, y: 20, width: 1000, height: 700)
+        var dropped = 2
+        var positionWrites: [CGPoint] = []
+        let result = SidebarPlacementWriter.apply(request, canContinue: { true }, readFrame: { frame },
+            writePosition: { position in positionWrites.append(position); frame.origin = position; return true },
+            writeSize: { size in
+                if dropped > 0 { dropped -= 1 } else { frame.size = size }
+                return true
+            }, wait: {})
+        // Moving left to "fit" the stale 1000-point width is what made right snaps land left.
+        #expect(positionWrites == [request.frame.origin])
+        #expect(result == .placed(request.frame, adjusted: false))
+    }
+
+    @Test func aSmallWindowCanGrowToTheFullSizeOfALargerTargetDisplay() {
+        // Display 1 is 600 wide at x -600...0; the target display is 1000 wide at x 0...1000.
+        let maximise = SidebarPlacementRequest(frame: CGRect(x: 0, y: 20, width: 1000, height: 700),
+            workArea: CGRect(x: 0, y: 20, width: 1000, height: 700), resize: true, desktopGeneration: 1)
+        var frame = CGRect(x: -600, y: 20, width: 300, height: 400)
+        let result = SidebarPlacementWriter.apply(maximise, canContinue: { true }, readFrame: { frame },
+            writePosition: { frame.origin = $0; return true },
+            writeSize: { size in
+                // macOS fits a size to the display the window is currently on.
+                let onTarget = maximise.workArea.contains(CGPoint(x: frame.midX, y: frame.midY))
+                frame.size = onTarget ? size : CGSize(width: min(size.width, 600), height: min(size.height, 700))
+                return true
+            }, wait: {})
+        #expect(result == .placed(maximise.frame, adjusted: false))
+    }
+
+    @Test func slowResizeIsNotMistakenForAnOutOfBoundsWindowAndMovedToTheOppositeSide() {
+        let request = request()
+        // A maximised window whose app applies the size write after a few reads.
+        var frame = CGRect(x: 0, y: 20, width: 1000, height: 700)
+        var pending: CGSize?
+        var reads = 0
+        var positionWrites: [CGPoint] = []
+        let result = SidebarPlacementWriter.apply(request, canContinue: { true },
+            readFrame: { reads += 1; if reads > 3, let pending { frame.size = pending }; return frame },
+            writePosition: { position in positionWrites.append(position); frame.origin = position; return true },
+            writeSize: { size in pending = size; return true },
+            wait: {})
+        #expect(positionWrites == [request.frame.origin])
         #expect(result == .placed(request.frame, adjusted: false))
     }
 
@@ -249,7 +311,7 @@ struct SidebarDragTests {
         let request = request()
         var frame = CGRect(x: 700, y: 20, width: 600, height: 500)
         let result = SidebarPlacementWriter.apply(request, canContinue: { true }, readFrame: { frame },
-            writePosition: { position in frame.origin = position; return true }, writeSize: { _ in false })
+            writePosition: { position in frame.origin = position; return true }, writeSize: { _ in false }, wait: {})
         #expect(frame.maxX <= request.workArea.maxX)
         #expect(result == .placed(frame, adjusted: true))
         #expect(result.message != nil)

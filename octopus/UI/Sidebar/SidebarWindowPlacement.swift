@@ -159,32 +159,109 @@ enum SidebarPlacementGeometry {
 }
 
 // Keep the operation order and failure handling testable without controlling another app.
-// The size-position-size sequence is informed by Rectangle; see clone/Rectangle/manifest.json.
+// Rectangle documents why the size-position-size sequence exists: macOS fits a size to the
+// display the window is currently on, so moving across displays needs a second size write
+// (clone/Rectangle/AccessibilityElement.swift `setFrame`). Those writes are asynchronous,
+// so this writer also confirms each stage instead of trusting a single immediate read.
 enum SidebarPlacementWriter {
+    static let maximumSettlePolls = 8
+    // The initial write plus up to two re-assertions of whatever the app has not applied.
+    static let maximumAttempts = 3
+
     static func apply(_ request: SidebarPlacementRequest, canContinue: () -> Bool,
                       readFrame: () -> CGRect?, writePosition: (CGPoint) -> Bool,
-                      writeSize: (CGSize) -> Bool) -> SidebarPlacementResult {
+                      writeSize: (CGSize) -> Bool,
+                      wait: () -> Void = { Thread.sleep(forTimeInterval: 0.025) }) -> SidebarPlacementResult {
         guard SidebarPlacementGeometry.isValid(request.frame),
               SidebarPlacementGeometry.isValid(request.workArea) else { return .failed("Invalid window placement.") }
         guard canContinue() else { return .cancelled }
+
+        func isOnTargetDisplay(_ frame: CGRect) -> Bool {
+            request.workArea.contains(CGPoint(x: frame.midX, y: frame.midY))
+        }
+        func originMatches(_ frame: CGRect) -> Bool {
+            abs(frame.minX - request.frame.minX) <= 2 && abs(frame.minY - request.frame.minY) <= 2
+        }
+        func sizeMatches(_ frame: CGRect) -> Bool {
+            abs(frame.width - request.frame.width) <= 2 && abs(frame.height - request.frame.height) <= 2
+        }
+        func reached(_ frame: CGRect) -> Bool { originMatches(frame) && (!request.resize || sizeMatches(frame)) }
+
+        // Poll until the frame satisfies `done`, or stops changing while still reachable.
+        // An out-of-bounds frame may be the app's old size at the new position, so keep
+        // waiting (bounded) before treating it as a limit that needs correcting.
+        func settledFrame(until done: (CGRect) -> Bool, unreadable: String) -> SidebarPlacementResult {
+            var previous: CGRect?
+            for poll in 0..<maximumSettlePolls {
+                guard canContinue() else { return .cancelled }
+                guard let frame = readFrame(), SidebarPlacementGeometry.isValid(frame) else {
+                    return .failed(unreadable)
+                }
+                let isReachable = SidebarPlacementGeometry.constrained(frame, to: request.workArea).origin == frame.origin
+                if done(frame) || (isReachable && frame == previous)
+                    || poll == maximumSettlePolls - 1 { return .placed(frame, adjusted: false) }
+                previous = frame
+                wait()
+            }
+            return .failed(unreadable)
+        }
+
+        // A window on another display would visibly shrink there and then jump across if
+        // resized first. Land on the target display and wait for macOS to register it, so
+        // the size writes are fitted to, and animate on, the display the window ends on.
+        if request.resize, let current = readFrame(), SidebarPlacementGeometry.isValid(current),
+           !isOnTargetDisplay(current) {
+            _ = writePosition(request.workArea.origin)
+            let landed = settledFrame(until: isOnTargetDisplay, unreadable: "The app did not report the window's position.")
+            if case .cancelled = landed { return .cancelled }
+        }
+
         var writeFailed = false
-        if request.resize { writeFailed = !writeSize(request.frame.size) }
+        var sizeWritable = request.resize
+        func writeRequestedSize() {
+            guard sizeWritable else { return }
+            if !writeSize(request.frame.size) { sizeWritable = false; writeFailed = true }
+        }
+        writeRequestedSize()
         guard canContinue() else { return .cancelled }
         guard writePosition(request.frame.origin) else { return .failed("The app could not move this window; its size may have changed.") }
         guard canContinue() else { return .cancelled }
-        if request.resize { writeFailed = !writeSize(request.frame.size) || writeFailed }
-        guard canContinue() else { return .cancelled }
-        guard var actual = readFrame(), SidebarPlacementGeometry.isValid(actual) else {
-            return .failed("The app did not report the window's final position.")
+        writeRequestedSize()
+
+        var actual: CGRect
+        switch settledFrame(until: reached, unreadable: "The app did not report the window's final position.") {
+        case .placed(let frame, _): actual = frame
+        case let other: return other
         }
+
+        // The app may drop a write made while its window was changing display or animating
+        // (typically the last size write), leaving the old size at the new position. Ask again
+        // before treating the result as an app limit; never move the window to compensate.
+        var attempt = 1
+        while attempt < maximumAttempts, !reached(actual) {
+            let needsSize = sizeWritable && !sizeMatches(actual)
+            let needsPosition = !originMatches(actual)
+            guard needsSize || needsPosition, canContinue() else { break }
+            if needsSize { writeRequestedSize() }
+            if needsPosition, !writePosition(request.frame.origin) { break }
+            if needsPosition, needsSize, canContinue() { writeRequestedSize() }
+            switch settledFrame(until: reached, unreadable: "The app did not report the window's final position.") {
+            case .placed(let frame, _): actual = frame
+            case let other: return other
+            }
+            attempt += 1
+        }
+
         let reachable = SidebarPlacementGeometry.constrained(actual, to: request.workArea)
         if reachable.origin != actual.origin {
             guard canContinue() else { return .cancelled }
-            guard writePosition(reachable.origin), let corrected = readFrame(),
-                  SidebarPlacementGeometry.isValid(corrected) else {
+            guard writePosition(reachable.origin) else {
                 return .failed("The app limited placement; the window may extend beyond the display.")
             }
-            actual = corrected
+            switch settledFrame(until: { _ in true }, unreadable: "The app limited placement; the window may extend beyond the display.") {
+            case .placed(let frame, _): actual = frame
+            case let other: return other
+            }
         }
         return .placed(actual, adjusted: writeFailed || !SidebarPlacementGeometry.matches(actual, request.frame))
     }
