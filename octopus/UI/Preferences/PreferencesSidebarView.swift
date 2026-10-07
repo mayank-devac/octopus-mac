@@ -11,6 +11,7 @@ struct PreferencesSidebarView: View {
     @AppStorage("sidebarShowSingleWindowMenu") private var showSingleWindowMenu = true
     @AppStorage("sidebarAppSpacing") private var appSpacing = SidebarSettings.defaultAppSpacing
     @AppStorage("sidebarFontSize") private var fontSize = SidebarSettings.defaultFontSize
+    @AppStorage("sidebarShadowOpacity") private var shadowOpacity = SidebarSettings.defaultShadowOpacity
     @AppStorage("sidebarSnapDistance") private var snapDistance = SidebarSettings.defaultSnapDistance
     @State private var screens = NSScreen.screens
 
@@ -23,6 +24,28 @@ struct PreferencesSidebarView: View {
                         Text(scope.title).tag(scope.rawValue)
                     }
                 }
+                Toggle("Automatically hide sidebar", isOn: $autoHide)
+                Toggle("Show window menu for apps with one window", isOn: $showSingleWindowMenu)
+                HStack {
+                    Text("Snap distance")
+                    Slider(value: Binding(
+                        get: { SidebarSettings.normalizedSnapDistance(snapDistance) },
+                        set: { snapDistance = SidebarSettings.normalizedSnapDistance($0) }
+                    ), in: SidebarSettings.minimumSnapDistance...SidebarSettings.maximumSnapDistance, step: 20)
+                        .accessibilityLabel("Window snap distance from screen sides")
+                        .accessibilityValue("\(Int(SidebarSettings.normalizedSnapDistance(snapDistance))) points")
+                    Text("\(Int(SidebarSettings.normalizedSnapDistance(snapDistance))) pt")
+                        .monospacedDigit()
+                        .foregroundStyle(.secondary)
+                        .frame(width: 46, alignment: .trailing)
+                }
+                .help("Larger distances show snap previews sooner. On smaller displays the distance is limited so the centre stays available for moving windows.")
+            } footer: {
+                Text("Groups windows by desktop, with separators between groups. Apps can appear in several groups; each menu shows only that desktop’s windows. Finder appears only when it has a window, and apps without known windows appear after the desktop groups. In full screen, the sidebar appears at the screen edge; Hide affects the whole app across desktops.")
+            }
+            .disabled(!enabled)
+
+            Section("UI") {
                 Picker("Side", selection: $side) {
                     Text("Left").tag(SidebarSide.left.rawValue)
                     Text("Right").tag(SidebarSide.right.rawValue)
@@ -45,8 +68,6 @@ struct PreferencesSidebarView: View {
                         .accessibilityLabel("Sidebar vertical position")
                     Text("Bottom").font(.caption).foregroundStyle(.secondary)
                 }
-                Toggle("Automatically hide sidebar", isOn: $autoHide)
-                Toggle("Show window menu for apps with one window", isOn: $showSingleWindowMenu)
                 HStack {
                     Text("Gap between apps")
                     Slider(value: $appSpacing, in: 0...SidebarSettings.maximumAppSpacing, step: 1)
@@ -66,26 +87,22 @@ struct PreferencesSidebarView: View {
                         .frame(width: 38, alignment: .trailing)
                 }
                 HStack {
-                    Text("Snap distance")
+                    Text("Shadow opacity")
                     Slider(value: Binding(
-                        get: { SidebarSettings.normalizedSnapDistance(snapDistance) },
-                        set: { snapDistance = SidebarSettings.normalizedSnapDistance($0) }
-                    ), in: SidebarSettings.minimumSnapDistance...SidebarSettings.maximumSnapDistance, step: 20)
-                        .accessibilityLabel("Window snap distance from screen sides")
-                        .accessibilityValue("\(Int(SidebarSettings.normalizedSnapDistance(snapDistance))) points")
-                    Text("\(Int(SidebarSettings.normalizedSnapDistance(snapDistance))) pt")
+                        get: { shadowOpacity },
+                        set: { shadowOpacity = ($0 * 20).rounded() / 20 }
+                    ), in: 0...SidebarSettings.maximumShadowOpacity)
+                        .accessibilityLabel("Sidebar text shadow opacity")
+                    Text("\(Int((shadowOpacity * 100).rounded()))%")
                         .monospacedDigit()
                         .foregroundStyle(.secondary)
                         .frame(width: 46, alignment: .trailing)
                 }
-                .help("Larger distances show snap previews sooner. On smaller displays the distance is limited so the centre stays available for moving windows.")
-            } footer: {
-                Text("Groups windows by desktop, with separators between groups. Apps can appear in several groups; each menu shows only that desktop’s windows. Finder appears only when it has a window, and apps without known windows appear after the desktop groups. In full screen, the sidebar appears at the screen edge; Hide affects the whole app across desktops.")
             }
             .disabled(!enabled)
         }
         .formStyle(.grouped)
-        .frame(height: 530)
+        .frame(height: 640)
         .onAppear {
             desktopScope = SidebarDesktopScope.saved(desktopScope).rawValue
             snapDistance = SidebarSettings.normalizedSnapDistance(snapDistance)

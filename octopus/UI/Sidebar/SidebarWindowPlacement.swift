@@ -19,7 +19,8 @@ enum SidebarIconMousePolicy {
             guard let id = target, id.pid == entry.pid,
                   entry.windows.contains(where: { $0.cgWindowID == id.windowID }) else { return nil }
             let minimized = entry.windowStates[id.windowID]?.isMinimized == true
-            return entry.isHidden || minimized ? .focus(id) : .minimize(id, requireFocused: false)
+            let offDesktop = entry.windowStates[id.windowID]?.isOnScreen == false
+            return entry.isHidden || minimized || offDesktop ? .focus(id) : .minimize(id, requireFocused: false)
         case .place: return nil // Placement is a drag, never a click.
         }
     }

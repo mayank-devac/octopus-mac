@@ -27,6 +27,33 @@ struct SidebarDragTests {
         #expect(activations == 0)
     }
 
+    @Test func windowTargetedFocusUsesWindowRequestBeforeAppFallback() {
+        let target = SidebarWindowID(pid: 42, windowID: 7)
+        var focused: [SidebarWindowID] = []
+        var activations: [NSApplication.ActivationOptions] = []
+        #expect(SidebarFocusActivation.activate(target: target,
+            focusWindow: { focused.append($0); return true }, activateApp: { activations.append($0); return true }))
+        #expect(focused == [target] && activations.isEmpty)
+
+        // When WindowServer rejects the window, fall back without surfacing every app window.
+        #expect(SidebarFocusActivation.activate(target: target,
+            focusWindow: { _ in false }, activateApp: { activations.append($0); return true }))
+        #expect(activations == [[]])
+    }
+
+    @Test func appOnlyFocusActivatesAllWindowsWithoutWindowServerFocus() {
+        var focused = 0
+        var activations: [NSApplication.ActivationOptions] = []
+        #expect(!SidebarFocusActivation.activate(target: nil,
+            focusWindow: { _ in focused += 1; return true }, activateApp: { activations.append($0); return false }))
+        #expect(focused == 0 && activations == [[.activateAllWindows]])
+    }
+
+    @Test func windowServerFocusRejectsMissingIdentifiersSoCallersFallBack() {
+        #expect(!SidebarWindowFocusRequest(0, 7))
+        #expect(!SidebarWindowFocusRequest(ProcessInfo.processInfo.processIdentifier, 0))
+    }
+
     @Test func screenEdgesAndCornersChooseTheExpectedLayouts() {
         #expect(SidebarPlacementGeometry.snap(at: CGPoint(x: -1430, y: 1010), screen: screen) == .topLeft)
         #expect(SidebarPlacementGeometry.snap(at: CGPoint(x: -10, y: 1010), screen: screen) == .topRight)

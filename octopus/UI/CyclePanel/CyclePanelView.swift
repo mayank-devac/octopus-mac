@@ -130,9 +130,11 @@ struct CyclePanelView: View {
                 }
                 if let id = window.cgWindowID, let status = state.sidebarWindowStates[id] {
                     let restore = state.sidebarAppIsHidden || status.isMinimized
-                    let enabled = status.canMinimize || (state.sidebarAppIsHidden && !status.isMinimized)
+                    let focus = !restore && !status.isOnScreen
+                    let enabled = status.canMinimize || focus || (state.sidebarAppIsHidden && !status.isMinimized)
+                    let actionTitle = restore ? "Restore" : focus ? "Focus" : "Minimise"
                     Button { onWindowAction(item.id) } label: {
-                        Image(systemName: restore ? "arrow.up.right.square" : "minus")
+                        Image(systemName: restore || focus ? "arrow.up.right.square" : "minus")
                             .frame(width: SidebarLayout.menuWindowActionWidth, height: SidebarLayout.menuRowHeight)
                             .contentShape(Rectangle())
                     }
@@ -140,9 +142,9 @@ struct CyclePanelView: View {
                     .focusEffectDisabled()
                     .disabled(!enabled)
                     .help(enabled ? (state.sidebarAppIsHidden ? "Show app and focus window"
-                                     : restore ? "Restore window" : "Minimise window")
+                                     : "\(actionTitle) window")
                           : "This window cannot be minimised or restored")
-                    .accessibilityLabel("\(restore ? "Restore" : "Minimise") \(item.title)")
+                    .accessibilityLabel("\(actionTitle) \(item.title)")
                 }
             }
             .background(RoundedRectangle(cornerRadius: 6)

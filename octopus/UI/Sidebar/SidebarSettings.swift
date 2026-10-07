@@ -55,6 +55,8 @@ enum SidebarSettings {
     static let minimumFontSize: Double = 9
     static let maximumFontSize: Double = 15
     static let defaultSnapDistance: Double = 200
+    static let defaultShadowOpacity: Double = 1
+    static let maximumShadowOpacity: Double = 5
     static let minimumSnapDistance: Double = 20
     static let maximumSnapDistance: Double = 460
 
@@ -78,6 +80,7 @@ enum SidebarSettings {
             "sidebarShowSingleWindowMenu": true,
             "sidebarAppSpacing": defaultAppSpacing,
             "sidebarFontSize": defaultFontSize,
+            "sidebarShadowOpacity": defaultShadowOpacity,
             "sidebarSnapDistance": defaultSnapDistance
         ])
     }

@@ -93,9 +93,9 @@ final class CyclePanelController: NSObject {
                (event.type == .leftMouseDown || event.type == .leftMouseUp),
                !self.sidebarActionClickGate.accepts(timestamp: event.timestamp, clickCount: event.clickCount) { return }
             let target = SidebarWindowID(pid: pid, windowID: id)
-            let restore = self.state.sidebarAppIsHidden || status.isMinimized
-            guard status.canMinimize || (self.state.sidebarAppIsHidden && !status.isMinimized) else { return }
-            self.onSidebarWindowAction?(restore ? .focus(target) : .minimize(target, requireFocused: false))
+            let focusOrRestore = self.state.sidebarAppIsHidden || status.isMinimized || !status.isOnScreen
+            guard status.canMinimize || (focusOrRestore && !status.isMinimized) else { return }
+            self.onSidebarWindowAction?(focusOrRestore ? .focus(target) : .minimize(target, requireFocused: false))
         }, onHideApp: { [weak self] in
             guard let self, self.presentation == .sidebar,
                   let pid = self.currentApplication?.pid,

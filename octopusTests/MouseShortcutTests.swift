@@ -190,6 +190,27 @@ struct MouseShortcutTests {
         #expect(SidebarIconMousePolicy.action(.minimize, for: closed, frontmostPID: pid, target: id) == nil)
     }
 
+    @MainActor @Test func remoteWindowClickFocusesBeforeMinimizingEvenWhenItsAppIsAlreadyActive() {
+        let app = Application(NSRunningApplication.current)
+        let pid = NSRunningApplication.current.processIdentifier
+        let window = Window(AXUIElementCreateApplication(pid), app)
+        window.cgWindowID = 11
+        let id = SidebarWindowID(pid: pid, windowID: 11)
+        var entry = SidebarEntry(pid: pid, application: app, windows: [window], preferredID: id,
+            focusedID: id, windowStates: [11: SidebarWindowState(isMinimized: false, canMinimize: true, isOnScreen: false)])
+        for frontmost in [pid, pid + 1] {
+            for action in [MouseShortcutAction.minimize, .hide] {
+                #expect(SidebarIconMousePolicy.action(action, for: entry, frontmostPID: frontmost, target: id) == .focus(id))
+            }
+        }
+        // After arriving, the same shortcut can minimise; a minimised window restores.
+        entry.windowStates[11]?.isOnScreen = true
+        #expect(SidebarIconMousePolicy.action(.minimize, for: entry, frontmostPID: pid, target: id)
+                == .minimize(id, requireFocused: false))
+        entry.windowStates[11] = SidebarWindowState(isMinimized: true, canMinimize: true, isOnScreen: false)
+        #expect(SidebarIconMousePolicy.action(.minimize, for: entry, frontmostPID: pid, target: id) == .focus(id))
+    }
+
     @MainActor private func withStore(_ body: (MouseShortcutStore, UserDefaults) throws -> Void) throws {
         let name = "MouseShortcutTests.\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: name))

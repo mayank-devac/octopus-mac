@@ -134,6 +134,15 @@ enum SidebarFocusActivation {
         guard canContinue() else { return false }
         return activate()
     }
+
+    // Prefer the exact window over app-wide activation. Acceptance alone does not
+    // confirm a Space transition or that the requested window became focused.
+    static func activate(target: SidebarWindowID?, focusWindow: (SidebarWindowID) -> Bool,
+                         activateApp: (NSApplication.ActivationOptions) -> Bool) -> Bool {
+        // No target window: macOS chooses the Space either way.
+        guard let target else { return activateApp([.activateAllWindows]) }
+        return focusWindow(target) || activateApp([])
+    }
 }
 
 enum SidebarWindowPolicy {
@@ -579,7 +588,11 @@ final class SidebarWindowInventory: ObservableObject {
         let accepted = SidebarFocusActivation.request(
             canContinue: { token.canFinishFocus(on: pid) && !application.isTerminated },
             yieldActivation: { NSApp.yieldActivation(to: application) },
-            activate: { application.activate(options: [.activateAllWindows]) })
+            activate: {
+                SidebarFocusActivation.activate(target: target,
+                    focusWindow: { SidebarWindowFocusRequest($0.pid, $0.windowID) },
+                    activateApp: { application.activate(options: $0) })
+            })
         guard accepted, target != nil else {
             foregroundFocus[pid] = nil
             refreshAndUnlock(pid, token: token)
@@ -1093,6 +1106,12 @@ private final class SidebarWindowReader: @unchecked Sendable {
             guard !running.isHidden, token.isCurrent else { return .rejected }
             return running.hide() ? .completed : .rejected
         case .minimize(_, let requireFocused):
+            // A cached visible window may have moved to another Desktop before this
+            // queued action runs. Navigate to the exact window instead of minimising it.
+            if !Self.isOnScreen(id), !running.isHidden, !minimized {
+                return perform(.focus(id), desktop: desktop, token: token,
+                               systemFullScreenPID: systemFullScreenPID, application: application)
+            }
             guard !running.isHidden, !minimized,
                   desktopScope == .allDesktops || Self.isOnScreen(id),
                   !(requireFocused && systemFullScreenPID == id.pid),
@@ -1119,7 +1138,10 @@ private final class SidebarWindowReader: @unchecked Sendable {
             guard token.canFinishFocus(on: id.pid) else { return .rejected }
             if running.isHidden, !running.unhide() { return .rejected }
             guard token.canFinishFocus(on: id.pid), !running.isTerminated,
-                  validatedWindow(id) != nil, prepareWindowForActivation(element) else { return .rejected }
+                  validatedWindow(id) != nil else { return .rejected }
+            // Request the exact window before any main-window or raise operation.
+            // Raising here races the subsequent WindowServer focus request across Spaces.
+            // requestForeground owns activation and the follow-up raise.
             return .activate(running)
         }
     }

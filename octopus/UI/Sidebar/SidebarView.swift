@@ -64,10 +64,10 @@ struct SidebarView: View {
                                 if let monitor = group.monitor {
                                     Text(monitor.title)
                                         .font(.system(size: max(CGFloat(labelFontSize) - 1, 8), weight: .medium))
-                                        .foregroundStyle(colorScheme == .dark ? Color.black : Color.white)
+                                        .foregroundStyle(colorScheme == .dark ? Color.white : Color.black)
                                         .multilineTextAlignment(.center).lineLimit(3)
                                         .padding(.horizontal, 6).padding(.vertical, 2)
-                                        .background { SidebarFrostBackground().opacity(0.8) }
+                                        .background { SidebarFrostBackground() }
                                         .frame(maxWidth: .infinity).frame(height: SidebarMonitor.headerHeight)
                                         .overlay {
                                             SidebarGeometryAnchor(id: monitor.id, onAnchor: onMonitorAnchor)
@@ -77,9 +77,9 @@ struct SidebarView: View {
                                     if group.sections.allSatisfy({ $0.entries.isEmpty }) {
                                         Text("Empty")
                                             .font(.system(size: max(CGFloat(labelFontSize) - 1, 8), weight: .medium))
-                                            .foregroundStyle(colorScheme == .dark ? Color.black : Color.white)
+                                            .foregroundStyle(colorScheme == .dark ? Color.white : Color.black)
                                             .padding(.horizontal, 6).padding(.vertical, 2)
-                                            .background { SidebarFrostBackground().opacity(0.8) }
+                                            .background { SidebarFrostBackground() }
                                             .frame(maxWidth: .infinity).frame(height: SidebarMonitor.emptyHeight)
                                     }
                                 }
@@ -146,7 +146,7 @@ struct SidebarView: View {
 
             Text(title)
                 .font(.system(size: CGFloat(labelFontSize), weight: .medium))
-                .foregroundStyle(colorScheme == .dark ? Color.black : Color.white)
+                .foregroundStyle(colorScheme == .dark ? Color.white : Color.black)
                 .lineLimit(2)
                 .allowsTightening(true)
                 .multilineTextAlignment(.center)
@@ -179,7 +179,9 @@ struct SidebarView: View {
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("\(entry.application.title): \(title), \(entry.desktop?.title ?? "Other apps")")
-        .accessibilityHint(entry.preferredID == nil ? "Activate app" : entry.visibleIDs.isEmpty ? "Restore window" : "Focus window")
+        .accessibilityHint(entry.preferredID == nil ? "Activate app"
+            : entry.isHidden || entry.preferredID.flatMap { entry.windowStates[$0.windowID]?.isMinimized } == true
+                ? "Restore window" : "Focus window")
         .accessibilityAddTraits(.isButton)
         .accessibilityAction { onClick(entry.id) }
         .accessibilityActions {
@@ -224,7 +226,7 @@ private struct SidebarDesktopSeparator: View {
     let title: String
 
     var body: some View {
-        let lineColor: Color = colorScheme == .dark ? .black : .white
+        let lineColor: Color = colorScheme == .dark ? .white : .black
         LinearGradient(stops: [
             .init(color: .clear, location: 0), .init(color: lineColor.opacity(0.65), location: 0.2),
             .init(color: lineColor.opacity(0.65), location: 0.8), .init(color: .clear, location: 1)
@@ -264,9 +266,10 @@ private struct SidebarGeometryAnchor<ID: Hashable>: NSViewRepresentable {
 
 private struct SidebarFrostBackground: View {
     @Environment(\.colorScheme) private var colorScheme
+    @AppStorage("sidebarShadowOpacity") private var shadowOpacity = SidebarSettings.defaultShadowOpacity
 
     var body: some View {
-        let isDarkFrost = colorScheme == .light
+        let isDarkFrost = colorScheme == .dark
         let blurRadius: CGFloat = isDarkFrost ? 4 : 3.5
         let surfacePadding: CGFloat = isDarkFrost ? 1 : 0
         let fadeMargin = blurRadius * 3
@@ -275,27 +278,27 @@ private struct SidebarFrostBackground: View {
         Group {
             if isDarkFrost {
                 // A neutral tint keeps the shadow consistent regardless of the wallpaper colour.
-                Color(white: 0.06).opacity(0.5)
+                Color(white: 0.06).opacity(min(0.5 * shadowOpacity, 1))
             } else {
-                SidebarLabelBackground().opacity(0.38)
+                // Flat light tint, not the blurred material, so black text stays readable on very dark wallpapers.
+                Color(white: 0.94).opacity(min(0.5 * shadowOpacity, 1))
             }
         }
             .mask {
                 ZStack {
+                    // The setting is applied once, to the fill above; scaling the mask too would square it.
                     Capsule(style: .continuous)
                         .fill(.white)
                         .padding(fadeMargin)
                         .blur(radius: blurRadius)
                         .opacity(isDarkFrost ? 0.25 : 0.65)
 
-                    if isDarkFrost {
-                        // Keep contrast near the letters without darkening the whole halo.
-                        Capsule(style: .continuous)
-                            .fill(.white)
-                            .padding(fadeMargin + 1)
-                            .blur(radius: 4)
-                            .opacity(0.90)
-                    }
+                    // Keep contrast near the letters without tinting the whole halo.
+                    Capsule(style: .continuous)
+                        .fill(.white)
+                        .padding(fadeMargin + 1)
+                        .blur(radius: 4)
+                        .opacity(0.90)
                 }
             }
             .padding(-(fadeMargin + surfacePadding))
