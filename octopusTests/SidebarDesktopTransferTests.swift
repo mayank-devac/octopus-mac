@@ -73,7 +73,7 @@ struct SidebarDesktopTransferTests {
             monitors: [SidebarMonitor(id: "monitor-a", name: "Studio Display", isPrimary: true)], scope: .allDesktops)
         #expect(groups[0].desktops.map(\.id) == [10, 20, 30])
         #expect(groups[0].sections.count == 1)
-        #expect(groups[0].monitor?.title == "1 · Studio Display")
+        #expect(groups[0].monitor?.title == "Desktops")
         let visible = SidebarDesktopSection.make(entries: [entry], desktops: [first, empty], scope: .visibleDesktops)
         #expect(visible.count == 1 && visible[0].desktop == nil)
         #expect(visible[0].entries.count == 1)
@@ -88,6 +88,16 @@ struct SidebarDesktopTransferTests {
         #expect(groups[1].monitor?.title == "2 · DELL U2723QE")
         #expect(groups.allSatisfy { $0.sections.isEmpty && !$0.desktops.isEmpty })
         #expect(SidebarMonitorGroup.contentHeight(groups, spacing: 6) == (SidebarMonitor.headerHeight + SidebarMonitor.emptyHeight) * 2 + 6 + SidebarLayout.verticalPadding * 2)
+    }
+
+    @Test func displayNamesAppearOnlyWhenSeveralDisplaysAreConnected() {
+        let desktops = [desktop(10, display: "monitor-a")]
+        let single = [SidebarMonitor(id: "monitor-a", name: "Studio Display", isPrimary: true)]
+        let one = SidebarMonitorGroup.make(sections: [], desktops: desktops, monitors: single, scope: .allDesktops)
+        #expect(one[0].monitor?.title == "Desktops")
+        let both = single + [SidebarMonitor(id: "monitor-b", name: "DELL U2723QE", isPrimary: false)]
+        let two = SidebarMonitorGroup.make(sections: [], desktops: desktops, monitors: both, scope: .allDesktops)
+        #expect(two[0].monitor?.title == "1 · Studio Display")
     }
 
     @Test func popupAllowsCrossingTheGapWithoutCapturingAdjacentAppIcons() {

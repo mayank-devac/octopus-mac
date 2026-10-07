@@ -167,16 +167,19 @@ struct MouseShortcutTests {
         #expect(recorded == .left && !button.isRecording && starts == 0)
     }
 
-    @MainActor @Test func iconHideFocusesInactiveAppsAndMinimiseUsesTheDisplayedWindow() {
+    @MainActor @Test func iconHideFocusesInactiveAppsAndMinimiseOnlyActsOnTheFrontFocusedWindow() {
         let app = Application(NSRunningApplication.current)
         let pid = NSRunningApplication.current.processIdentifier
         let window = Window(AXUIElementCreateApplication(pid), app)
         window.cgWindowID = 11
         let id = SidebarWindowID(pid: pid, windowID: 11)
-        let entry = SidebarEntry(pid: pid, application: app, windows: [window], preferredID: id)
+        let entry = SidebarEntry(pid: pid, application: app, windows: [window], preferredID: id, focusedID: id)
         #expect(SidebarIconMousePolicy.action(.hide, for: entry, frontmostPID: pid + 1, target: id) == .focus(id))
         #expect(SidebarIconMousePolicy.action(.hide, for: entry, frontmostPID: pid, target: id) == .hide(id))
-        #expect(SidebarIconMousePolicy.action(.minimize, for: entry, frontmostPID: pid + 1, target: id) == .minimize(id, requireFocused: false))
+        // A visible but covered app (another app is frontmost) must come forward, never minimise.
+        #expect(SidebarIconMousePolicy.action(.minimize, for: entry, frontmostPID: pid + 1, target: id) == .focus(id))
+        #expect(SidebarIconMousePolicy.action(.minimize, for: entry, frontmostPID: nil, target: id) == .focus(id))
+        #expect(SidebarIconMousePolicy.action(.minimize, for: entry, frontmostPID: pid, target: id) == .minimize(id, requireFocused: true))
         let minimized = SidebarEntry(pid: pid, application: app, windows: [window], preferredID: id,
                                      windowStates: [11: SidebarWindowState(isMinimized: true, canMinimize: true)])
         #expect(SidebarIconMousePolicy.action(.minimize, for: minimized, frontmostPID: pid, target: id) == .focus(id))
@@ -185,7 +188,8 @@ struct MouseShortcutTests {
         replacement.cgWindowID = 22
         let changed = SidebarEntry(pid: pid, application: app, windows: [window, replacement],
                                    preferredID: SidebarWindowID(pid: pid, windowID: 22))
-        #expect(SidebarIconMousePolicy.action(.minimize, for: changed, frontmostPID: pid, target: id) == .minimize(id, requireFocused: false))
+        // A non-focused window of the frontmost app may be covered by its sibling; raise it.
+        #expect(SidebarIconMousePolicy.action(.minimize, for: changed, frontmostPID: pid, target: id) == .focus(id))
         let closed = SidebarEntry(pid: pid, application: app, windows: [replacement], preferredID: changed.preferredID)
         #expect(SidebarIconMousePolicy.action(.minimize, for: closed, frontmostPID: pid, target: id) == nil)
     }
@@ -206,7 +210,7 @@ struct MouseShortcutTests {
         // After arriving, the same shortcut can minimise; a minimised window restores.
         entry.windowStates[11]?.isOnScreen = true
         #expect(SidebarIconMousePolicy.action(.minimize, for: entry, frontmostPID: pid, target: id)
-                == .minimize(id, requireFocused: false))
+                == .minimize(id, requireFocused: true))
         entry.windowStates[11] = SidebarWindowState(isMinimized: true, canMinimize: true, isOnScreen: false)
         #expect(SidebarIconMousePolicy.action(.minimize, for: entry, frontmostPID: pid, target: id) == .focus(id))
     }

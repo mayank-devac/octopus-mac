@@ -18,9 +18,14 @@ enum SidebarIconMousePolicy {
         case .minimize:
             guard let id = target, id.pid == entry.pid,
                   entry.windows.contains(where: { $0.cgWindowID == id.windowID }) else { return nil }
-            let minimized = entry.windowStates[id.windowID]?.isMinimized == true
-            let offDesktop = entry.windowStates[id.windowID]?.isOnScreen == false
-            return entry.isHidden || minimized || offDesktop ? .focus(id) : .minimize(id, requireFocused: false)
+            let state = entry.windowStates[id.windowID]
+            // Only the focused window of the frontmost app is on top. A window that is merely
+            // on-screen may be covered, so minimising it would hide a window the user cannot see.
+            // Anything else comes forward instead; the executor rechecks focus before minimising.
+            let isFrontFocused = frontmostPID == entry.pid && entry.focusedID == id
+            guard !entry.isHidden, state?.isMinimized != true, state?.isOnScreen != false,
+                  isFrontFocused else { return .focus(id) }
+            return .minimize(id, requireFocused: true)
         case .place: return nil // Placement is a drag, never a click.
         }
     }
