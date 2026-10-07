@@ -46,8 +46,8 @@ enum SidebarIdleBehavior: String, CaseIterable {
     var title: String {
         switch self {
         case .fade: return "Fade"
-        case .hide: return "Hide"
-        case .stayVisible: return "Stay visible"
+        case .hide: return "Auto-Hide"
+        case .stayVisible: return "Alway visible"
         }
     }
 }
@@ -104,7 +104,6 @@ enum SidebarSettings {
             "sidebarSide": SidebarSide.right.rawValue,
             "sidebarPosition": 0.5,
             "sidebarMonitor": "primary",
-            idleBehaviorKey: SidebarIdleBehavior.fade.rawValue,
             "sidebarShowSingleWindowMenu": true,
             "sidebarAppSpacing": defaultAppSpacing,
             "sidebarFontSize": defaultFontSize,

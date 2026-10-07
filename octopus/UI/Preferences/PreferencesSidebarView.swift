@@ -19,18 +19,18 @@ struct PreferencesSidebarView: View {
         Form {
             Toggle("Show window sidebar", isOn: $enabled)
             Section {
-                Picker("Apps Window from", selection: $desktopScope) {
+                Picker("Show windows", selection: $desktopScope) {
                     ForEach(SidebarDesktopScope.allCases, id: \.rawValue) { scope in
                         Text(scope.title).tag(scope.rawValue)
                     }
                 }
-                Picker("When not Sidebar in use", selection: $idleBehavior) {
+                Picker("Visibility", selection: $idleBehavior) {
                     ForEach(SidebarIdleBehavior.allCases, id: \.rawValue) { behavior in
                         Text(behavior.title).tag(behavior.rawValue)
                     }
                 }
-                .help("Fade makes the idle sidebar more transparent so you can see through the icons. Hide shows it only when the pointer reaches the screen edge. Stay visible keeps it fully opaque.")
-                Toggle("Show window menu for apps with one window", isOn: $showSingleWindowMenu)
+                .help("Fade makes the idle sidebar more transparent so you can see through the icons. Auto-Hide shows it only when the pointer reaches the screen edge. Always visible keeps it fully opaque.")
+                Toggle("Show menu for apps with one window", isOn: $showSingleWindowMenu)
                 HStack {
                     Text("Snap distance")
                     Slider(value: Binding(
@@ -46,7 +46,8 @@ struct PreferencesSidebarView: View {
                 }
                 .help("Larger distances show snap previews sooner. On smaller displays the distance is limited so the centre stays available for moving windows.")
             } footer: {
-                Text("Groups windows by desktop, with separators between groups. Apps can appear in several groups; each menu shows only that desktop’s windows. Finder appears only when it has a window, and apps without known windows appear after the desktop groups. In full screen, the sidebar appears at the screen edge; Hide affects the whole app across desktops.")
+                Text("Groups windows by desktop with separators. Each menu shows only that desktop’s windows. Finder appears only when open, and apps without windows appear last. In full screen, the sidebar stays at the screen edge; Auto-hide applies across all desktops.")
+
             }
             .disabled(!enabled)
 
