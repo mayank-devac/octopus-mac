@@ -203,7 +203,7 @@ enum SidebarPlacementWriter {
         // A window on another display would visibly shrink there and then jump across if
         // resized first. Land on the target display and wait for macOS to register it, so
         // the size writes are fitted to, and animate on, the display the window ends on.
-        if request.resize, let current = readFrame(), SidebarPlacementGeometry.isValid(current),
+        if request.resize, repeatSizeAfterMove, let current = readFrame(), SidebarPlacementGeometry.isValid(current),
            !isOnTargetDisplay(current) {
             _ = writePosition(request.workArea.origin)
             let landed = settledFrame(until: isOnTargetDisplay, unreadable: "The app did not report the window's position.")
@@ -238,7 +238,7 @@ enum SidebarPlacementWriter {
             guard needsSize || needsPosition, canContinue() else { break }
             if needsSize { writeRequestedSize() }
             if needsPosition, !writePosition(request.frame.origin) { break }
-            if needsPosition, needsSize, canContinue() { writeRequestedSize() }
+            if repeatSizeAfterMove, needsPosition, needsSize, canContinue() { writeRequestedSize() }
             switch settledFrame(until: reached, unreadable: "The app did not report the window's final position.") {
             case .placed(let frame, _): actual = frame
             case let other: return other

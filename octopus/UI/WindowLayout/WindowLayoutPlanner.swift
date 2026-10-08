@@ -1,6 +1,26 @@
 import AppKit
 
 enum WindowLayoutPlanner {
+    // Only selected candidates incur Accessibility metadata reads. Frames are still read live.
+    static func snapshot(anchor: WindowLayoutWindow, candidates: [WindowLayoutCandidate],
+                         displays: [WindowLayoutDisplay], desktop: Int, selection: WindowLayoutSelection,
+                         read: (WindowLayoutCandidate) -> WindowLayoutWindow?) -> WindowLayoutSnapshot {
+        let ordered = candidates.sorted { a, b in
+            if a.recency != b.recency { return a.recency > b.recency }
+            if a.stackOrder != b.stackOrder { return a.stackOrder < b.stackOrder }
+            return a.window.windowID < b.window.windowID
+        }
+        var windows = [anchor]
+        var complete = true
+        for candidate in ordered where candidate.window != anchor.id.window {
+            guard let window = read(candidate), window.scope == anchor.scope else { complete = false; break }
+            guard window.visible, !window.blocked else { continue }
+            windows.append(window)
+            if selection == .mostRecent { break }
+        }
+        return WindowLayoutSnapshot(windows: windows, displays: displays, complete: complete, desktopGeneration: desktop)
+    }
+
     // AX coordinates grow downward: the top half starts at the smaller Y.
     static func oppositeHalf(_ snap: SidebarSnapTarget, in area: CGRect) -> CGRect? {
         switch snap {
@@ -14,6 +34,7 @@ enum WindowLayoutPlanner {
 
     static func plan(snapshot: WindowLayoutSnapshot, anchorID: SidebarWindowID,
                      request: SidebarPlacementRequest, selection: WindowLayoutSelection = .mostRecent) -> WindowLayoutPlanningResult {
+        if !snapshot.complete { return .rejected(snapshot.failureReason ?? "An open window could not be verified. Your snap stays in place.") }
         guard snapshot.complete, Set(snapshot.windows.map { $0.id.window }).count == snapshot.windows.count,
               let snap = request.snap,
               let peerFrame = oppositeHalf(snap, in: request.workArea),

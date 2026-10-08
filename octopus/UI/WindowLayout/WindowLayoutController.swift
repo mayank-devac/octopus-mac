@@ -81,10 +81,9 @@ final class WindowLayoutController: ObservableObject {
         guard enabled, !trackingRefreshQueued else { return }
         trackingRefreshQueued = true
         let apps = applications()
-        let desktop = generation
         let focused = NSWorkspace.shared.frontmostApplication?.processIdentifier
         reader.queue.async { [weak self, reader] in
-            _ = reader.read(apps, systemFullScreenPID: nil, desktop: desktop, scope: .allDesktops)
+            reader.trackLayoutFocus(apps)
             if let focused { reader.recordFrontmostWindow(pid: focused) }
             DispatchQueue.main.async { self?.trackingRefreshQueued = false }
         }
@@ -99,10 +98,10 @@ final class WindowLayoutController: ObservableObject {
     private func schedule(_ snap: WindowLayoutCompletedSnap) {
         guard enabled, snap.request.snap != .maximize, snap.isCurrent(after: latestAction) else { return }
         cancel()
-        // Let the original snap's existing activation settle. No input path is replaced.
+        // The native writer already confirmed its frame. Prepare companions on the next turn.
         let work = DispatchWorkItem { [weak self] in self?.adjust(snap) }
         pending = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: work)
+        DispatchQueue.main.async(execute: work)
     }
 
     private func adjust(_ snap: WindowLayoutCompletedSnap) {
@@ -113,11 +112,8 @@ final class WindowLayoutController: ObservableObject {
         token = batch
         watchInput(batch)
         let displays = WindowLayoutDisplay.connected()
-        let apps = applications()
         let selection = self.selection
         let logger = self.logger
-        let fullScreenPID = NSApp.currentSystemPresentationOptions.contains(.fullScreen)
-            ? NSWorkspace.shared.frontmostApplication?.processIdentifier : nil
         reader.queue.async { [weak self, reader] in
             guard !batch.isCancelled else {
                 DispatchQueue.main.async {
@@ -127,8 +123,7 @@ final class WindowLayoutController: ObservableObject {
                 }
                 return
             }
-            _ = reader.read(apps, systemFullScreenPID: fullScreenPID, desktop: requestGeneration, scope: .allDesktops)
-            let snapshot = reader.layoutSnapshot(displays: displays, desktop: requestGeneration)
+            let snapshot = reader.layoutSnapshot(displays: displays, desktop: requestGeneration, snap: snap, selection: selection)
             let planning = WindowLayoutPlanner.plan(snapshot: snapshot, anchorID: snap.window, request: snap.request, selection: selection)
             var result: WindowLayoutBatchResult?
             var plan: WindowLayoutPlan?
@@ -168,7 +163,10 @@ final class WindowLayoutController: ObservableObject {
                 && (focused == batch.frontmostPID || focused == plan.anchor.id.window.pid)
         }
         return WindowLayoutExecutor.apply(plan, canContinue: canContinue,
-            read: { id in reader.layoutWindow(id.window, displays: displays) },
+            read: { id in
+                guard let expected = ([plan.anchor] + plan.peers).first(where: { $0.id == id }) else { return nil }
+                return reader.currentLayoutWindow(expected, displays: displays)
+            },
             write: { id, frame, deadline in
                 guard let peer = plan.peers.first(where: { $0.id == id }) else { return .cancelled }
                 let result = reader.writeLayoutWindow(peer, frame: frame, workArea: plan.workArea,

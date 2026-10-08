@@ -237,4 +237,65 @@ struct WindowLayoutTests {
         #expect(old.isCurrent(after: 10))
         #expect(!old.isCurrent(after: 11))
     }
+
+    @Test func recentModeReadsOneCandidateEvenWithOneHundredOtherWindows() {
+        let anchor = window(1, frame: target(.left))
+        let candidates = (2...101).map { number in
+            WindowLayoutCandidate(window: window(UInt32(number)).id.window, recency: UInt64(number), stackOrder: number)
+        }
+        var reads = 0
+        let result = WindowLayoutPlanner.snapshot(anchor: anchor, candidates: candidates, displays: snapshot([]).displays,
+            desktop: 0, selection: .mostRecent, read: { candidate in
+                reads += 1
+                return window(candidate.window.windowID, recency: candidate.recency)
+            })
+        #expect(reads == 1 && result.windows.count == 2 && result.complete)
+        #expect(result.windows.last?.id.window.windowID == 101)
+    }
+
+    @Test func candidateReadFailureRemainsUnknownAndHiddenWindowsAreSkipped() {
+        let anchor = window(1, frame: target(.left))
+        let candidates = [WindowLayoutCandidate(window: window(2).id.window, recency: 4, stackOrder: 0),
+                          WindowLayoutCandidate(window: window(3).id.window, recency: 3, stackOrder: 1)]
+        let unknown = WindowLayoutPlanner.snapshot(anchor: anchor, candidates: candidates, displays: snapshot([]).displays,
+            desktop: 0, selection: .mostRecent, read: { _ in nil })
+        #expect(!unknown.complete)
+        let skipped = WindowLayoutPlanner.snapshot(anchor: anchor, candidates: candidates, displays: snapshot([]).displays,
+            desktop: 0, selection: .mostRecent, read: { candidate in
+                window(candidate.window.windowID, hidden: candidate.window.windowID == 2)
+            })
+        #expect(skipped.complete && skipped.windows.last?.id.window.windowID == 3)
+    }
+
+    @Test func batchedFrameDecoderRejectsMalformedAndErrorValues() throws {
+        var position = CGPoint(x: -100, y: 30)
+        var size = CGSize(width: 800, height: 500)
+        let pointValue = try #require(AXValueCreate(.cgPoint, &position))
+        let sizeValue = try #require(AXValueCreate(.cgSize, &size))
+        #expect(AXUIElement.decodeWindowFrame(position: pointValue, size: sizeValue) == CGRect(origin: position, size: size))
+        #expect(AXUIElement.decodeWindowFrame(position: sizeValue, size: pointValue) == nil)
+        #expect(AXUIElement.decodeWindowFrame(position: NSNumber(value: 4), size: sizeValue) == nil)
+        var error = AXError.cannotComplete
+        let errorValue = try #require(AXValueCreate(.axError, &error))
+        #expect(AXUIElement.decodeWindowFrame(position: errorValue, size: sizeValue) == nil)
+    }
+
+    @Test func companionWriterResizesOnceAndWaitsForDelayedReachableFrames() {
+        let desired = CGRect(x: 0, y: 20, width: 1000, height: 350)
+        let workArea = CGRect(x: 0, y: 20, width: 1000, height: 700)
+        let request = SidebarPlacementRequest(frame: desired, workArea: workArea, resize: true, desktopGeneration: 0)
+        var frame = workArea
+        var reads = 0, sizes = 0, positions = 0
+        var pendingSize: CGSize?
+        let result = SidebarPlacementWriter.apply(request, canContinue: { true },
+            readFrame: {
+                reads += 1
+                if reads >= 4, let pendingSize { frame.size = pendingSize }
+                return frame
+            }, writePosition: { point in positions += 1; frame.origin = point; return true },
+            writeSize: { size in sizes += 1; pendingSize = size; return true },
+            repeatSizeAfterMove: false, acceptStableMismatch: false, wait: {})
+        #expect(result == .placed(desired, adjusted: false))
+        #expect(sizes == 1 && positions == 1 && reads == 4)
+    }
 }

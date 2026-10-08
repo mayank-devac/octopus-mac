@@ -51,10 +51,17 @@ struct WindowLayoutSnapshot {
     let displays: [WindowLayoutDisplay]
     let complete: Bool
     let desktopGeneration: Int
+    var failureReason: String? = nil
 
     func windows(in scope: WindowLayoutScope) -> [WindowLayoutWindow] {
         windows.filter { $0.scope == scope }
     }
+}
+
+struct WindowLayoutCandidate {
+    let window: SidebarWindowID
+    let recency: UInt64
+    let stackOrder: Int
 }
 
 struct WindowLayoutPlan {

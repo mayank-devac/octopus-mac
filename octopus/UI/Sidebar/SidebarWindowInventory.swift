@@ -750,7 +750,6 @@ final class SidebarWindowReader: @unchecked Sendable {
     private var fullScreenWindows: Set<SidebarWindowID> = []
     private let spaceReader = SidebarSpaceReader()
     private let windowDiscovery = SidebarWindowDiscovery()
-    private var layoutIncomplete = false
     private var layoutSequence: UInt64 = 0
     private var layoutGenerations: [SidebarWindowID: UInt64] = [:]
     private var layoutLaunchDates: [pid_t: Date] = [:]
@@ -844,7 +843,6 @@ final class SidebarWindowReader: @unchecked Sendable {
     func read(_ applications: [NSRunningApplication], systemFullScreenPID: pid_t?,
               desktop: Int, scope: SidebarDesktopScope) -> Snapshot {
         dispatchPrecondition(condition: .onQueue(queue))
-        layoutIncomplete = false
         if desktopScope != scope || (desktopGeneration != desktop && scope == .visibleDesktops) {
             knownWindows.removeAll()
             previousEntries.removeAll()
@@ -887,7 +885,6 @@ final class SidebarWindowReader: @unchecked Sendable {
             // until a successful scan, a desktop change, or termination resolves it.
             let readableWindows: [AXUIElement]? = element.getAttributeValue(.windows)
             if readableWindows == nil {
-                layoutIncomplete = true
                 if var previous = previousEntries[running.processIdentifier],
                    previous.application.runningApplication?.isTerminated == false {
                     previous.isHidden = running.isHidden
@@ -1051,6 +1048,18 @@ final class SidebarWindowReader: @unchecked Sendable {
     }
 
     // Layout uses this reader's existing discovery and validation, with independent focus history.
+    func trackLayoutFocus(_ applications: [NSRunningApplication]) {
+        dispatchPrecondition(condition: .onQueue(queue))
+        let pids = Set(applications.map(\.processIdentifier))
+        for pid in Array(observers.keys) where !pids.contains(pid) { removeObserver(pid) }
+        for app in applications where !app.isTerminated {
+            guard let element = Application(app).element else { continue }
+            AXUIElementSetMessagingTimeout(element, 0.2)
+            observe(app: element, pid: app.processIdentifier, windows: [])
+        }
+        recency = recency.filter { pids.contains($0.key.pid) }
+    }
+
     func recordFrontmostWindow(pid: pid_t) {
         dispatchPrecondition(condition: .onQueue(queue))
         guard tracksFrontmostFocus, let app = NSRunningApplication(processIdentifier: pid), !app.isTerminated,
@@ -1069,33 +1078,77 @@ final class SidebarWindowReader: @unchecked Sendable {
         let directID = element.getWindowID()
         let focused: AXUIElement? = directID != nil && directID != kCGNullWindowID ? element : element.getAttributeValue(.focusedWindow)
         guard let focused, let windowID = focused.getWindowID(), windowID != kCGNullWindowID else { return }
-        recordFocus(SidebarWindowID(pid: pid, windowID: windowID))
+        let id = SidebarWindowID(pid: pid, windowID: windowID)
+        if let app = NSRunningApplication(processIdentifier: pid), !app.isTerminated {
+            if let old = knownWindows[id], !CFEqual(old.element, focused) { layoutGenerations.removeValue(forKey: id) }
+            knownWindows[id] = KnownWindow(element: focused, application: app)
+        }
+        recordFocus(id)
     }
 
-    func layoutSnapshot(displays: [WindowLayoutDisplay], desktop: Int) -> WindowLayoutSnapshot {
+    func layoutSnapshot(displays: [WindowLayoutDisplay], desktop: Int, snap: WindowLayoutCompletedSnap,
+                        selection: WindowLayoutSelection) -> WindowLayoutSnapshot {
         dispatchPrecondition(condition: .onQueue(queue))
-        let info = CGWindowListCopyWindowInfo([.optionAll, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]]
-        let order = Dictionary((info ?? []).enumerated().compactMap { index, record -> (CGWindowID, Int)? in
-            guard let id = record[kCGWindowNumber as String] as? NSNumber else { return nil }
-            return (id.uint32Value, index)
-        }, uniquingKeysWith: { first, _ in first })
-        var complete = info != nil && !layoutIncomplete && AXIsProcessTrusted()
-        var windows: [WindowLayoutWindow] = []
-        let visibleSpaces = spaceReader.visibleDesktopIDs()
-        if visibleSpaces.isEmpty { complete = false }
-        for id in knownWindows.keys {
-            // Only normal surfaces on visible Desktops can be an anchor or companion.
-            guard let record = info?.first(where: { ($0[kCGWindowNumber as String] as? NSNumber)?.uint32Value == id.windowID }),
-                  (record[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value == id.pid,
-                  (record[kCGWindowLayer as String] as? NSNumber)?.intValue == 0,
-                  (record[kCGWindowIsOnscreen as String] as? Bool) == true else { continue }
-            let membership = spaceReader.read(windowIDs: [id.windowID])[id.windowID] ?? []
-            guard membership.count == 1, let member = membership.first, member.number != nil,
-                  visibleSpaces.contains(member.id) else { continue }
-            if let window = layoutWindow(id, displays: displays, stackOrder: order[id.windowID] ?? Int.max) { windows.append(window) }
-            else { complete = false }
+        func unavailable(_ reason: String) -> WindowLayoutSnapshot {
+            WindowLayoutSnapshot(windows: [], displays: displays, complete: false, desktopGeneration: desktop, failureReason: reason)
         }
-        return WindowLayoutSnapshot(windows: windows, displays: displays, complete: complete, desktopGeneration: desktop)
+        guard AXIsProcessTrusted() else { return unavailable("Window control permission is unavailable.") }
+        guard let info = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else {
+            return unavailable("The visible window list could not be read.")
+        }
+        guard resolveLayoutWindow(snap.window) else { return unavailable("The snapped window's live handle could not be found.") }
+        guard let anchor = layoutWindow(snap.window, displays: displays) else { return unavailable("The snapped window's state or Desktop could not be read.") }
+        guard SidebarPlacementGeometry.matches(anchor.frame, snap.request.frame) else {
+            return unavailable("The snapped window is still changing size or position.")
+        }
+        guard let destination = displays.first(where: { $0.id == anchor.scope.displayID }),
+              SidebarPlacementGeometry.matches(destination.workArea, snap.request.workArea) else {
+            return unavailable("The snapped window's destination display changed.")
+        }
+        let catalog = spaceReader.allDesktops()
+        var visible: [(SidebarWindowID, Int)] = []
+        for (order, record) in info.enumerated() {
+            guard let number = record[kCGWindowNumber as String] as? NSNumber,
+                  let owner = record[kCGWindowOwnerPID as String] as? NSNumber,
+                  (record[kCGWindowLayer as String] as? NSNumber)?.intValue == 0,
+                  let app = NSRunningApplication(processIdentifier: owner.int32Value),
+                  app.activationPolicy == .regular, !app.isHidden, !app.isTerminated,
+                  let bounds = record[kCGWindowBounds as String] as? [String: Any],
+                  let frame = CGRect(dictionaryRepresentation: bounds as CFDictionary),
+                  SidebarPlacementGeometry.isValid(frame) else { continue }
+            let overlaps = displays.map { display -> (String, CGFloat) in
+                let intersection = display.frame.intersection(frame)
+                return (display.id, intersection.isNull ? 0 : intersection.width * intersection.height)
+            }
+            guard overlaps.max(by: { $0.1 < $1.1 })?.0 == anchor.scope.displayID else { continue }
+            let id = SidebarWindowID(pid: app.processIdentifier, windowID: number.uint32Value)
+            guard id != snap.window else { continue }
+            visible.append((id, order))
+        }
+        let membership = spaceReader.read(windowIDs: Set(visible.map { $0.0.windowID }), catalog: catalog)
+        let candidates = visible.compactMap { id, order -> WindowLayoutCandidate? in
+            guard let spaces = membership[id.windowID], spaces.count == 1, spaces[0].id == anchor.scope.spaceID else { return nil }
+            return WindowLayoutCandidate(window: id, recency: recency[id] ?? 0, stackOrder: order)
+        }
+        return WindowLayoutPlanner.snapshot(anchor: anchor, candidates: candidates, displays: displays,
+            desktop: desktop, selection: selection, read: { candidate in
+                guard self.resolveLayoutWindow(candidate.window) else { return nil }
+                return self.layoutWindow(candidate.window, displays: displays, stackOrder: candidate.stackOrder)
+            })
+    }
+
+    // Resolve a missing handle only within the chosen app, never scan every app/Space for each snap.
+    private func resolveLayoutWindow(_ id: SidebarWindowID) -> Bool {
+        guard let app = NSRunningApplication(processIdentifier: id.pid), !app.isTerminated else { return false }
+        if let known = knownWindows[id], known.application.launchDate == app.launchDate,
+           known.element.getWindowID() == id.windowID { return true }
+        guard let element = Application(app).element else { return false }
+        AXUIElementSetMessagingTimeout(element, 0.2)
+        guard let windows: [AXUIElement] = element.getAttributeValue(.windows) else { return false }
+        guard let window = windows.first(where: { $0.getWindowID() == id.windowID }) else { return false }
+        if let old = knownWindows[id], !CFEqual(old.element, window) { layoutGenerations.removeValue(forKey: id) }
+        knownWindows[id] = KnownWindow(element: window, application: app)
+        return true
     }
 
     func layoutWindow(_ id: SidebarWindowID, displays: [WindowLayoutDisplay], stackOrder: Int = Int.max) -> WindowLayoutWindow? {
@@ -1150,6 +1203,61 @@ final class SidebarWindowReader: @unchecked Sendable {
         return .zero
     }
 
+    // During a write, capabilities/minimums stay with this operation's validated metadata.
+    // Geometry and safety flags remain live, fetched in a single IPC instead of a full inventory scan.
+    func currentLayoutWindow(_ expected: WindowLayoutWindow, displays: [WindowLayoutDisplay]) -> WindowLayoutWindow? {
+        dispatchPrecondition(condition: .onQueue(queue))
+        guard layoutIdentityIsCurrent(expected, displays: displays), let known = knownWindows[expected.id.window] else { return nil }
+        let attributes = [kAXPositionAttribute, kAXSizeAttribute, kAXMinimizedAttribute,
+                          "AXFullScreen", "AXModal", "AXSheets", kAXRoleAttribute, kAXSubroleAttribute] as CFArray
+        var array: CFArray?
+        let result = AXUIElementCopyMultipleAttributeValues(known.element, attributes, AXCopyMultipleAttributeOptions(rawValue: 0), &array)
+        if result == .notImplemented || result == .attributeUnsupported {
+            return layoutWindow(expected.id.window, displays: displays)
+        }
+        guard result == .success, let values = array as? [AnyObject], values.count == 8,
+              let frame = AXUIElement.decodeWindowFrame(position: values[0], size: values[1]) else { return nil }
+        func unsupported(_ value: AnyObject) -> Bool {
+            guard CFGetTypeID(value) == AXValueGetTypeID() else { return false }
+            let ax = unsafeBitCast(value, to: AXValue.self)
+            var error = AXError.success
+            return AXValueGetType(ax) == .axError && AXValueGetValue(ax, .axError, &error)
+                && (error == .attributeUnsupported || error == .noValue || error == .notImplemented)
+        }
+        func flag(_ index: Int) -> Bool? {
+            if unsupported(values[index]) { return false }
+            return values[index] as? Bool
+        }
+        guard let minimized = flag(2), let fullScreen = flag(3), let modal = flag(4),
+              let sheets = (values[5] as? [AXUIElement]) ?? (unsupported(values[5]) ? [] : nil),
+              let role = values[6] as? String else { return nil }
+        let subrole = values[7] as? String
+        guard subrole != nil || unsupported(values[7]),
+              SidebarWindowPolicy.isTopLevelWindow(role: role, subrole: subrole) else { return nil }
+        return WindowLayoutWindow(id: expected.id, scope: expected.scope, frame: frame, minimum: expected.minimum,
+            canMove: expected.canMove, canResize: expected.canResize,
+            hidden: known.application.isHidden, minimized: minimized, blocked: fullScreen || modal || !sheets.isEmpty,
+            recency: expected.recency, stackOrder: expected.stackOrder)
+    }
+
+    private func layoutIdentityIsCurrent(_ expected: WindowLayoutWindow, displays: [WindowLayoutDisplay]) -> Bool {
+        guard AXIsProcessTrusted(), layoutGenerations[expected.id.window] == expected.id.generation,
+              let known = knownWindows[expected.id.window], !known.application.isTerminated,
+              let app = NSRunningApplication(processIdentifier: expected.id.window.pid), !app.isTerminated,
+              app.launchDate == known.application.launchDate,
+              let record = (CGWindowListCopyWindowInfo(.optionIncludingWindow, expected.id.window.windowID) as? [[String: Any]])?.first,
+              (record[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value == expected.id.window.pid,
+              let bounds = record[kCGWindowBounds as String] as? [String: Any],
+              let frame = CGRect(dictionaryRepresentation: bounds as CFDictionary) else { return false }
+        let physical = displays.max { a, b in
+            let first = a.frame.intersection(frame), second = b.frame.intersection(frame)
+            return (first.isNull ? 0 : first.width * first.height) < (second.isNull ? 0 : second.width * second.height)
+        }
+        let spaces = spaceReader.read(windowIDs: [expected.id.window.windowID])[expected.id.window.windowID] ?? []
+        return physical?.id == expected.scope.displayID && spaces.count == 1 && spaces[0].id == expected.scope.spaceID
+            && spaceReader.visibleDesktopIDs().contains(expected.scope.spaceID)
+    }
+
     func writeLayoutWindow(_ expected: WindowLayoutWindow, frame: CGRect, workArea: CGRect,
                            displays: [WindowLayoutDisplay], token: WindowLayoutBatchToken,
                            anchorPID: pid_t, deadline: TimeInterval) -> SidebarPlacementResult {
@@ -1159,14 +1267,13 @@ final class SidebarWindowReader: @unchecked Sendable {
             return !token.isCancelled && AXIsProcessTrusted() && ProcessInfo.processInfo.systemUptime < deadline
                 && (frontmost == token.frontmostPID || frontmost == anchorPID)
         }
-        guard allowed(), let live = layoutWindow(expected.id.window, displays: displays),
+        guard allowed(), let live = currentLayoutWindow(expected, displays: displays),
               live.id == expected.id, live.scope == expected.scope, live.eligible,
               let known = knownWindows[expected.id.window] else { return .cancelled }
         let element = known.element
         let request = SidebarPlacementRequest(frame: frame, workArea: workArea, resize: true, desktopGeneration: desktopGeneration ?? 0)
         func stillInScope() -> Bool {
-            guard allowed(), let current = layoutWindow(expected.id.window, displays: displays) else { return false }
-            return current.id == expected.id && current.scope == expected.scope && current.eligible
+            allowed() && layoutIdentityIsCurrent(expected, displays: displays)
         }
         return Self.withoutEnhancedUserInterface(pid: expected.id.window.pid) {
             SidebarPlacementWriter.apply(request, canContinue: allowed, readFrame: { element.getWindowFrame() },
@@ -1180,7 +1287,7 @@ final class SidebarWindowReader: @unchecked Sendable {
                     var size = size
                     guard let value = AXValueCreate(.cgSize, &size) else { return false }
                     return AXUIElementSetAttributeValue(element, kAXSizeAttribute as CFString, value) == .success
-                })
+                }, repeatSizeAfterMove: false, acceptStableMismatch: false)
         }
     }
 
@@ -1326,9 +1433,8 @@ final class SidebarWindowReader: @unchecked Sendable {
             guard token.canFinishFocus(on: id.pid), validatedWindow(id) != nil, token.beginFocus() else {
                 return .placement(.failed("Window placement finished, but the app could not bring it forward."), nil)
             }
-            guard prepareWindowForActivation(element) else {
-                return .placement(.failed("This window is no longer available to bring forward."), nil)
-            }
+            // Match the proven focus path: request this exact window before its follow-up raise.
+            // An early AXMain/AXRaise can surface it before the cross-display focus has settled.
             return .placement(result, running)
         case .hide:
             guard !running.isHidden, token.isCurrent else { return .rejected }
@@ -1387,15 +1493,6 @@ final class SidebarWindowReader: @unchecked Sendable {
         if wasEnabled { _ = AXUIElementSetAttributeValue(application, attribute, kCFBooleanFalse) }
         defer { if wasEnabled { _ = AXUIElementSetAttributeValue(application, attribute, kCFBooleanTrue) } }
         return body()
-    }
-
-    private func prepareWindowForActivation(_ element: AXUIElement) -> Bool {
-        if isSettable(element, attribute: .main) {
-            _ = AXUIElementSetAttributeValue(element, kAXMainAttribute as CFString, kCFBooleanTrue)
-        }
-        // A restore animation may reject this early raise. Still request app activation.
-        let result = AXUIElementPerformAction(element, kAXRaiseAction as CFString)
-        return SidebarFocusActivation.canRequestAfterRaise(result)
     }
 
     func raiseForegroundWindow(_ id: SidebarWindowID, token: SidebarPendingAction, expiresAt: TimeInterval) {
