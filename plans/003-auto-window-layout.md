@@ -22,9 +22,22 @@ Implementation checklist:
 - [x] Corners are removed and the top edge uses a half; focused regression expectations are updated.
 - [x] Initial focused run: **109 tests / 112 parameterised executions passed**, no failures or skips, from `/tmp/octopus-auto-layout-focused-tests.xcresult`.
 - [x] Live Snap-tab defaults and both dropdown labels observed. Live top-half action resized the blank TextEdit companion to a 1920 × 525-point half-height window; successful companion adjustment and Undo availability appeared in the running app. A limited-app failure was also observed and correctly declined.
-- [ ] Repeat the relevant focused tests after the live focus-notification/generation fixes.
-- [ ] Finish live all-window and Undo checks; confirm the cross-display icon gesture with Mayank.
-- [ ] Review the final diff and record remaining platform/app limits.
+- [x] Repeated focused verification after the performance/focus changes: broader run **114 tests / 117 executions**, then final `WindowLayoutTests` and `SidebarDragTests` run **48 tests / 51 executions**, all passed, no failures or skips. Final bundle: `/tmp/octopus-auto-layout-final-focused-tests.xcresult`.
+- [x] Mayank confirmed that the cross-display gesture works, but reported delay and visible fluctuation in both the companion and dragged window. Those reports prompted the changes below; they are not recorded as a clean visual pass.
+- [x] Final diff checked. At Mayank's request, further UI clicking stopped; visual smoothness, live all-window mode and live Undo are **not newly verified**.
+
+Latest reliability/performance changes:
+
+- Companion discovery now uses fresh visible Core Graphics records scoped to the destination display/Desktop. It resolves only the chosen apps' AX handles, instead of rereading the entire app/Space inventory after each snap.
+- Most-recent candidate selection has a production-path test with 100 candidates that verifies one companion metadata read. All mode still reads each selected normal window.
+- Focus tracking subscribes at the app level without enumerating every window on startup/app changes. Actual frames and current safety flags are read live; frame geometry is not taken from a stale cache.
+- Removed the fixed 150 ms companion delay. Permission, window identity, process generation, Desktop/display and interruption guards remain in place.
+- Companion writes on the same display send size then position once, with bounded final confirmation. A repeated reachable old frame no longer causes an immediate duplicate resize. The original cross-display writer retains its normal protection for the dragged target.
+- Mayank explicitly approved changing `octopus/Models/AXUIElement.swift`. The shared position/size read uses one bulk AX call and falls back to individual reads for unsupported providers; malformed/error values remain failures.
+- The placement path no longer sets AXMain/AXRaise before requesting the exact window's focus. It uses the existing focus-first/follow-up-raise sequence documented in `.agent/cross-desktop-focus.md`.
+- Failed snapshot messages distinguish a missing handle, unreadable state and a changing destination/frame. They decline adjustment instead of moving an unverified target.
+
+Remaining limits: app minimum sizes and unsupported AX providers can still reject a layout; macOS does not provide an atomic multi-app resize. No measured end-to-end latency or flicker-free claim is made from the unit-test results. The user reported monitor-focus interference during the UI automation and requested automated tests only for the final checks.
 
 Only the original research/prototype below is described as “planning proof”. Its 2,406 assertions do not test the final production implementation, whose evidence is tracked above.
 
