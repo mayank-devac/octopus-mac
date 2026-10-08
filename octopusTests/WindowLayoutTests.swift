@@ -231,4 +231,10 @@ struct WindowLayoutTests {
         defaults.set(WindowLayoutSelection.allNormal.rawValue, forKey: WindowLayoutSettings.selectionKey)
         #expect(WindowLayoutSettings.selection(in: defaults) == .allNormal)
     }
+
+    @Test func lateCompletionCannotOverrideANewerUserAction() {
+        let old = WindowLayoutCompletedSnap(window: window(1).id.window, request: request(.top), startedAt: 10)
+        #expect(old.isCurrent(after: 10))
+        #expect(!old.isCurrent(after: 11))
+    }
 }

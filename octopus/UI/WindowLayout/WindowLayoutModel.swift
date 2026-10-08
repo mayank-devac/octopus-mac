@@ -75,6 +75,9 @@ enum WindowLayoutPlanningResult {
 struct WindowLayoutCompletedSnap {
     let window: SidebarWindowID
     let request: SidebarPlacementRequest
+    let startedAt: TimeInterval
+
+    func isCurrent(after latestAction: TimeInterval) -> Bool { startedAt >= latestAction }
 }
 
 // Cancellation is visible to the serial AX queue while a call is blocked.

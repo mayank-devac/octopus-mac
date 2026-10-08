@@ -43,22 +43,35 @@ extension AXUIElement {
     }
 
     func getWindowFrame() -> CGRect? {
+        // One IPC avoids paying two messaging round trips for every settle/readback pass.
+        var values: CFArray?
+        let attributes = [kAXPositionAttribute, kAXSizeAttribute] as CFArray
+        let result = AXUIElementCopyMultipleAttributeValues(self, attributes, AXCopyMultipleAttributeOptions(rawValue: 0), &values)
+        if result == .success, let values = values as? [AnyObject], values.count == 2 {
+            return Self.decodeWindowFrame(position: values[0], size: values[1])
+        }
+        // A provider may implement individual attributes without implementing the bulk API.
+        guard result == .notImplemented || result == .attributeUnsupported else { return nil }
         var positionObject: AnyObject?
         var sizeObject: AnyObject?
         guard AXUIElementCopyAttributeValue(self, NSAccessibility.Attribute.position.rawValue as CFString, &positionObject) == .success,
               AXUIElementCopyAttributeValue(self, NSAccessibility.Attribute.size.rawValue as CFString, &sizeObject) == .success,
               let positionObject,
-              let sizeObject,
-              CFGetTypeID(positionObject) == AXValueGetTypeID(),
-              CFGetTypeID(sizeObject) == AXValueGetTypeID() else { return nil }
+              let sizeObject else { return nil }
+        return Self.decodeWindowFrame(position: positionObject, size: sizeObject)
+    }
 
-        let position = unsafeBitCast(positionObject, to: AXValue.self)
-        let size = unsafeBitCast(sizeObject, to: AXValue.self)
+    static func decodeWindowFrame(position: AnyObject, size: AnyObject) -> CGRect? {
+        guard CFGetTypeID(position) == AXValueGetTypeID(), CFGetTypeID(size) == AXValueGetTypeID() else { return nil }
+        let position = unsafeBitCast(position, to: AXValue.self)
+        let size = unsafeBitCast(size, to: AXValue.self)
 
         var origin = CGPoint.zero
         var dimensions = CGSize.zero
-        guard AXValueGetValue(position, .cgPoint, &origin),
-              AXValueGetValue(size, .cgSize, &dimensions) else { return nil }
+        guard AXValueGetType(position) == .cgPoint, AXValueGetType(size) == .cgSize,
+              AXValueGetValue(position, .cgPoint, &origin), AXValueGetValue(size, .cgSize, &dimensions),
+              origin.x.isFinite, origin.y.isFinite, dimensions.width.isFinite, dimensions.height.isFinite,
+              dimensions.width > 0, dimensions.height > 0 else { return nil }
         return CGRect(origin: origin, size: dimensions)
     }
     

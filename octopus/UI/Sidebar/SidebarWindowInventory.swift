@@ -544,7 +544,7 @@ final class SidebarWindowInventory: ObservableObject {
     }
 
     func moveToDesktop(_ id: SidebarWindowID, request: SidebarDesktopTransferRequest) {
-        NotificationCenter.default.post(name: WindowLayoutController.userActionNotification, object: nil)
+        NotificationCenter.default.post(name: WindowLayoutController.userActionNotification, object: ProcessInfo.processInfo.systemUptime)
         guard running, hasPermission, canTransferDesktops, pendingActions[id.pid] == nil,
               pendingDesktopTransfer == nil, request.desktopGeneration == desktopGeneration else {
             onDesktopTransferResult?("Desktop transfer is unavailable or busy."); return
@@ -597,7 +597,8 @@ final class SidebarWindowInventory: ObservableObject {
     }
 
     func perform(_ action: SidebarWindowAction, frontmostPID: pid_t? = NSWorkspace.shared.frontmostApplication?.processIdentifier) {
-        NotificationCenter.default.post(name: WindowLayoutController.userActionNotification, object: nil)
+        let startedAt = ProcessInfo.processInfo.systemUptime
+        NotificationCenter.default.post(name: WindowLayoutController.userActionNotification, object: startedAt)
         let pid = action.processIdentifier
         guard running, hasPermission, pendingActions[pid] == nil else {
             if case .place = action { onPlacementResult?(.failed("Window control is unavailable or busy.")) }
@@ -626,7 +627,7 @@ final class SidebarWindowInventory: ObservableObject {
                     if case .placed(_, adjusted: false) = result,
                        case .place(let id, let request) = action, request.snap != nil {
                         NotificationCenter.default.post(name: WindowLayoutController.completedSnapNotification,
-                            object: WindowLayoutCompletedSnap(window: id, request: request))
+                            object: WindowLayoutCompletedSnap(window: id, request: request, startedAt: startedAt))
                     }
                     if case .placed = result, let application, token.canFinishFocus(on: pid), !application.isTerminated {
                         self.requestForeground(application, target: action.target, token: token)
@@ -1065,7 +1066,8 @@ final class SidebarWindowReader: @unchecked Sendable {
         guard AXUIElementGetPid(element, &pid) == .success,
               !requireFrontmost || NSWorkspace.shared.frontmostApplication?.processIdentifier == pid else { return }
         // App-level focus notifications may deliver the app element rather than its focused window.
-        let focused: AXUIElement? = element.getWindowID() != nil ? element : element.getAttributeValue(.focusedWindow)
+        let directID = element.getWindowID()
+        let focused: AXUIElement? = directID != nil && directID != kCGNullWindowID ? element : element.getAttributeValue(.focusedWindow)
         guard let focused, let windowID = focused.getWindowID(), windowID != kCGNullWindowID else { return }
         recordFocus(SidebarWindowID(pid: pid, windowID: windowID))
     }

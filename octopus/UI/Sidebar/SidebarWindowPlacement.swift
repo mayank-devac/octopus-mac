@@ -164,6 +164,7 @@ enum SidebarPlacementWriter {
     static func apply(_ request: SidebarPlacementRequest, canContinue: () -> Bool,
                       readFrame: () -> CGRect?, writePosition: (CGPoint) -> Bool,
                       writeSize: (CGSize) -> Bool,
+                      repeatSizeAfterMove: Bool = true, acceptStableMismatch: Bool = true,
                       wait: () -> Void = { Thread.sleep(forTimeInterval: 0.025) }) -> SidebarPlacementResult {
         guard SidebarPlacementGeometry.isValid(request.frame),
               SidebarPlacementGeometry.isValid(request.workArea) else { return .failed("Invalid window placement.") }
@@ -191,7 +192,7 @@ enum SidebarPlacementWriter {
                     return .failed(unreadable)
                 }
                 let isReachable = SidebarPlacementGeometry.constrained(frame, to: request.workArea).origin == frame.origin
-                if done(frame) || (isReachable && frame == previous)
+                if done(frame) || (acceptStableMismatch && isReachable && frame == previous)
                     || poll == maximumSettlePolls - 1 { return .placed(frame, adjusted: false) }
                 previous = frame
                 wait()
@@ -219,7 +220,7 @@ enum SidebarPlacementWriter {
         guard canContinue() else { return .cancelled }
         guard writePosition(request.frame.origin) else { return .failed("The app could not move this window; its size may have changed.") }
         guard canContinue() else { return .cancelled }
-        writeRequestedSize()
+        if repeatSizeAfterMove { writeRequestedSize() }
 
         var actual: CGRect
         switch settledFrame(until: reached, unreadable: "The app did not report the window's final position.") {

@@ -19,6 +19,7 @@ final class WindowLayoutController: ObservableObject {
     private var token: WindowLayoutBatchToken?
     private var inputMonitor: Any?
     private var generation = 0
+    private var latestAction: TimeInterval = 0
     private var enabled = false
     private var selection = WindowLayoutSelection.mostRecent
     private var trackingRefreshQueued = false
@@ -31,11 +32,16 @@ final class WindowLayoutController: ObservableObject {
             guard let snap = note.object as? WindowLayoutCompletedSnap else { return }
             Task { @MainActor in self?.schedule(snap) }
         })
-        for name in [Self.userActionNotification, NSApplication.didChangeScreenParametersNotification] {
-            observers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
-                Task { @MainActor in self?.cancel() }
-            })
-        }
+        observers.append(center.addObserver(forName: Self.userActionNotification, object: nil, queue: .main) { [weak self] note in
+            let startedAt = note.object as? TimeInterval ?? ProcessInfo.processInfo.systemUptime
+            Task { @MainActor in
+                self?.latestAction = max(self?.latestAction ?? 0, startedAt)
+                self?.cancel()
+            }
+        })
+        observers.append(center.addObserver(forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor in self?.cancel() }
+        })
         observers.append(center.addObserver(forName: UserDefaults.didChangeNotification, object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor in self?.applySettings() }
         })
@@ -91,7 +97,7 @@ final class WindowLayoutController: ObservableObject {
     }
 
     private func schedule(_ snap: WindowLayoutCompletedSnap) {
-        guard enabled, snap.request.snap != .maximize else { return }
+        guard enabled, snap.request.snap != .maximize, snap.isCurrent(after: latestAction) else { return }
         cancel()
         // Let the original snap's existing activation settle. No input path is replaced.
         let work = DispatchWorkItem { [weak self] in self?.adjust(snap) }
@@ -113,7 +119,14 @@ final class WindowLayoutController: ObservableObject {
         let fullScreenPID = NSApp.currentSystemPresentationOptions.contains(.fullScreen)
             ? NSWorkspace.shared.frontmostApplication?.processIdentifier : nil
         reader.queue.async { [weak self, reader] in
-            guard !batch.isCancelled else { return }
+            guard !batch.isCancelled else {
+                DispatchQueue.main.async {
+                    guard let self, self.token === batch else { return }
+                    self.finishInput()
+                    self.token = nil
+                }
+                return
+            }
             _ = reader.read(apps, systemFullScreenPID: fullScreenPID, desktop: requestGeneration, scope: .allDesktops)
             let snapshot = reader.layoutSnapshot(displays: displays, desktop: requestGeneration)
             let planning = WindowLayoutPlanner.plan(snapshot: snapshot, anchorID: snap.window, request: snap.request, selection: selection)
@@ -236,6 +249,7 @@ final class WindowLayoutController: ObservableObject {
         finishInput()
         undo = nil
         canUndo = false
+        status = ""
     }
 
     func stop() {
