@@ -9,17 +9,17 @@ struct PreferencesWindowLayoutView: View {
         Form {
             Section {
                 Toggle("Adjust other windows when snapping", isOn: $enabled)
-                    .help("After an Octopus snap, place the selected other normal windows in the opposite half of that display and Desktop.")
+                    .help("Arrange the selected normal windows beside the snapped window. The split may shift to fit app size limits.")
                 Picker("Adjust", selection: $selection) {
                     ForEach(WindowLayoutSelection.allCases, id: \.rawValue) { choice in Text(choice.title).tag(choice.rawValue) }
                 }
                 .pickerStyle(.menu)
                 .disabled(!enabled)
-                Text("Snap a window left, right, top or bottom. The selected other windows share the opposite half on the destination display and Desktop.")
+                Text("Snap left, right, top or bottom. The selected windows share the remaining area; Octopus can move the split so an app fits its minimum size.")
                     .foregroundStyle(.secondary)
             }
             Section("Snap areas") {
-                Text("Left and right edges use half the display. The top edge uses the top half, and the bottom edge uses the bottom half. Corners allow free movement.")
+                Text("Edges initially snap to a half. Automatic adjustment may resize that half to fit the other windows. Corners allow free movement.")
                 Text("Dragging from another display adjusts a window on the destination Desktop. Other displays stay unchanged.")
                     .foregroundStyle(.secondary)
                 Text("Drag one visible app icon onto another. Choose a side of the outlined icon to pair just those two windows. This explicit gesture also works when automatic adjustment is off.")
@@ -28,7 +28,7 @@ struct PreferencesWindowLayoutView: View {
             Section {
                 Button("Undo last adjustment") { controller.undoAdjustment() }
                     .disabled(!controller.canUndo)
-                    .help("Undo a pair restores both unchanged windows on their original visible Desktops. Undo an edge adjustment restores only its companions.")
+                    .help("Undo a pair restores both unchanged windows on their original visible Desktops. Undo an edge layout restores the snapped window and companions if they have not changed.")
                 if !controller.status.isEmpty { Text(controller.status).foregroundStyle(.secondary) }
             }
         }

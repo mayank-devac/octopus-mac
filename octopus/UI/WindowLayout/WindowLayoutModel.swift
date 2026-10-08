@@ -34,6 +34,8 @@ struct WindowLayoutWindow {
     let scope: WindowLayoutScope
     let frame: CGRect
     let minimum: CGSize
+    // False means the app did not expose AXMinSize/AXMinimumSize; zero is then only a safe planning fallback.
+    let minimumReported: Bool
     let canMove: Bool
     let canResize: Bool
     let hidden: Bool
@@ -64,13 +66,25 @@ struct WindowLayoutCandidate {
     let stackOrder: Int
 }
 
+enum WindowLayoutCandidateResolution {
+    case window(WindowLayoutWindow)
+    case excluded
+    case unavailable
+}
+
 struct WindowLayoutPlan {
     let scope: WindowLayoutScope
     let desktopGeneration: Int
     let workArea: CGRect
+    let snap: SidebarSnapTarget
+    let scale: CGFloat
     let anchor: WindowLayoutWindow
     let peers: [WindowLayoutWindow]
+    let constraints: [WindowLayoutIdentity: WindowLayoutSizeConstraint]
+    // Includes the anchor because hidden app limits may require moving the shared split boundary.
     let frames: [WindowLayoutIdentity: CGRect]
+
+    var windows: [WindowLayoutWindow] { [anchor] + peers }
 }
 
 enum WindowLayoutPlanningResult {

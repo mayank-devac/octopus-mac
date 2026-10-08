@@ -1090,17 +1090,19 @@ final class SidebarWindowReader: @unchecked Sendable {
     }
 
     func layoutSnapshot(displays: [WindowLayoutDisplay], desktop: Int, snap: WindowLayoutCompletedSnap,
-                        selection: WindowLayoutSelection) -> WindowLayoutSnapshot {
+                        selection: WindowLayoutSelection, budget: WindowControlBudget) -> WindowLayoutSnapshot {
         dispatchPrecondition(condition: .onQueue(queue))
         func unavailable(_ reason: String) -> WindowLayoutSnapshot {
             WindowLayoutSnapshot(windows: [], displays: displays, complete: false, desktopGeneration: desktop, failureReason: reason)
         }
-        guard AXIsProcessTrusted() else { return unavailable("Window control permission is unavailable.") }
+        guard budget.isCurrent else { return unavailable("Window preparation was cancelled or timed out.") }
         guard let info = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else {
             return unavailable("The visible window list could not be read.")
         }
-        guard resolveLayoutWindow(snap.window) else { return unavailable("The snapped window's live handle could not be found.") }
-        guard let anchor = layoutWindow(snap.window, displays: displays) else { return unavailable("The snapped window's state or Desktop could not be read.") }
+        guard let anchor = windowControlAccess.read(snap.window, displays: displays, budget: budget,
+            recency: recency[snap.window] ?? 0).window else {
+            return unavailable("The snapped window's state or Desktop could not be read.")
+        }
         guard SidebarPlacementGeometry.matches(anchor.frame, snap.request.frame) else {
             return unavailable("The snapped window is still changing size or position.")
         }
@@ -1111,6 +1113,7 @@ final class SidebarWindowReader: @unchecked Sendable {
         let catalog = spaceReader.allDesktops()
         var visible: [(SidebarWindowID, Int)] = []
         for (order, record) in info.enumerated() {
+            guard budget.isCurrent else { return unavailable("Window preparation took too long.") }
             guard let number = record[kCGWindowNumber as String] as? NSNumber,
                   let owner = record[kCGWindowOwnerPID as String] as? NSNumber,
                   (record[kCGWindowLayer as String] as? NSNumber)?.intValue == 0,
@@ -1128,30 +1131,22 @@ final class SidebarWindowReader: @unchecked Sendable {
             guard id != snap.window else { continue }
             visible.append((id, order))
         }
+        guard budget.isCurrent else { return unavailable("Window preparation took too long.") }
         let membership = spaceReader.read(windowIDs: Set(visible.map { $0.0.windowID }), catalog: catalog)
+        guard budget.isCurrent else { return unavailable("Window preparation took too long.") }
         let candidates = visible.compactMap { id, order -> WindowLayoutCandidate? in
             guard let spaces = membership[id.windowID], spaces.count == 1, spaces[0].id == anchor.scope.spaceID else { return nil }
             return WindowLayoutCandidate(window: id, recency: recency[id] ?? 0, stackOrder: order)
         }
         return WindowLayoutPlanner.snapshot(anchor: anchor, candidates: candidates, displays: displays,
             desktop: desktop, selection: selection, read: { candidate in
-                guard self.resolveLayoutWindow(candidate.window) else { return nil }
-                return self.layoutWindow(candidate.window, displays: displays, stackOrder: candidate.stackOrder)
+                switch self.windowControlAccess.read(candidate.window, displays: displays, budget: budget,
+                    recency: candidate.recency, stackOrder: candidate.stackOrder) {
+                case .window(let window): return .window(window)
+                case .excluded: return .excluded
+                case .failed: return .unavailable
+                }
             })
-    }
-
-    // Resolve a missing handle only within the chosen app, never scan every app/Space for each snap.
-    private func resolveLayoutWindow(_ id: SidebarWindowID) -> Bool {
-        guard let app = NSRunningApplication(processIdentifier: id.pid), !app.isTerminated else { return false }
-        if let known = knownWindows[id], known.application.launchDate == app.launchDate,
-           known.element.getWindowID() == id.windowID { return true }
-        guard let element = Application(app).element else { return false }
-        AXUIElementSetMessagingTimeout(element, 0.2)
-        guard let windows: [AXUIElement] = element.getAttributeValue(.windows) else { return false }
-        guard let window = windows.first(where: { $0.getWindowID() == id.windowID }) else { return false }
-        if let old = knownWindows[id], !CFEqual(old.element, window) { layoutGenerations.removeValue(forKey: id) }
-        knownWindows[id] = KnownWindow(element: window, application: app)
-        return true
     }
 
     private func resolveControlHandle(_ id: SidebarWindowID, budget: WindowControlBudget) -> WindowControlResolution {
@@ -1189,13 +1184,8 @@ final class SidebarWindowReader: @unchecked Sendable {
             element: known.element, application: app, isFullScreen: fullScreenWindows.contains(id)))
     }
 
-    func layoutWindow(_ id: SidebarWindowID, displays: [WindowLayoutDisplay], stackOrder: Int = Int.max) -> WindowLayoutWindow? {
-        let budget = WindowControlBudget(deadline: ProcessInfo.processInfo.systemUptime + 2, canContinue: { true })
-        return windowControlAccess.read(id, displays: displays, budget: budget, recency: recency[id] ?? 0, stackOrder: stackOrder).window
-    }
-
-    func currentLayoutWindow(_ expected: WindowLayoutWindow, displays: [WindowLayoutDisplay]) -> WindowLayoutWindow? {
-        let budget = WindowControlBudget(deadline: ProcessInfo.processInfo.systemUptime + 1, canContinue: { true })
+    func currentLayoutWindow(_ expected: WindowLayoutWindow, displays: [WindowLayoutDisplay],
+                             budget: WindowControlBudget) -> WindowLayoutWindow? {
         return windowControlAccess.read(expected.id.window, displays: displays, budget: budget, expected: expected).window
     }
 
@@ -1206,8 +1196,7 @@ final class SidebarWindowReader: @unchecked Sendable {
             let frontmost = NSWorkspace.shared.frontmostApplication?.processIdentifier
             return !token.isCancelled && (frontmost == token.frontmostPID || frontmost == anchorPID)
         })
-        // The existing executor can request recovery after a partial write. Capture that live starting frame;
-        // the explicit pair service uses its own preflight and never enters this recovery path.
+        // Revalidate this exact live frame before writing; an app may have moved since planning.
         guard let current = windowControlAccess.read(expected.id.window, displays: displays, budget: budget, expected: expected).window,
               current.scope == expected.scope, current.eligible else { return .cancelled }
         return windowControlAccess.write(current, frame: frame, workArea: workArea, destination: expected.scope,

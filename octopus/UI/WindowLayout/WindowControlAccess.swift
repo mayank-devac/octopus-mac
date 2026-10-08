@@ -1,4 +1,5 @@
 import AppKit
+import os
 
 // Create the deadline before queueing work so waiting behind another AX operation uses the same time budget.
 struct WindowControlBudget {
@@ -36,6 +37,7 @@ final class WindowControlAccess: @unchecked Sendable {
     let queue: DispatchQueue
     private let spaces: SidebarSpaceReader
     private let resolve: (SidebarWindowID, WindowControlBudget) -> WindowControlResolution
+    private let logger = Logger(subsystem: "com.mayank.octopus", category: "WindowResizeDiagnostics")
 
     init(queue: DispatchQueue, spaces: SidebarSpaceReader,
          resolve: @escaping (SidebarWindowID, WindowControlBudget) -> WindowControlResolution) {
@@ -117,23 +119,27 @@ final class WindowControlAccess: @unchecked Sendable {
         let physical = displays.max { a, b in Self.overlap(a.frame, frame) < Self.overlap(b.frame, frame) }
         guard let physical, Self.overlap(physical.frame, frame) > 0 else { return .failed("The window's display could not be verified.") }
         let minimum: CGSize
+        let minimumReported: Bool
         let canMove: Bool, canResize: Bool
         // Reuse operation metadata, while the frame, visibility, modal state and Desktop membership stay live.
         if let expected {
             minimum = expected.minimum
+            minimumReported = expected.minimumReported
             canMove = expected.canMove
             canResize = expected.canResize
         } else {
             guard let value = readMinimum(handle.element, budget: budget), budget.isCurrent else {
                 return .failed("The app's window size limits could not be read.")
             }
-            minimum = value
+            minimum = value.size
+            minimumReported = value.reported
             canMove = settable(handle.element, attribute: kAXPositionAttribute, budget: budget)
             canResize = settable(handle.element, attribute: kAXSizeAttribute, budget: budget)
         }
         guard budget.isCurrent else { return .failed("Window control was cancelled or timed out.") }
         return .window(WindowLayoutWindow(id: handle.id,
-            scope: WindowLayoutScope(displayID: physical.id, spaceID: desktop.id), frame: frame, minimum: minimum,
+            scope: WindowLayoutScope(displayID: physical.id, spaceID: desktop.id), frame: frame,
+            minimum: minimum, minimumReported: minimumReported,
             canMove: canMove, canResize: canResize, hidden: handle.application.isHidden, minimized: minimized,
             blocked: fullScreen || handle.isFullScreen || modal || !sheets.isEmpty, recency: recency, stackOrder: stackOrder))
     }
@@ -158,21 +164,56 @@ final class WindowControlAccess: @unchecked Sendable {
                 && [expected.scope.spaceID, destination.spaceID].contains(live.scope.spaceID)
         }
         let request = SidebarPlacementRequest(frame: frame, workArea: workArea, resize: true, desktopGeneration: 0)
-        return Self.withoutEnhancedUserInterface(pid: expected.id.window.pid) {
+        var writeResults: [String] = []
+        let policyName = policy == .crossDisplayPlacement ? "cross-display" : "same-display"
+        let startedAt = budget.clock()
+        logger.debug("Resize start window=\(expected.id.window.windowID, privacy: .public) policy=\(policyName, privacy: .public) start=\(String(describing: current.frame), privacy: .public) requested=\(String(describing: frame), privacy: .public) minimum=\(String(describing: expected.minimum), privacy: .public) minimumReported=\(expected.minimumReported, privacy: .public)")
+        let result = Self.withoutEnhancedUserInterface(pid: expected.id.window.pid) {
             SidebarPlacementWriter.apply(request, canContinue: { budget.isCurrent },
                 readFrame: { budget.isCurrent ? handle.element.getWindowFrame() : nil },
                 writePosition: { position in
-                    guard permitted() else { return false }
+                    guard permitted() else { writeResults.append("position:blocked"); return false }
                     var position = position
-                    guard let value = AXValueCreate(.cgPoint, &position) else { return false }
-                    return AXUIElementSetAttributeValue(handle.element, kAXPositionAttribute as CFString, value) == .success
+                    guard let value = AXValueCreate(.cgPoint, &position) else {
+                        writeResults.append("position:value-failed"); return false
+                    }
+                    let error = AXUIElementSetAttributeValue(handle.element, kAXPositionAttribute as CFString, value)
+                    writeResults.append("position:\(error.rawValue)")
+                    return error == .success
                 }, writeSize: { size in
-                    guard permitted() else { return false }
+                    guard permitted() else { writeResults.append("size:blocked"); return false }
                     var size = size
-                    guard let value = AXValueCreate(.cgSize, &size) else { return false }
-                    return AXUIElementSetAttributeValue(handle.element, kAXSizeAttribute as CFString, value) == .success
+                    guard let value = AXValueCreate(.cgSize, &size) else {
+                        writeResults.append("size:value-failed"); return false
+                    }
+                    let error = AXUIElementSetAttributeValue(handle.element, kAXSizeAttribute as CFString, value)
+                    writeResults.append("size:\(error.rawValue)")
+                    return error == .success
                 }, repeatSizeAfterMove: policy == .crossDisplayPlacement, acceptStableMismatch: false)
         }
+        let finalFrame: CGRect?
+        let outcome: String
+        switch result {
+        case .placed(let actual, let adjusted):
+            finalFrame = actual
+            // A mismatch can be an app clamp or delayed AX state; the captured facts distinguish them.
+            outcome = adjusted ? "mismatch" : "matched"
+        case .failed(let reason):
+            finalFrame = budget.isCurrent ? handle.element.getWindowFrame() : nil
+            outcome = "failed:\(reason)"
+        case .cancelled:
+            finalFrame = nil
+            outcome = budget.clock() >= budget.deadline ? "timed-out" : "cancelled"
+        }
+        let writes = writeResults.joined(separator: ",")
+        let final = finalFrame.map { String(describing: $0) } ?? "unavailable"
+        let elapsedMilliseconds = Int(max(0, budget.clock() - startedAt) * 1_000)
+        if case .placed(_, adjusted: false) = result {
+            logger.debug("Resize finish window=\(expected.id.window.windowID, privacy: .public) outcome=\(outcome, privacy: .public) elapsedMs=\(elapsedMilliseconds, privacy: .public) final=\(final, privacy: .public) writes=\(writes, privacy: .public)")
+        } else {
+            logger.notice("Resize finish window=\(expected.id.window.windowID, privacy: .public) outcome=\(outcome, privacy: .public) policy=\(policyName, privacy: .public) elapsedMs=\(elapsedMilliseconds, privacy: .public) start=\(String(describing: current.frame), privacy: .public) requested=\(String(describing: frame), privacy: .public) final=\(final, privacy: .public) minimum=\(String(describing: expected.minimum), privacy: .public) minimumReported=\(expected.minimumReported, privacy: .public) writes=\(writes, privacy: .public)")
+        }
+        return result
     }
 
     private func readAttributes(_ attributes: [String], element: AXUIElement,
@@ -200,7 +241,7 @@ final class WindowControlAccess: @unchecked Sendable {
         return values
     }
 
-    private func readMinimum(_ element: AXUIElement, budget: WindowControlBudget) -> CGSize? {
+    private func readMinimum(_ element: AXUIElement, budget: WindowControlBudget) -> (size: CGSize, reported: Bool)? {
         for attribute in ["AXMinSize", "AXMinimumSize"] {
             guard budget.isCurrent else { return nil }
             var object: CFTypeRef?
@@ -214,9 +255,9 @@ final class WindowControlAccess: @unchecked Sendable {
             var size = CGSize.zero
             guard AXValueGetType(ax) == .cgSize, AXValueGetValue(ax, .cgSize, &size),
                   size.width.isFinite, size.height.isFinite, size.width >= 0, size.height >= 0 else { return nil }
-            return size
+            return (size, true)
         }
-        return .zero
+        return (.zero, false)
     }
 
     private func settable(_ element: AXUIElement, attribute: String, budget: WindowControlBudget) -> Bool {
