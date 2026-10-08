@@ -18,12 +18,14 @@ final class WindowLayoutController: ObservableObject {
     private var pending: DispatchWorkItem?
     private var token: WindowLayoutBatchToken?
     private var inputMonitor: Any?
+    private var localInputMonitor: Any?
     private var generation = 0
     private var latestAction: TimeInterval = 0
     private var enabled = false
     private var selection = WindowLayoutSelection.mostRecent
     private var trackingRefreshQueued = false
     private var undo: (plan: WindowLayoutPlan, achieved: [WindowLayoutIdentity: CGRect])?
+    private var pairUndo: WindowPairUndoRecord?
 
     func start() {
         guard observers.isEmpty else { return }
@@ -104,6 +106,69 @@ final class WindowLayoutController: ObservableObject {
         DispatchQueue.main.async(execute: work)
     }
 
+    // Hover preparation is read-only; the drag session decides whether this result is still relevant.
+    @discardableResult func preparePair(source: SidebarWindowID, target: SidebarWindowID,
+                     completion: @escaping (WindowPairPreparation?) -> Void) -> WindowLayoutBatchToken {
+        let displays = WindowLayoutDisplay.connected()
+        let token = WindowLayoutBatchToken(frontmostPID: NSWorkspace.shared.frontmostApplication?.processIdentifier)
+        let budget = WindowControlBudget(deadline: ProcessInfo.processInfo.systemUptime + 0.8,
+            canContinue: { !token.isCancelled })
+        reader.queue.async { [reader] in
+            let prepared = WindowPairSnapService.prepare(source: source, target: target,
+                displays: displays, access: reader.windowControlAccess, budget: budget)
+            DispatchQueue.main.async { completion(prepared) }
+        }
+        return token
+    }
+
+    // An icon pair is an explicit two-window command, independent of automatic companion settings.
+    func snapPair(_ request: WindowPairSnapRequest) {
+        guard request.isCurrent(after: latestAction), AXIsProcessTrusted() else { return }
+        cancel()
+        latestAction = request.startedAt
+        let batch = WindowLayoutBatchToken(frontmostPID: NSWorkspace.shared.frontmostApplication?.processIdentifier)
+        token = batch
+        watchInput(batch)
+        let displays = WindowLayoutDisplay.connected()
+        let budget = WindowControlBudget(deadline: ProcessInfo.processInfo.systemUptime + 4,
+            canContinue: { !batch.isCancelled && NSWorkspace.shared.frontmostApplication?.processIdentifier == batch.frontmostPID })
+        reader.queue.async { [weak self, reader] in
+            let access = reader.windowControlAccess
+            var outcome = WindowPairResult.stopped("The selected windows could not be paired safely.")
+            var plan: WindowPairSnapPlan?
+            if let prepared = WindowPairSnapService.prepare(source: request.source, target: request.target,
+                displays: displays, access: access, budget: budget),
+               let pair = WindowLayoutPlanner.pair(source: prepared.source, target: prepared.target,
+                    direction: request.direction, display: prepared.display) {
+                plan = pair
+                outcome = WindowPairSnapService.execute(pair, canContinue: { budget.isCurrent },
+                    read: { access.read($0.id.window, displays: displays, budget: budget, expected: $0).window },
+                    write: { window, frame, scope in
+                        access.write(window, frame: frame, workArea: pair.workArea, destination: scope,
+                            displays: displays, budget: budget,
+                            policy: window.scope.displayID == scope.displayID ? .sameDisplayAdjustment : .crossDisplayPlacement)
+                    })
+            }
+            DispatchQueue.main.async {
+                guard let self, self.token === batch else { return }
+                guard !batch.isCancelled else { self.finishInput(); self.token = nil; return }
+                switch outcome {
+                case .applied(let source, let target):
+                    guard let plan else { self.finishInput(); self.token = nil; return }
+                    self.pairUndo = WindowPairUndoRecord(plan: plan, sourceAfter: source, targetAfter: target)
+                    self.canUndo = true
+                    self.status = "Paired the two selected windows on the target display and Desktop."
+                    // Keep input cancellation through the follow-up raise so a new click cannot lose focus to it.
+                    access.focusConfirmed(source, token: batch) { [weak self] in
+                        guard let self, self.token === batch else { return }
+                        self.finishInput()
+                    }
+                case .stopped(let reason): self.finishInput(); self.token = nil; self.report(reason)
+                }
+            }
+        }
+    }
+
     private func adjust(_ snap: WindowLayoutCompletedSnap) {
         pending = nil
         guard enabled, AXIsProcessTrusted() else { return }
@@ -180,6 +245,7 @@ final class WindowLayoutController: ObservableObject {
     }
 
     func undoAdjustment() {
+        if let pairUndo { undoPair(pairUndo); return }
         guard enabled, let undo else { return }
         cancel()
         let batch = WindowLayoutBatchToken(frontmostPID: NSWorkspace.shared.frontmostApplication?.processIdentifier)
@@ -221,13 +287,53 @@ final class WindowLayoutController: ObservableObject {
         }
     }
 
+    // Pair Undo restores both original visible scopes; ordinary snap Undo remains companion-only.
+    private func undoPair(_ record: WindowPairUndoRecord) {
+        cancel()
+        let batch = WindowLayoutBatchToken(frontmostPID: NSWorkspace.shared.frontmostApplication?.processIdentifier)
+        token = batch
+        watchInput(batch)
+        let displays = WindowLayoutDisplay.connected()
+        let budget = WindowControlBudget(deadline: ProcessInfo.processInfo.systemUptime + 4,
+            canContinue: { !batch.isCancelled && NSWorkspace.shared.frontmostApplication?.processIdentifier == batch.frontmostPID })
+        reader.queue.async { [weak self, reader] in
+            let access = reader.windowControlAccess
+            let outcome = WindowPairSnapService.undo(record, canContinue: { budget.isCurrent },
+                scopeVisible: { access.scopeIsVisible($0, displays: displays) },
+                read: { access.read($0.id.window, displays: displays, budget: budget, expected: $0).window },
+                write: { window, frame, scope in
+                    guard let display = displays.first(where: { $0.id == scope.displayID }) else { return .cancelled }
+                    return access.write(window, frame: frame, workArea: display.workArea, destination: scope,
+                        displays: displays, budget: budget,
+                        policy: window.scope.displayID == scope.displayID ? .sameDisplayAdjustment : .crossDisplayPlacement)
+                })
+            DispatchQueue.main.async {
+                guard let self, self.token === batch else { return }
+                self.finishInput()
+                self.token = nil
+                guard !batch.isCancelled else { return }
+                switch outcome {
+                case .applied: self.status = "Both paired windows returned to their previous positions."
+                case .stopped(let reason): self.report(reason)
+                }
+            }
+        }
+    }
+
     private func watchInput(_ batch: WindowLayoutBatchToken) {
+        // Either Octopus or another app may have focus while native writes are pending.
+        localInputMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown, .keyDown]) { event in
+            batch.cancel()
+            return event
+        }
         inputMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown, .keyDown]) { _ in
             batch.cancel()
         }
     }
 
     private func finishInput() {
+        if let localInputMonitor { NSEvent.removeMonitor(localInputMonitor) }
+        localInputMonitor = nil
         if let inputMonitor { NSEvent.removeMonitor(inputMonitor) }
         inputMonitor = nil
     }
@@ -246,6 +352,7 @@ final class WindowLayoutController: ObservableObject {
         token = nil
         finishInput()
         undo = nil
+        pairUndo = nil
         canUndo = false
         status = ""
     }

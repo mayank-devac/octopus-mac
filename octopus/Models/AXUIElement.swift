@@ -7,6 +7,39 @@
 import Foundation
 import Cocoa
 
+// A successful bulk AX response can still contain optional absence or an error in a slot.
+enum WindowAXAttributeValue {
+    case value(AnyObject)
+    case absent
+    case unsupported
+    case failed(AXError)
+
+    init(_ object: AnyObject?) {
+        guard let object, CFGetTypeID(object) != CFNullGetTypeID() else { self = .absent; return }
+        if CFGetTypeID(object) == AXValueGetTypeID() {
+            let value = unsafeBitCast(object, to: AXValue.self)
+            if AXValueGetType(value) == .axError {
+                var error = AXError.failure
+                guard AXValueGetValue(value, .axError, &error) else { self = .failed(.failure); return }
+                switch error {
+                case .noValue: self = .absent
+                case .attributeUnsupported, .notImplemented: self = .unsupported
+                default: self = .failed(error)
+                }
+                return
+            }
+        }
+        self = .value(object)
+    }
+
+    var object: AnyObject? { if case .value(let value) = self { return value }; return nil }
+    var optionalAbsence: Bool {
+        switch self { case .absent, .unsupported: return true; default: return false }
+    }
+    var needsIndividualFallback: Bool { if case .unsupported = self { return true }; return false }
+    var optionalBool: Bool? { optionalAbsence ? false : object as? Bool }
+}
+
 
 // Adds Swift wrappers around the accessibility object class.
 extension AXUIElement {
@@ -47,11 +80,21 @@ extension AXUIElement {
         var values: CFArray?
         let attributes = [kAXPositionAttribute, kAXSizeAttribute] as CFArray
         let result = AXUIElementCopyMultipleAttributeValues(self, attributes, AXCopyMultipleAttributeOptions(rawValue: 0), &values)
+        var fallback = result == .notImplemented || result == .attributeUnsupported
         if result == .success, let values = values as? [AnyObject], values.count == 2 {
-            return Self.decodeWindowFrame(position: values[0], size: values[1])
+            let slots = values.map { WindowAXAttributeValue($0) }
+            // An unsupported slot permits fallback; a timeout or missing required value must stop the read.
+            if slots.contains(where: {
+                switch $0 { case .absent, .failed: return true; default: return false }
+            }) { return nil }
+            fallback = slots.contains { $0.needsIndividualFallback }
+            if !fallback {
+                guard let position = slots[0].object, let size = slots[1].object else { return nil }
+                return Self.decodeWindowFrame(position: position, size: size)
+            }
         }
         // A provider may implement individual attributes without implementing the bulk API.
-        guard result == .notImplemented || result == .attributeUnsupported else { return nil }
+        guard fallback else { return nil }
         var positionObject: AnyObject?
         var sizeObject: AnyObject?
         guard AXUIElementCopyAttributeValue(self, NSAccessibility.Attribute.position.rawValue as CFString, &positionObject) == .success,

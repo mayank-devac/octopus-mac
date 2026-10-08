@@ -7,6 +7,9 @@ final class SidebarViewState: ObservableObject {
     @Published var side: SidebarSide = .right
     @Published var dragSections: [SidebarDesktopSection]?
     @Published var dropDesktopID: UInt64?
+    // Pair feedback is icon-specific, separate from a whole Desktop section's transfer highlight.
+    @Published var pairDropEntryID: SidebarEntryID?
+    @Published var pairDropDirection: PairDropDirection?
     @Published var monitors: [SidebarMonitor] = []
     @Published var configuration = SidebarConfiguration()
     var dragDesktops: [SidebarDesktop]?
@@ -22,6 +25,9 @@ struct SidebarView: View {
     @Environment(\.colorScheme) private var colorScheme
     var onClick: (SidebarEntryID) -> Void
     var onAnchor: (SidebarEntryID, NSView?) -> Void
+    var onIconAnchor: (SidebarEntryID, NSView?) -> Void = { _, _ in }
+    var pairTargetsProvider: () -> [SidebarIconPairTarget] = { [] }
+    var onPairCommand: (SidebarWindowID, SidebarWindowID, PairDropDirection) -> Void = { _, _, _ in }
     var onDrag: (SidebarEntryID, SidebarWindowID?, String, NSView, NSEvent) -> Void = { _, _, _, _, _ in }
     var onPlacement: (SidebarWindowID, SidebarSnapTarget) -> Void = { _, _ in }
     var onMouseAction: (SidebarEntryID, MouseShortcutAction, SidebarWindowID?) -> Void = { _, _, _ in }
@@ -143,6 +149,16 @@ struct SidebarView: View {
                 }
             }
             .frame(width: SidebarLayout.iconSize, height: SidebarLayout.iconSize)
+            .overlay {
+                // Measure the actual icon, rather than using its larger row/title hit area.
+                SidebarGeometryAnchor(id: entry.id, onAnchor: onIconAnchor).allowsHitTesting(false)
+            }
+            .overlay {
+                if state.pairDropEntryID == entry.id {
+                    SidebarPairBorder(direction: state.pairDropDirection)
+                        .padding(-3).allowsHitTesting(false)
+                }
+            }
             .scaleEffect(scale(for: index))
             .frame(height: SidebarLayout.iconSlotHeight)
 
@@ -192,6 +208,16 @@ struct SidebarView: View {
                 Button("Minimise or restore window") { onMouseAction(entry.id, .minimize, dragTarget) }
             }
             if let id = dragTarget {
+                // Screen-reader users can invoke the same explicit pair command without a pointer drag.
+                if entry.visibleIDs.contains(id) {
+                    ForEach(accessiblePairTargets(excluding: id), id: \.window) { destination in
+                        ForEach(PairDropDirection.allCases, id: \.rawValue) { direction in
+                            Button("Pair \(direction.rawValue) of \(destination.title)") {
+                                onPairCommand(id, destination.window, direction)
+                            }
+                        }
+                    }
+                }
                 ForEach(SidebarSnapTarget.allCases, id: \.self) { target in
                     Button(target.title) { onPlacement(id, target) }
                 }
@@ -207,6 +233,11 @@ struct SidebarView: View {
         }
     }
 
+    private func accessiblePairTargets(excluding source: SidebarWindowID) -> [SidebarIconPairTarget] {
+        var seen = Set<SidebarWindowID>()
+        return pairTargetsProvider().filter { $0.isVisible && $0.window != source && seen.insert($0.window).inserted }
+    }
+
     private func scale(for index: Int) -> CGFloat {
         guard state.dragSections == nil, !reduceMotion,
               let highlighted = displayedEntries.firstIndex(where: { $0.id == state.highlightedEntryID }) else { return 1 }
@@ -220,6 +251,29 @@ struct SidebarView: View {
     private func openAccessibilitySettings() {
         guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") else { return }
         NSWorkspace.shared.open(url)
+    }
+}
+
+// The thin outline identifies B; the thick segment tells the user where dragged A will land.
+private struct SidebarPairBorder: View {
+    let direction: PairDropDirection?
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 7).stroke(Color.accentColor, lineWidth: 2)
+            GeometryReader { geometry in
+                Path { path in
+                    let w = geometry.size.width, h = geometry.size.height
+                    switch direction {
+                    case .left: path.move(to: CGPoint(x: 0, y: 5)); path.addLine(to: CGPoint(x: 0, y: h - 5))
+                    case .right: path.move(to: CGPoint(x: w, y: 5)); path.addLine(to: CGPoint(x: w, y: h - 5))
+                    case .top: path.move(to: CGPoint(x: 5, y: 0)); path.addLine(to: CGPoint(x: w - 5, y: 0))
+                    case .bottom: path.move(to: CGPoint(x: 5, y: h)); path.addLine(to: CGPoint(x: w - 5, y: h))
+                    case nil: break
+                    }
+                }.stroke(.red, style: StrokeStyle(lineWidth: 5, lineCap: .round))
+            }
+        }
+        .accessibilityHidden(true)
     }
 }
 

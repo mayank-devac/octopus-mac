@@ -3,6 +3,131 @@ import Testing
 @testable import octopus
 
 struct WindowLayoutTests {
+    // Pair fixtures deliberately start on different visible displays; neither is a third-party companion.
+    private func pairFixture(direction: PairDropDirection = .left) throws -> WindowPairSnapPlan {
+        let destination = WindowLayoutDisplay(id: scope.displayID, frame: area, workArea: area, scale: 1, name: "Target")
+        let source = window(1, frame: CGRect(x: 200, y: 160, width: 700, height: 600),
+            scope: WindowLayoutScope(displayID: "source", spaceID: 1))
+        let target = window(2)
+        return try #require(WindowLayoutPlanner.pair(source: source, target: target, direction: direction, display: destination))
+    }
+
+    private func pairMoved(_ window: WindowLayoutWindow, frame: CGRect, scope: WindowLayoutScope) -> WindowLayoutWindow {
+        WindowLayoutWindow(id: window.id, scope: scope, frame: frame, minimum: window.minimum,
+            canMove: window.canMove, canResize: window.canResize, hidden: window.hidden, minimized: window.minimized,
+            blocked: window.blocked, recency: window.recency, stackOrder: window.stackOrder)
+    }
+
+    @Test(arguments: PairDropDirection.allCases)
+    func explicitPairUsesComplementaryHalvesOfTheTargetDisplay(_ direction: PairDropDirection) throws {
+        let pair = try pairFixture(direction: direction)
+        #expect(pair.destination == pair.target.scope)
+        #expect(pair.source.scope != pair.destination)
+        #expect(pair.sourceFrame.union(pair.targetFrame) == area)
+        #expect(!WindowLayoutPlanner.overlaps(pair.sourceFrame, pair.targetFrame))
+        if direction == .top { #expect(pair.sourceFrame.minY == area.minY) }
+        if direction == .bottom { #expect(pair.sourceFrame.minY == area.midY) }
+    }
+
+    @Test func pairRejectsEitherWindowsKnownMinimumBeforeCreatingAWritePlan() {
+        let display = WindowLayoutDisplay(id: scope.displayID, frame: area, workArea: area, scale: 1, name: "Target")
+        let tooWide = CGSize(width: area.width / 2 + 1, height: 200)
+        #expect(WindowLayoutPlanner.pair(source: window(1, minimum: tooWide), target: window(2),
+            direction: .left, display: display) == nil)
+        #expect(WindowLayoutPlanner.pair(source: window(1), target: window(2, minimum: tooWide),
+            direction: .left, display: display) == nil)
+    }
+
+    @Test func explicitPairWritesOnlyBothSelectedWindowsAndDoesNotSelectThirdWindows() throws {
+        let pair = try pairFixture()
+        var windows = [pair.source.id: pair.source, pair.target.id: pair.target]
+        var writes: [WindowLayoutIdentity] = []
+        let result = WindowPairSnapService.execute(pair, canContinue: { true }, read: { windows[$0.id] },
+            write: { window, frame, scope in
+                writes.append(window.id)
+                windows[window.id] = pairMoved(window, frame: frame, scope: scope)
+                return .placed(frame, adjusted: false)
+            })
+        guard case .applied(let a, let b) = result else { Issue.record("Valid pair should complete"); return }
+        #expect(writes == [pair.target.id, pair.source.id])
+        #expect(a.scope == pair.destination && b.scope == pair.destination)
+        #expect(a.frame == pair.sourceFrame && b.frame == pair.targetFrame)
+    }
+
+    @Test func pairPartialFailureDoesNotInventAutomaticRollbackOwnership() throws {
+        let pair = try pairFixture()
+        var windows = [pair.source.id: pair.source, pair.target.id: pair.target]
+        var writes = 0
+        let result = WindowPairSnapService.execute(pair, canContinue: { true }, read: { windows[$0.id] },
+            write: { window, frame, scope in
+                writes += 1
+                if writes == 1 {
+                    windows[window.id] = pairMoved(window, frame: frame, scope: scope)
+                    return .placed(frame, adjusted: false)
+                }
+                // A different actor changes the target while source placement fails, without cancellation.
+                windows[pair.target.id] = pairMoved(pair.target,
+                    frame: CGRect(x: -1000, y: 220, width: 400, height: 400), scope: pair.destination)
+                return .failed("App rejected the source resize")
+            })
+        guard case .stopped = result else { Issue.record("Partial pair must not report success"); return }
+        #expect(writes == 2)
+        #expect(windows[pair.target.id]?.frame.width == 400)
+    }
+
+    @Test func pairCancellationAndStaleFramesRejectBeforeWrites() throws {
+        let pair = try pairFixture()
+        var writes = 0
+        let result = WindowPairSnapService.execute(pair, canContinue: { false }, read: { $0 },
+            write: { _, frame, _ in writes += 1; return .placed(frame, adjusted: false) })
+        guard case .stopped = result else { Issue.record("Cancelled pair must stop"); return }
+        #expect(writes == 0)
+        let stale = WindowPairSnapService.execute(pair, canContinue: { true },
+            read: { pairMoved($0, frame: .zero, scope: $0.scope) },
+            write: { _, frame, _ in writes += 1; return .placed(frame, adjusted: false) })
+        guard case .stopped = stale else { Issue.record("Changed frames must stop"); return }
+        #expect(writes == 0)
+    }
+
+    @Test func pairUndoRequiresIntactPostFramesAndVisibleOriginalScopes() throws {
+        let pair = try pairFixture()
+        let a = pairMoved(pair.source, frame: pair.sourceFrame, scope: pair.destination)
+        let b = pairMoved(pair.target, frame: pair.targetFrame, scope: pair.destination)
+        let undo = WindowPairUndoRecord(plan: pair, sourceAfter: a, targetAfter: b)
+        var windows = [a.id: a, b.id: b]
+        var writes = 0
+        let result = WindowPairSnapService.undo(undo, canContinue: { true }, scopeVisible: { _ in true },
+            read: { windows[$0.id] }, write: { current, frame, scope in
+                writes += 1
+                windows[current.id] = pairMoved(current, frame: frame, scope: scope)
+                return .placed(frame, adjusted: false)
+            })
+        guard case .applied = result else { Issue.record("Intact pair should undo"); return }
+        #expect(writes == 2 && windows[a.id]?.scope == pair.source.scope && windows[b.id]?.frame == pair.target.frame)
+        writes = 0
+        let unavailable = WindowPairSnapService.undo(undo, canContinue: { true }, scopeVisible: { _ in false },
+            read: { $0 }, write: { _, frame, _ in writes += 1; return .placed(frame, adjusted: false) })
+        guard case .stopped = unavailable else { Issue.record("Inactive original scopes forbid Undo"); return }
+        #expect(writes == 0)
+        let changed = WindowPairSnapService.undo(undo, canContinue: { true }, scopeVisible: { _ in true },
+            read: { pairMoved($0, frame: .zero, scope: $0.scope) },
+            write: { _, frame, _ in writes += 1; return .placed(frame, adjusted: false) })
+        guard case .stopped = changed else { Issue.record("A user move after pairing forbids Undo"); return }
+        #expect(writes == 0)
+    }
+
+    @Test func optionalAXNullAndUnsupportedAreAbsenceButTimeoutIsNot() throws {
+        #expect(WindowAXAttributeValue(NSNull()).optionalBool == false)
+        var unsupported = AXError.attributeUnsupported
+        let missing = try #require(AXValueCreate(.axError, &unsupported))
+        #expect(WindowAXAttributeValue(missing).optionalAbsence)
+        var timeout = AXError.cannotComplete
+        let failed = try #require(AXValueCreate(.axError, &timeout))
+        #expect(!WindowAXAttributeValue(failed).optionalAbsence)
+        #expect(WindowAXAttributeValue(failed).optionalBool == nil)
+        #expect(!WindowAXAttributeValue(failed).needsIndividualFallback)
+    }
+
     private let area = CGRect(x: -1440, y: 160, width: 1440, height: 900)
     private let scope = WindowLayoutScope(displayID: "destination", spaceID: 22)
 

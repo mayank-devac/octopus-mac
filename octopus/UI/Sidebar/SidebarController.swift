@@ -44,6 +44,16 @@ final class SidebarController {
                 controller.otherDragActive = { [weak self] in
                     self?.displays.contains { $0.key != id && $0.value.isDragging } ?? false
                 }
+                controller.pairTargetsProvider = { [weak self] in self?.displays.values.flatMap { $0.pairTargets } ?? [] }
+                controller.onPairHover = { [weak self] target, direction in
+                    self?.displays.values.forEach { $0.showPairHighlight(target, direction: direction) }
+                }
+                controller.onPairDragState = { [weak self] active in
+                    self?.displays.values.forEach { $0.freezePairCatalogue(active) }
+                }
+                controller.onPairDragScroll = { [weak self] point in
+                    self?.displays.values.forEach { $0.scrollSidebarDuringDrag(at: point) }
+                }
                 displays[id] = controller
             }
         }
@@ -69,6 +79,10 @@ private final class SidebarDisplayController {
     private let menuOwnerID = UUID()
     var otherSidebarFrames: () -> [CGRect] = { [] }
     var otherDragActive: () -> Bool = { false }
+    var pairTargetsProvider: () -> [SidebarIconPairTarget] = { [] }
+    var onPairHover: (SidebarIconPairTarget?, PairDropDirection?) -> Void = { _, _ in }
+    var onPairDragState: (Bool) -> Void = { _ in }
+    var onPairDragScroll: (CGPoint) -> Void = { _ in }
     var isDragging: Bool { dragController.isActive }
     private var localMouseMonitor: Any?
     private var globalMouseMonitor: Any?
@@ -77,6 +91,9 @@ private final class SidebarDisplayController {
     private var revealWork: DispatchWorkItem?
     private var hideWork: DispatchWorkItem?
     private var anchors: [SidebarEntryID: NSView] = [:]
+    private var iconAnchors: [SidebarEntryID: NSView] = [:]
+    private var frozeForAnotherDrag = false
+    private var pairVisibleWindowIDs: Set<SidebarWindowID>?
     private var desktopAnchors: [UInt64: NSView] = [:]
     private var monitorAnchors: [String: NSView] = [:]
     private let desktopMenu = SidebarDesktopMenu()
@@ -165,6 +182,12 @@ private final class SidebarDisplayController {
             inventory: inventory, state: viewState,
             onClick: { [weak self] entryID in self?.activate(entryID) },
             onAnchor: { [weak self] entryID, view in self?.anchors[entryID] = view },
+            onIconAnchor: { [weak self] entryID, view in self?.iconAnchors[entryID] = view },
+            pairTargetsProvider: { [weak self] in self?.pairTargetsProvider() ?? [] },
+            onPairCommand: { source, target, direction in
+                AppDelegate.instance?.windowLayoutController.snapPair(WindowPairSnapRequest(source: source,
+                    target: target, direction: direction, startedAt: ProcessInfo.processInfo.systemUptime))
+            },
             onDrag: { [weak self] entryID, id, title, source, event in
                 self?.beginDrag(entryID, target: id, title: title, source: source, event: event)
             },
@@ -194,11 +217,20 @@ private final class SidebarDisplayController {
             return frames
         }
         dragController.desktopDropTarget = { [weak self] point, source in self?.desktopDropTarget(at: point, source: source) }
+        dragController.pairTargetsProvider = { [weak self] in self?.pairTargetsProvider() ?? [] }
+        dragController.onPairHover = { [weak self] target, direction in self?.onPairHover(target, direction) }
+        dragController.sourceIsVisible = { [weak self] id in self?.inventory.entries.contains { $0.visibleIDs.contains(id) } == true }
+        dragController.preparePair = { source, target, completion in
+            guard let controller = AppDelegate.instance?.windowLayoutController else { completion(nil); return nil }
+            return controller.preparePair(source: source, target: target, completion: completion)
+        }
+        dragController.onPairDrop = { request in AppDelegate.instance?.windowLayoutController.snapPair(request) }
         dragController.sidebarDragContains = { [weak self] point in
             guard let self else { return false }
             return self.otherSidebarFrames().contains { $0.contains(point) } || self.desktopMenu.contains(point)
         }
-        dragController.onSidebarDragUpdate = { [weak self] point in self?.scrollSidebarDuringDrag(at: point) }
+        // The pointer can be on another display's sidebar while this controller owns the drag.
+        dragController.onSidebarDragUpdate = { [weak self] point in self?.onPairDragScroll(point) }
         dragController.onDesktopHover = { [weak self] desktopID in
             guard let self, self.viewState.dropDesktopID != desktopID else { return }
             self.viewState.dropDesktopID = desktopID
@@ -216,11 +248,13 @@ private final class SidebarDisplayController {
                 self.dismissWork = nil
                 self.hideWork = nil
                 self.revealWork = nil
+                self.onPairDragState(true)
             } else {
                 self.desktopMenu.hide()
                 self.viewState.dragDesktops = nil
                 self.viewState.dragSections = nil
                 self.viewState.dropDesktopID = nil
+                self.onPairDragState(false)
                 self.dismissSidebar()
                 self.layout()
                 self.updatePointer()
@@ -230,6 +264,53 @@ private final class SidebarDisplayController {
             if let message = result.message { self?.dragController.showFeedback(message) }
         }
         applySettings()
+    }
+
+    // Freeze displayed identities across all sidebars, while keeping actual window state live.
+    func freezePairCatalogue(_ active: Bool) {
+        if active { pairVisibleWindowIDs = Set(inventory.entries.flatMap { $0.visibleIDs }) }
+        else { pairVisibleWindowIDs = nil }
+        if active, viewState.dragSections == nil {
+            viewState.highlightedEntryID = nil
+            cancelPendingHover()
+            for work in [dismissWork, hideWork, revealWork] { work?.cancel() }
+            dismissWork = nil
+            hideWork = nil
+            revealWork = nil
+            viewState.dragDesktops = inventory.desktops
+            viewState.dragSections = SidebarDesktopSection.make(entries: inventory.entries,
+                desktops: inventory.desktops, scope: inventory.desktopScope)
+            frozeForAnotherDrag = true
+        } else if !active, frozeForAnotherDrag {
+            viewState.dragSections = nil
+            viewState.dragDesktops = nil
+            frozeForAnotherDrag = false
+            layout()
+            updatePointer()
+        }
+        if !active { showPairHighlight(nil, direction: nil) }
+    }
+
+    var pairTargets: [SidebarIconPairTarget] {
+        guard panel.isVisible, inventory.hasPermission else { return [] }
+        let entries = viewState.dragSections?.flatMap(\.entries) ?? inventory.entries
+        return entries.compactMap { entry in
+            guard let id = entry.preferredID, let view = iconAnchors[entry.id],
+                  let frame = SidebarDesktopDropTarget.visibleFrame(of: view, within: sidebarFrame) else { return nil }
+            let excluded = desktopMenu.interactionFrames + (cycleController.panel.isVisible ? [cycleController.panel.frame] : [])
+            guard !excluded.contains(where: { $0.intersects(frame) }) else { return nil }
+            let live = inventory.entries.first { $0.id == entry.id }
+            return SidebarIconPairTarget(ownerID: menuOwnerID, entryID: entry.id, window: id,
+                title: entry.application.title, frame: frame, isVisible: live?.visibleIDs.contains(id) == true,
+                reservesPairDrop: pairVisibleWindowIDs?.contains(id) == true)
+        }
+    }
+
+    func showPairHighlight(_ target: SidebarIconPairTarget?, direction: PairDropDirection?) {
+        let entry = target?.ownerID == menuOwnerID ? target?.entryID : nil
+        if viewState.pairDropEntryID != entry { viewState.pairDropEntryID = entry }
+        let selected = entry == nil ? nil : direction
+        if viewState.pairDropDirection != selected { viewState.pairDropDirection = selected }
     }
 
     func stop() {
@@ -384,7 +465,7 @@ private final class SidebarDisplayController {
             })
         }) { dragController.cancel() }
         dragController.validateInventory()
-        guard !dragController.isActive else { return }
+        guard !dragController.isActive, !frozeForAnotherDrag else { return }
         layout()
         if isFullScreen && !wasFullScreen { cancelInteraction(); panel.orderOut(nil) }
         wasFullScreen = isFullScreen
@@ -434,7 +515,7 @@ private final class SidebarDisplayController {
         return SidebarDesktopDropTarget.resolve(at: point, targets: targets, sidebar: sidebarFrame, excluded: excluded)
     }
 
-    private func scrollSidebarDuringDrag(at point: CGPoint) {
+    func scrollSidebarDuringDrag(at point: CGPoint) {
         desktopMenu.scroll(at: point)
         guard sidebarFrame.contains(point), inventory.desktopScope == .allDesktops,
               ProcessInfo.processInfo.systemUptime - lastDragScroll >= 0.06,
@@ -750,7 +831,7 @@ private final class SidebarDisplayController {
 
     private func beginDrag(_ entryID: SidebarEntryID, target: SidebarWindowID?, title: String, source: NSView, event: NSEvent) {
         guard let target else { return }
-        dragController.begin(id: target, title: title, source: source, event: event, allowDesktopTransfer: true)
+        dragController.begin(id: target, title: title, source: source, event: event, allowDesktopTransfer: true, allowPairing: true)
     }
 }
 

@@ -87,6 +87,31 @@ struct WindowLayoutCompletedSnap {
     func isCurrent(after latestAction: TimeInterval) -> Bool { startedAt >= latestAction }
 }
 
+// Preserve the two icons' exact window identities; commit must not choose a different app window.
+struct WindowPairSnapRequest {
+    let source: SidebarWindowID
+    let target: SidebarWindowID
+    let direction: PairDropDirection
+    let startedAt: TimeInterval
+    func isCurrent(after latestAction: TimeInterval) -> Bool { startedAt >= latestAction }
+}
+
+struct WindowPairSnapPlan {
+    let source: WindowLayoutWindow
+    let target: WindowLayoutWindow
+    let destination: WindowLayoutScope
+    let workArea: CGRect
+    let sourceFrame: CGRect
+    let targetFrame: CGRect
+}
+
+// Undo compares the achieved state before restoring both original visible display/Desktop scopes.
+struct WindowPairUndoRecord {
+    let plan: WindowPairSnapPlan
+    let sourceAfter: WindowLayoutWindow
+    let targetAfter: WindowLayoutWindow
+}
+
 // Cancellation is visible to the serial AX queue while a call is blocked.
 final class WindowLayoutBatchToken: @unchecked Sendable {
     private let lock = NSLock()

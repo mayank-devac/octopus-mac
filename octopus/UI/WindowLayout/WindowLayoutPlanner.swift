@@ -1,6 +1,24 @@
 import AppKit
 
 enum WindowLayoutPlanner {
+    // Both requested halves must fit before either app receives a resize command.
+    static func pair(source: WindowLayoutWindow, target: WindowLayoutWindow, direction: PairDropDirection,
+                     display: WindowLayoutDisplay) -> WindowPairSnapPlan? {
+        guard source.id.window != target.id.window, source.eligible, target.eligible,
+              target.scope.displayID == display.id, SidebarPlacementGeometry.isValid(display.workArea) else { return nil }
+        // oppositeHalf uses AX coordinates; applying the opposite direction yields the chosen half.
+        guard let sourceFrame = oppositeHalf(direction.opposite.snap, in: display.workArea),
+              let targetFrame = oppositeHalf(direction.snap, in: display.workArea) else { return nil }
+        for (window, frame) in [(source, sourceFrame), (target, targetFrame)] {
+            guard window.minimum.width.isFinite, window.minimum.height.isFinite,
+                  window.minimum.width >= 0, window.minimum.height >= 0,
+                  frame.width >= max(window.minimum.width, WindowLayoutSettings.readabilityMinimum.width),
+                  frame.height >= max(window.minimum.height, WindowLayoutSettings.readabilityMinimum.height) else { return nil }
+        }
+        return WindowPairSnapPlan(source: source, target: target, destination: target.scope,
+            workArea: display.workArea, sourceFrame: sourceFrame, targetFrame: targetFrame)
+    }
+
     // Only selected candidates incur Accessibility metadata reads. Frames are still read live.
     static func snapshot(anchor: WindowLayoutWindow, candidates: [WindowLayoutCandidate],
                          displays: [WindowLayoutDisplay], desktop: Int, selection: WindowLayoutSelection,

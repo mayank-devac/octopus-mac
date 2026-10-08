@@ -22,11 +22,13 @@ struct PreferencesWindowLayoutView: View {
                 Text("Left and right edges use half the display. The top edge uses the top half, and the bottom edge uses the bottom half. Corners allow free movement.")
                 Text("Dragging from another display adjusts a window on the destination Desktop. Other displays stay unchanged.")
                     .foregroundStyle(.secondary)
+                Text("Drag one visible app icon onto another. Choose a side of the outlined icon to pair just those two windows. This explicit gesture also works when automatic adjustment is off.")
+                    .foregroundStyle(.secondary)
             }
             Section {
                 Button("Undo last adjustment") { controller.undoAdjustment() }
-                    .disabled(!enabled || !controller.canUndo)
-                    .help("Restore only the adjusted windows, provided they have not changed. Your snapped window stays in place.")
+                    .disabled(!controller.canUndo)
+                    .help("Undo a pair restores both unchanged windows on their original visible Desktops. Undo an edge adjustment restores only its companions.")
                 if !controller.status.isEmpty { Text(controller.status).foregroundStyle(.secondary) }
             }
         }

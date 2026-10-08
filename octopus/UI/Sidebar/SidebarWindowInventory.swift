@@ -753,6 +753,9 @@ final class SidebarWindowReader: @unchecked Sendable {
     private var layoutSequence: UInt64 = 0
     private var layoutGenerations: [SidebarWindowID: UInt64] = [:]
     private var layoutLaunchDates: [pid_t: Date] = [:]
+    lazy var windowControlAccess = WindowControlAccess(queue: queue, spaces: spaceReader) { [weak self] id, budget in
+        self?.resolveControlHandle(id, budget: budget) ?? .failed("Window control is unavailable.")
+    }
 
     init(onChange: @escaping @Sendable () -> Void, tracksFrontmostFocus: Bool = false) {
         self.onChange = onChange
@@ -1151,144 +1154,64 @@ final class SidebarWindowReader: @unchecked Sendable {
         return true
     }
 
-    func layoutWindow(_ id: SidebarWindowID, displays: [WindowLayoutDisplay], stackOrder: Int = Int.max) -> WindowLayoutWindow? {
+    private func resolveControlHandle(_ id: SidebarWindowID, budget: WindowControlBudget) -> WindowControlResolution {
         dispatchPrecondition(condition: .onQueue(queue))
-        guard AXIsProcessTrusted(), let known = validatedWindow(id), known.element.getWindowID() == id.windowID,
-              let app = NSRunningApplication(processIdentifier: id.pid), !app.isTerminated,
-              app.launchDate == known.application.launchDate else { return nil }
-        let element = known.element
-        AXUIElementSetMessagingTimeout(element, 0.2)
-        func overlap(_ rect: CGRect, _ frame: CGRect) -> CGFloat {
-            let intersection = rect.intersection(frame)
-            return intersection.isNull ? 0 : intersection.width * intersection.height
+        guard budget.isCurrent, id.pid != ProcessInfo.processInfo.processIdentifier,
+              let app = NSRunningApplication(processIdentifier: id.pid), !app.isTerminated else {
+            return .failed("This window is no longer available.")
         }
-        guard let frame = element.getWindowFrame(), SidebarPlacementGeometry.isValid(frame),
-              let display = displays.max(by: { overlap($0.frame, frame) < overlap($1.frame, frame) }),
-              display.frame.intersects(frame),
-              let minimized: Bool = placementAttribute(element, kAXMinimizedAttribute, unsupported: false),
-              let fullScreen: Bool = placementAttribute(element, "AXFullScreen", unsupported: false),
-              let modal: Bool = placementAttribute(element, "AXModal", unsupported: false),
-              let sheets: [AXUIElement] = placementAttribute(element, "AXSheets", unsupported: []),
-              let minimum = layoutMinimum(element) else { return nil }
-        let memberships = spaceReader.read(windowIDs: [id.windowID])[id.windowID] ?? []
-        guard memberships.count == 1, let member = memberships.first, member.number != nil,
-              spaceReader.visibleDesktopIDs().contains(member.id) else { return nil }
-        if let launchDate = app.launchDate, layoutLaunchDates[id.pid] != launchDate {
+        var known = knownWindows[id]
+        if let cached = known { AXUIElementSetMessagingTimeout(cached.element, 0.2) }
+        if known?.application.launchDate != app.launchDate || known?.element.getWindowID() != id.windowID {
+            guard budget.isCurrent, let element = Application(app).element else { return .failed("The app could not be read.") }
+            AXUIElementSetMessagingTimeout(element, 0.2)
+            guard let windows: [AXUIElement] = element.getAttributeValue(.windows) else {
+                return .failed("The app did not report its windows.")
+            }
+            var found: AXUIElement?
+            for window in windows {
+                guard budget.isCurrent else { return .failed("Window preparation took too long.") }
+                AXUIElementSetMessagingTimeout(window, 0.2)
+                if window.getWindowID() == id.windowID { found = window; break }
+            }
+            guard let found else { return .excluded } // Positive enumeration excludes orphan CG surfaces.
+            if let previous = known, !CFEqual(previous.element, found) { layoutGenerations.removeValue(forKey: id) }
+            known = KnownWindow(element: found, application: app)
+            knownWindows[id] = known
+        }
+        guard budget.isCurrent, let known else { return .failed("Window preparation took too long.") }
+        if let date = app.launchDate, layoutLaunchDates[id.pid] != date {
             layoutGenerations = layoutGenerations.filter { $0.key.pid != id.pid }
-            layoutLaunchDates[id.pid] = launchDate
+            layoutLaunchDates[id.pid] = date
         }
         if layoutGenerations[id] == nil { layoutSequence += 1; layoutGenerations[id] = layoutSequence }
-        return WindowLayoutWindow(id: WindowLayoutIdentity(window: id, generation: layoutGenerations[id]!),
-            scope: WindowLayoutScope(displayID: display.id, spaceID: member.id), frame: frame, minimum: minimum,
-            canMove: isSettable(element, attribute: .position), canResize: isSettable(element, attribute: .size),
-            hidden: app.isHidden, minimized: minimized, blocked: fullScreen || fullScreenWindows.contains(id) || modal || !sheets.isEmpty,
-            recency: recency[id] ?? 0, stackOrder: stackOrder)
+        return .resolved(WindowControlHandle(id: WindowLayoutIdentity(window: id, generation: layoutGenerations[id]!),
+            element: known.element, application: app, isFullScreen: fullScreenWindows.contains(id)))
     }
 
-    private func layoutMinimum(_ element: AXUIElement) -> CGSize? {
-        for name in ["AXMinSize", "AXMinimumSize"] {
-            var value: CFTypeRef?
-            switch AXUIElementCopyAttributeValue(element, name as CFString, &value) {
-            case .attributeUnsupported, .noValue: continue
-            case .success:
-                guard let value, CFGetTypeID(value) == AXValueGetTypeID() else { return nil }
-                let axValue = unsafeBitCast(value, to: AXValue.self)
-                var size = CGSize.zero
-                guard AXValueGetType(axValue) == .cgSize, AXValueGetValue(axValue, .cgSize, &size),
-                      size.width.isFinite, size.height.isFinite, size.width >= 0, size.height >= 0 else { return nil }
-                return size
-            default: return nil // A timeout is unknown, not an unconstrained app.
-            }
-        }
-        return .zero
+    func layoutWindow(_ id: SidebarWindowID, displays: [WindowLayoutDisplay], stackOrder: Int = Int.max) -> WindowLayoutWindow? {
+        let budget = WindowControlBudget(deadline: ProcessInfo.processInfo.systemUptime + 2, canContinue: { true })
+        return windowControlAccess.read(id, displays: displays, budget: budget, recency: recency[id] ?? 0, stackOrder: stackOrder).window
     }
 
-    // During a write, capabilities/minimums stay with this operation's validated metadata.
-    // Geometry and safety flags remain live, fetched in a single IPC instead of a full inventory scan.
     func currentLayoutWindow(_ expected: WindowLayoutWindow, displays: [WindowLayoutDisplay]) -> WindowLayoutWindow? {
-        dispatchPrecondition(condition: .onQueue(queue))
-        guard layoutIdentityIsCurrent(expected, displays: displays), let known = knownWindows[expected.id.window] else { return nil }
-        let attributes = [kAXPositionAttribute, kAXSizeAttribute, kAXMinimizedAttribute,
-                          "AXFullScreen", "AXModal", "AXSheets", kAXRoleAttribute, kAXSubroleAttribute] as CFArray
-        var array: CFArray?
-        let result = AXUIElementCopyMultipleAttributeValues(known.element, attributes, AXCopyMultipleAttributeOptions(rawValue: 0), &array)
-        if result == .notImplemented || result == .attributeUnsupported {
-            return layoutWindow(expected.id.window, displays: displays)
-        }
-        guard result == .success, let values = array as? [AnyObject], values.count == 8,
-              let frame = AXUIElement.decodeWindowFrame(position: values[0], size: values[1]) else { return nil }
-        func unsupported(_ value: AnyObject) -> Bool {
-            guard CFGetTypeID(value) == AXValueGetTypeID() else { return false }
-            let ax = unsafeBitCast(value, to: AXValue.self)
-            var error = AXError.success
-            return AXValueGetType(ax) == .axError && AXValueGetValue(ax, .axError, &error)
-                && (error == .attributeUnsupported || error == .noValue || error == .notImplemented)
-        }
-        func flag(_ index: Int) -> Bool? {
-            if unsupported(values[index]) { return false }
-            return values[index] as? Bool
-        }
-        guard let minimized = flag(2), let fullScreen = flag(3), let modal = flag(4),
-              let sheets = (values[5] as? [AXUIElement]) ?? (unsupported(values[5]) ? [] : nil),
-              let role = values[6] as? String else { return nil }
-        let subrole = values[7] as? String
-        guard subrole != nil || unsupported(values[7]),
-              SidebarWindowPolicy.isTopLevelWindow(role: role, subrole: subrole) else { return nil }
-        return WindowLayoutWindow(id: expected.id, scope: expected.scope, frame: frame, minimum: expected.minimum,
-            canMove: expected.canMove, canResize: expected.canResize,
-            hidden: known.application.isHidden, minimized: minimized, blocked: fullScreen || modal || !sheets.isEmpty,
-            recency: expected.recency, stackOrder: expected.stackOrder)
-    }
-
-    private func layoutIdentityIsCurrent(_ expected: WindowLayoutWindow, displays: [WindowLayoutDisplay]) -> Bool {
-        guard AXIsProcessTrusted(), layoutGenerations[expected.id.window] == expected.id.generation,
-              let known = knownWindows[expected.id.window], !known.application.isTerminated,
-              let app = NSRunningApplication(processIdentifier: expected.id.window.pid), !app.isTerminated,
-              app.launchDate == known.application.launchDate,
-              let record = (CGWindowListCopyWindowInfo(.optionIncludingWindow, expected.id.window.windowID) as? [[String: Any]])?.first,
-              (record[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value == expected.id.window.pid,
-              let bounds = record[kCGWindowBounds as String] as? [String: Any],
-              let frame = CGRect(dictionaryRepresentation: bounds as CFDictionary) else { return false }
-        let physical = displays.max { a, b in
-            let first = a.frame.intersection(frame), second = b.frame.intersection(frame)
-            return (first.isNull ? 0 : first.width * first.height) < (second.isNull ? 0 : second.width * second.height)
-        }
-        let spaces = spaceReader.read(windowIDs: [expected.id.window.windowID])[expected.id.window.windowID] ?? []
-        return physical?.id == expected.scope.displayID && spaces.count == 1 && spaces[0].id == expected.scope.spaceID
-            && spaceReader.visibleDesktopIDs().contains(expected.scope.spaceID)
+        let budget = WindowControlBudget(deadline: ProcessInfo.processInfo.systemUptime + 1, canContinue: { true })
+        return windowControlAccess.read(expected.id.window, displays: displays, budget: budget, expected: expected).window
     }
 
     func writeLayoutWindow(_ expected: WindowLayoutWindow, frame: CGRect, workArea: CGRect,
                            displays: [WindowLayoutDisplay], token: WindowLayoutBatchToken,
                            anchorPID: pid_t, deadline: TimeInterval) -> SidebarPlacementResult {
-        dispatchPrecondition(condition: .onQueue(queue))
-        func allowed() -> Bool {
+        let budget = WindowControlBudget(deadline: deadline, canContinue: {
             let frontmost = NSWorkspace.shared.frontmostApplication?.processIdentifier
-            return !token.isCancelled && AXIsProcessTrusted() && ProcessInfo.processInfo.systemUptime < deadline
-                && (frontmost == token.frontmostPID || frontmost == anchorPID)
-        }
-        guard allowed(), let live = currentLayoutWindow(expected, displays: displays),
-              live.id == expected.id, live.scope == expected.scope, live.eligible,
-              let known = knownWindows[expected.id.window] else { return .cancelled }
-        let element = known.element
-        let request = SidebarPlacementRequest(frame: frame, workArea: workArea, resize: true, desktopGeneration: desktopGeneration ?? 0)
-        func stillInScope() -> Bool {
-            allowed() && layoutIdentityIsCurrent(expected, displays: displays)
-        }
-        return Self.withoutEnhancedUserInterface(pid: expected.id.window.pid) {
-            SidebarPlacementWriter.apply(request, canContinue: allowed, readFrame: { element.getWindowFrame() },
-                writePosition: { position in
-                    guard stillInScope() else { return false }
-                    var position = position
-                    guard let value = AXValueCreate(.cgPoint, &position) else { return false }
-                    return AXUIElementSetAttributeValue(element, kAXPositionAttribute as CFString, value) == .success
-                }, writeSize: { size in
-                    guard stillInScope() else { return false }
-                    var size = size
-                    guard let value = AXValueCreate(.cgSize, &size) else { return false }
-                    return AXUIElementSetAttributeValue(element, kAXSizeAttribute as CFString, value) == .success
-                }, repeatSizeAfterMove: false, acceptStableMismatch: false)
-        }
+            return !token.isCancelled && (frontmost == token.frontmostPID || frontmost == anchorPID)
+        })
+        // The existing executor can request recovery after a partial write. Capture that live starting frame;
+        // the explicit pair service uses its own preflight and never enters this recovery path.
+        guard let current = windowControlAccess.read(expected.id.window, displays: displays, budget: budget, expected: expected).window,
+              current.scope == expected.scope, current.eligible else { return .cancelled }
+        return windowControlAccess.write(current, frame: frame, workArea: workArea, destination: expected.scope,
+            displays: displays, budget: budget, policy: .sameDisplayAdjustment)
     }
 
     enum ActionResult {
@@ -1412,7 +1335,7 @@ final class SidebarWindowReader: @unchecked Sendable {
             if running.isHidden, !running.unhide() { return .placement(.failed("This app could not be shown."), nil) }
             // Enough for the writer's confirmation passes; still bounded for unresponsive apps.
             let deadline = ProcessInfo.processInfo.systemUptime + 2
-            let result = Self.withoutEnhancedUserInterface(pid: id.pid) {
+            let result = WindowControlAccess.withoutEnhancedUserInterface(pid: id.pid) {
                 SidebarPlacementWriter.apply(request,
                     canContinue: { token.canFinishFocus(on: id.pid) && !running.isTerminated && ProcessInfo.processInfo.systemUptime < deadline },
                     readFrame: { element.getWindowFrame() },
@@ -1478,21 +1401,6 @@ final class SidebarWindowReader: @unchecked Sendable {
             // requestForeground owns activation and the follow-up raise.
             return .activate(running)
         }
-    }
-
-    // With AXEnhancedUserInterface on, apps animate AX frame writes, so the size/position
-    // writes overlap and some are dropped. Rectangle suspends it for the same reason
-    // (clone/Rectangle/AccessibilityElement.swift `performWindowAdjustment`).
-    private static func withoutEnhancedUserInterface<T>(pid: pid_t, _ body: () -> T) -> T {
-        let attribute = "AXEnhancedUserInterface" as CFString
-        let application = AXUIElementCreateApplication(pid)
-        AXUIElementSetMessagingTimeout(application, 0.2)
-        var value: CFTypeRef?
-        let wasEnabled = AXUIElementCopyAttributeValue(application, attribute, &value) == .success
-            && (value as? Bool) == true
-        if wasEnabled { _ = AXUIElementSetAttributeValue(application, attribute, kCFBooleanFalse) }
-        defer { if wasEnabled { _ = AXUIElementSetAttributeValue(application, attribute, kCFBooleanTrue) } }
-        return body()
     }
 
     func raiseForegroundWindow(_ id: SidebarWindowID, token: SidebarPendingAction, expiresAt: TimeInterval) {

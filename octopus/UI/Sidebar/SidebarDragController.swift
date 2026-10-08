@@ -12,6 +12,13 @@ final class SidebarDragController: NSObject, NSDraggingSource {
     private var title = ""
     private var dropPanels: [NSPanel] = []
     private var previewPanel: NSPanel?
+    private var pairedPreviewPanel: NSPanel?
+    private var pairTarget: SidebarIconPairTarget?
+    private var pairDirection: PairDropDirection?
+    private var pairPreparation: WindowPairPreparation?
+    private var pairPreparationToken: WindowLayoutBatchToken?
+    private var pairPreparationGeneration = 0
+    private var allowPairing = false
     private var dragIconPanel: NSPanel?
     private var dragIcon: NSImage?
     private var feedbackPanel: NSPanel?
@@ -25,6 +32,11 @@ final class SidebarDragController: NSObject, NSDraggingSource {
     var onSidebarDragUpdate: ((CGPoint) -> Void)?
     var onDesktopHover: ((UInt64?) -> Void)?
     var onInteractionChange: ((Bool) -> Void)?
+    var pairTargetsProvider: () -> [SidebarIconPairTarget] = { [] }
+    var sourceIsVisible: (SidebarWindowID) -> Bool = { _ in false }
+    var onPairHover: (SidebarIconPairTarget?, PairDropDirection?) -> Void = { _, _ in }
+    var preparePair: ((SidebarWindowID, SidebarWindowID, @escaping (WindowPairPreparation?) -> Void) -> WindowLayoutBatchToken?)?
+    var onPairDrop: ((WindowPairSnapRequest) -> Void)?
     var isActive: Bool { sessionID != nil }
 
     init(inventory: SidebarWindowInventory) {
@@ -32,7 +44,8 @@ final class SidebarDragController: NSObject, NSDraggingSource {
         super.init()
     }
 
-    func begin(id: SidebarWindowID, title: String, source: NSView, event: NSEvent, allowDesktopTransfer: Bool = false) {
+    func begin(id: SidebarWindowID, title: String, source: NSView, event: NSEvent,
+               allowDesktopTransfer: Bool = false, allowPairing: Bool = false) {
         guard !isActive, AXIsProcessTrusted() else { return }
         dismissFeedback()
         // Preview and drop must use the same distance throughout this drag.
@@ -45,6 +58,8 @@ final class SidebarDragController: NSObject, NSDraggingSource {
         target = nil
         transferTarget = nil
         self.allowDesktopTransfer = allowDesktopTransfer
+        self.allowPairing = allowPairing
+        if allowPairing { NotificationCenter.default.post(name: WindowLayoutController.userActionNotification, object: ProcessInfo.processInfo.systemUptime) }
         dragIcon = NSRunningApplication(processIdentifier: id.pid)?.icon
             ?? NSImage(systemSymbolName: "app.fill", accessibilityDescription: nil)
         onInteractionChange?(true)
@@ -174,6 +189,21 @@ final class SidebarDragController: NSObject, NSDraggingSource {
         guard isActive else { return [] }
         guard AXIsProcessTrusted() else { cancel(); return [] }
         if scroll && allowDesktopTransfer { onSidebarDragUpdate?(point) }
+        // Resolve icon intent before the broad section callback can open a Desktop-transfer popup.
+        if allowPairing, let source = windowID {
+            switch SidebarIconPairDrop.resolve(at: point, source: source, sourceVisible: sourceIsVisible(source),
+                targets: pairTargetsProvider(), previousTarget: pairTarget?.window, previousDirection: pairDirection) {
+            case .pair(let candidate, let direction):
+                return updatePair(candidate, direction: direction, source: source, point: point)
+            case .blocked:
+                clearPair()
+                previewPanel?.orderOut(nil)
+                // Keep the custom drag image under the pointer when it passes over its own icon.
+                showDragIcon(at: point)
+                return []
+            case .other: clearPair()
+            }
+        }
         let destination = allowDesktopTransfer ? desktopDropTarget(point, transferTarget?.sourceDesktop) : nil
         if allowDesktopTransfer, sidebarDragContains(point) || destination != nil {
             previewPanel?.orderOut(nil)
@@ -208,7 +238,21 @@ final class SidebarDragController: NSObject, NSDraggingSource {
     }
 
     fileprivate func drop(at point: CGPoint) -> Bool {
-        guard update(at: point, scroll: false) == .private else { return false }
+        guard update(at: point, scroll: false) == .private else {
+            if pairTarget != nil, pairDirection != nil {
+                showFeedback(pairPreparation == nil
+                    ? "These windows could not be verified for pairing. Try again once both are visible."
+                    : "These windows cannot fit in the requested halves. Their positions were kept.")
+            }
+            return false
+        }
+        if let pairTarget, let direction = pairDirection, pairPreparation != nil, let source = windowID, let onPairDrop {
+            let request = WindowPairSnapRequest(source: source, target: pairTarget.window, direction: direction,
+                startedAt: ProcessInfo.processInfo.systemUptime)
+            finish()
+            onPairDrop(request)
+            return true
+        }
         if allowDesktopTransfer, let destination = desktopDropTarget(point, transferTarget?.sourceDesktop), let transferTarget {
             let request = SidebarDesktopTransferRequest(sourceDesktop: transferTarget.sourceDesktop,
                 destinationDesktop: destination.desktop, desktopGeneration: transferTarget.desktopGeneration)
@@ -243,6 +287,62 @@ final class SidebarDragController: NSObject, NSDraggingSource {
         previewPanel = panel
     }
 
+    // A target change pays one bounded metadata read; pointer movement only updates pure geometry.
+    private func updatePair(_ candidate: SidebarIconPairTarget, direction: PairDropDirection?,
+                            source: SidebarWindowID, point: CGPoint) -> NSDragOperation {
+        onDesktopHover?(nil)
+        if pairTarget?.window != candidate.window || pairTarget?.ownerID != candidate.ownerID {
+            clearPair()
+            pairTarget = candidate
+            pairDirection = direction
+            let revision = pairPreparationGeneration
+            let session = sessionID
+            pairPreparationToken = preparePair?(source, candidate.window) { [weak self] prepared in
+                guard let self, self.isActive, self.sessionID == session, self.pairPreparationGeneration == revision,
+                      self.pairTarget?.window == candidate.window else { return }
+                self.pairPreparation = prepared
+                _ = self.update(at: NSEvent.mouseLocation, scroll: false)
+            }
+        }
+        pairTarget = candidate
+        pairDirection = direction
+        previewPanel?.orderOut(nil)
+        pairedPreviewPanel?.orderOut(nil)
+        showDragIcon(at: point)
+        dragIconPanel?.alphaValue = 0.55
+        guard let prepared = pairPreparation else { onPairHover(nil, nil); return [] }
+        onPairHover(candidate, direction)
+        guard let direction, let plan = WindowLayoutPlanner.pair(source: prepared.source, target: prepared.target,
+            direction: direction, display: prepared.display) else { return [] }
+        let top = NSScreen.screens.first?.frame.maxY ?? 0
+        showPreview(frame: SidebarPlacementGeometry.flip(plan.sourceFrame, primaryTop: top),
+            label: "\(title) · \(direction.snap.title)", valid: true)
+        let frame = SidebarPlacementGeometry.flip(plan.targetFrame, primaryTop: top)
+        let panel = pairedPreviewPanel ?? Self.panel(frame: frame, ignoresMouse: true)
+        let view = (panel.contentView as? PreviewView) ?? PreviewView(frame: .zero)
+        view.label = "\(candidate.title) · \(direction.opposite.snap.title)"
+        panel.contentView = view
+        panel.setFrame(frame, display: true)
+        view.needsDisplay = true
+        panel.orderFrontRegardless()
+        pairedPreviewPanel = panel
+        return .private
+    }
+
+    private func clearPair() {
+        guard pairTarget != nil || pairPreparation != nil else { return }
+        pairPreparationGeneration += 1
+        pairPreparationToken?.cancel()
+        pairPreparationToken = nil
+        pairTarget = nil
+        pairDirection = nil
+        pairPreparation = nil
+        pairedPreviewPanel?.close()
+        pairedPreviewPanel = nil
+        onPairHover(nil, nil)
+        dragIconPanel?.alphaValue = 0.85
+    }
+
     private func showDragIcon(at point: CGPoint) {
         guard let image = dragIcon else { return }
         let frame = CGRect(x: point.x - 20, y: point.y - 20, width: 40, height: 40)
@@ -261,11 +361,13 @@ final class SidebarDragController: NSObject, NSDraggingSource {
     }
 
     private func finish() {
+        clearPair()
         generation += 1
         sessionID = nil
         target = nil
         transferTarget = nil
         allowDesktopTransfer = false
+        allowPairing = false
         onDesktopHover?(nil)
         windowID = nil
         previewPanel?.close()
