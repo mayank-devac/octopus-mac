@@ -15,6 +15,8 @@ struct PreferencesView: View {
 
             PreferencesSidebarView()
                 .tabItem { Label("Sidebar", systemImage: "sidebar.right") }
+            PreferencesWindowLayoutView()
+                .tabItem { Label("Snap", systemImage: "rectangle.split.2x2") }
             
             PreferencesProfilesView()
                 .tabItem { Label("Profiles", systemImage: "person.crop.rectangle.stack") }
@@ -29,4 +31,5 @@ struct PreferencesView: View {
 #Preview {
     PreferencesView()
         .environmentObject(ProfileManager())
+        .environmentObject(WindowLayoutController())
 }

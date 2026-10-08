@@ -55,17 +55,17 @@ struct SidebarDragTests {
     }
 
     @Test func screenEdgesAndCornersChooseTheExpectedLayouts() {
-        #expect(SidebarPlacementGeometry.snap(at: CGPoint(x: -1430, y: 1010), screen: screen) == .topLeft)
-        #expect(SidebarPlacementGeometry.snap(at: CGPoint(x: -10, y: 1010), screen: screen) == .topRight)
-        #expect(SidebarPlacementGeometry.snap(at: CGPoint(x: -1430, y: 130), screen: screen) == .bottomLeft)
-        #expect(SidebarPlacementGeometry.snap(at: CGPoint(x: -10, y: 130), screen: screen) == .bottomRight)
+        #expect(SidebarPlacementGeometry.snap(at: CGPoint(x: -1430, y: 1010), screen: screen) == nil)
+        #expect(SidebarPlacementGeometry.snap(at: CGPoint(x: -10, y: 1010), screen: screen) == nil)
+        #expect(SidebarPlacementGeometry.snap(at: CGPoint(x: -1430, y: 130), screen: screen) == nil)
+        #expect(SidebarPlacementGeometry.snap(at: CGPoint(x: -10, y: 130), screen: screen) == nil)
         #expect(SidebarPlacementGeometry.snap(at: CGPoint(x: -1420, y: 600), screen: screen) == .left)
         #expect(SidebarPlacementGeometry.snap(at: CGPoint(x: -20, y: 600), screen: screen) == .right)
-        #expect(SidebarPlacementGeometry.snap(at: CGPoint(x: -700, y: 1000), screen: screen) == .maximize)
+        #expect(SidebarPlacementGeometry.snap(at: CGPoint(x: -700, y: 1000), screen: screen) == .top)
         #expect(SidebarPlacementGeometry.snap(at: CGPoint(x: -700, y: 140), screen: screen) == .bottom)
         #expect(SidebarPlacementGeometry.snap(at: CGPoint(x: -700, y: 600), screen: screen) == nil)
         #expect(SidebarPlacementGeometry.snap(at: CGPoint(x: 5, y: 600), screen: screen) == nil)
-        #expect(SidebarPlacementGeometry.snap(at: CGPoint(x: -1400, y: 980), screen: screen) == .topLeft)
+        #expect(SidebarPlacementGeometry.snap(at: CGPoint(x: -1400, y: 980), screen: screen) == nil)
     }
 
     @Test func layoutsReserveTheDockAndMenuBar() {
@@ -77,20 +77,17 @@ struct SidebarDragTests {
         for target in SidebarSnapTarget.allCases {
             #expect(area.contains(SidebarPlacementGeometry.frame(for: target, in: area)))
         }
-        #expect(SidebarPlacementGeometry.frame(for: .topLeft, in: area).maxY == area.maxY)
-        #expect(SidebarPlacementGeometry.frame(for: .bottomRight, in: area).minY == area.minY)
+        #expect(SidebarPlacementGeometry.frame(for: .top, in: area).maxY == area.maxY)
+        #expect(SidebarPlacementGeometry.frame(for: .bottom, in: area).minY == area.minY)
     }
 
     @Test func snappingStartsBeforeThePointerReachesTheBorderAndClearsWhenLeaving() {
         let points: [(CGPoint, SidebarSnapTarget)] = [
             (CGPoint(x: screen.minX + 120, y: screen.midY), .left),
             (CGPoint(x: screen.maxX - 120, y: screen.midY), .right),
-            (CGPoint(x: screen.midX, y: screen.maxY - 120), .maximize),
-            (CGPoint(x: screen.midX, y: screen.minY + 120), .bottom),
-            (CGPoint(x: screen.minX + 100, y: screen.maxY - 100), .topLeft),
-            (CGPoint(x: screen.maxX - 100, y: screen.maxY - 100), .topRight),
-            (CGPoint(x: screen.minX + 100, y: screen.minY + 100), .bottomLeft),
-            (CGPoint(x: screen.maxX - 100, y: screen.minY + 100), .bottomRight)]
+            (CGPoint(x: screen.midX, y: screen.maxY - 120), .top),
+            (CGPoint(x: screen.midX, y: screen.minY + 120), .bottom)
+        ]
         for (point, target) in points {
             #expect(SidebarPlacementGeometry.snap(at: point, screen: screen, distance: 120) == target)
         }

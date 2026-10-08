@@ -104,7 +104,7 @@ final class SidebarDragController: NSObject, NSDraggingSource {
             self.inventory.perform(.place(id, SidebarPlacementRequest(
                 frame: SidebarPlacementGeometry.flip(frame, primaryTop: primaryTop),
                 workArea: SidebarPlacementGeometry.flip(screen.visibleFrame, primaryTop: primaryTop),
-                resize: true, desktopGeneration: target.desktopGeneration)))
+                resize: true, desktopGeneration: target.desktopGeneration, snap: snap)))
         }
     }
 
@@ -224,7 +224,7 @@ final class SidebarDragController: NSObject, NSDraggingSource {
         let primaryTop = NSScreen.screens.first?.frame.maxY ?? 0
         let request = SidebarPlacementRequest(frame: SidebarPlacementGeometry.flip(frame, primaryTop: primaryTop),
             workArea: SidebarPlacementGeometry.flip(screen.visibleFrame, primaryTop: primaryTop),
-            resize: snap != nil, desktopGeneration: target.desktopGeneration)
+            resize: snap != nil, desktopGeneration: target.desktopGeneration, snap: snap)
         // Remove overlays before activating the target app.
         finish()
         inventory.perform(.place(target.id, request))

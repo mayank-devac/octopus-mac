@@ -34,6 +34,7 @@ struct octopusApp: App {
             PreferencesView()
                 .environmentObject(profileManager)
                 .environmentObject(sparkleConnector)
+                .environmentObject(appDelegate.windowLayoutController)
         }
         .windowStyle(.hiddenTitleBar)
         .windowResizability(.contentSize)
@@ -58,6 +59,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var shortcutManager: ShortcutController!
     private var windowManager: PreferencesController!
     private var sidebarController: SidebarController!
+    let windowLayoutController = WindowLayoutController()
     private var appearanceObserver: NSObjectProtocol?
     
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -75,6 +77,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         windowManager = PreferencesController()
         
         NSApp.setActivationPolicy(.accessory)
+        windowLayoutController.start()
         sidebarController = SidebarController(cycleController: cycleController)
     }
 
@@ -82,6 +85,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if let appearanceObserver { NotificationCenter.default.removeObserver(appearanceObserver) }
         appearanceObserver = nil
         sidebarController?.stop()
+        windowLayoutController.stop()
         AppDelegate.profileManager.saveNow()
     }
 

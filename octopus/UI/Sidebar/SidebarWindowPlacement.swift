@@ -32,18 +32,15 @@ enum SidebarIconMousePolicy {
 }
 
 enum SidebarSnapTarget: String, CaseIterable {
-    case left, right, bottom, maximize, topLeft, topRight, bottomLeft, bottomRight
+    case left, right, top, bottom, maximize
 
     var title: String {
         switch self {
         case .left: return "Left half"
         case .right: return "Right half"
         case .bottom: return "Bottom half"
+        case .top: return "Top half"
         case .maximize: return "Maximise"
-        case .topLeft: return "Top-left quarter"
-        case .topRight: return "Top-right quarter"
-        case .bottomLeft: return "Bottom-left quarter"
-        case .bottomRight: return "Bottom-right quarter"
         }
     }
 }
@@ -69,6 +66,7 @@ struct SidebarPlacementRequest: Equatable {
     let workArea: CGRect
     let resize: Bool
     let desktopGeneration: Int
+    var snap: SidebarSnapTarget? = nil
 }
 
 enum SidebarPlacementResult: Equatable {
@@ -112,13 +110,11 @@ enum SidebarPlacementGeometry {
         let nearRight = right <= horizontalReach
         let nearTop = top <= verticalReach
         let nearBottom = bottom <= verticalReach
-        if nearLeft && nearTop { return .topLeft }
-        if nearRight && nearTop { return .topRight }
-        if nearLeft && nearBottom { return .bottomLeft }
-        if nearRight && nearBottom { return .bottomRight }
+        // Corners are free movement; they must not fall through to either adjacent edge.
+        if (nearLeft || nearRight) && (nearTop || nearBottom) { return nil }
         if nearLeft { return .left }
         if nearRight { return .right }
-        if nearTop { return .maximize }
+        if nearTop { return .top }
         if nearBottom { return .bottom }
         return nil
     }
@@ -131,10 +127,7 @@ enum SidebarPlacementGeometry {
         case .left: return CGRect(x: area.minX, y: area.minY, width: halfWidth, height: area.height)
         case .right: return CGRect(x: area.midX, y: area.minY, width: halfWidth, height: area.height)
         case .bottom: return CGRect(x: area.minX, y: area.minY, width: area.width, height: halfHeight)
-        case .topLeft: return CGRect(x: area.minX, y: area.midY, width: halfWidth, height: halfHeight)
-        case .topRight: return CGRect(x: area.midX, y: area.midY, width: halfWidth, height: halfHeight)
-        case .bottomLeft: return CGRect(x: area.minX, y: area.minY, width: halfWidth, height: halfHeight)
-        case .bottomRight: return CGRect(x: area.midX, y: area.minY, width: halfWidth, height: halfHeight)
+        case .top: return CGRect(x: area.minX, y: area.midY, width: area.width, height: halfHeight)
         }
     }
 
