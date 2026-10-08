@@ -6,6 +6,7 @@
 //
 
 import SwiftUI
+import AppKit
 
 struct PreferencesShortcutsView: View {
     @StateObject private var modifierManager: ModifierManager = {
@@ -18,6 +19,21 @@ struct PreferencesShortcutsView: View {
     @StateObject private var mouseShortcuts = MouseShortcutStore.shared
     @State private var recordingMouseAction: MouseShortcutAction?
     @State private var mouseShortcutError: String?
+    @State private var formHeight: CGFloat?
+
+    private func positionModifier(_ flag: NSEvent.ModifierFlags, symbol: String, name: String) -> some View {
+        Toggle(symbol, isOn: Binding(
+            get: { mouseShortcuts.positionScrollModifiers.contains(flag) },
+            set: { enabled in
+                var modifiers = mouseShortcuts.positionScrollModifiers
+                if enabled { modifiers.insert(flag) } else { modifiers.remove(flag) }
+                mouseShortcuts.setPositionScrollModifiers(modifiers)
+            }
+        ))
+        .toggleStyle(.checkbox)
+        .help(name)
+        .accessibilityLabel("Use \(name) to move the sidebar with the scroll wheel")
+    }
 
     private var disabledCapabilityNote: String? {
         var disabledCapabilities: [String] = []
@@ -170,16 +186,41 @@ struct PreferencesShortcutsView: View {
                 if let mouseShortcutError {
                     Text(mouseShortcutError).font(.caption).foregroundStyle(.red)
                 }
+                HStack {
+                    Text("Move sidebar vertically").frame(width: 155, alignment: .leading)
+                    positionModifier(.control, symbol: "⌃", name: "Control")
+                    positionModifier(.option, symbol: "⌥", name: "Option (Alt)")
+                    positionModifier(.shift, symbol: "⇧", name: "Shift")
+                    positionModifier(.command, symbol: "⌘", name: "Command")
+                    Spacer(minLength: 8)
+                    Text("+ Scroll wheel").foregroundStyle(.secondary)
+                    Button("Reset") { mouseShortcuts.resetPositionScrollModifiers() }
+                        .help("Restore Control + scroll wheel")
+                        .accessibilityLabel("Reset sidebar movement shortcut")
+                    Button { mouseShortcuts.setPositionScrollModifiers([]) } label: {
+                        Image(systemName: "xmark.circle.fill")
+                    }
+                    .buttonStyle(.borderless)
+                    .disabled(mouseShortcuts.positionScrollModifiers.isEmpty)
+                    .help("Disable the sidebar movement shortcut")
+                    .accessibilityLabel("Disable sidebar movement shortcut")
+                }
+                .help("Start scrolling over the sidebar, then keep holding the selected modifiers to continue moving it anywhere. Release a selected modifier to finish. If macOS Accessibility Zoom uses the same gesture, choose a different modifier.")
             } header: {
                 Text("Mouse shortcuts")
             } footer: {
-                Text("On sidebar app icons only. Inactive apps focus first. Click Record, then click that button with your chosen mouse button; modifier keys are optional. Escape cancels. Hide and minimise must use different shortcuts.")
+                Text("Click and drag shortcuts work on sidebar app icons only. Inactive apps focus first. Click Record, then click that button with your chosen mouse button; modifier keys are optional. Escape cancels. Hide and minimise must use different shortcuts. To move the sidebar, hold the selected modifiers and turn the wheel over it. Clearing all modifiers disables movement.")
+                    .background {
+                        PreferencesFormSizeReader { height in
+                            if formHeight == nil || abs((formHeight ?? 0) - height) > 0.5 { formHeight = height }
+                        }
+                    }
             }
 
         }
         .formStyle(.grouped)
         .onDisappear { recordingMouseAction = nil }
-        .frame(height: !modifierManager.activateEnabled || !modifierManager.bindEnabled || !modifierManager.profileEnabled ? 495 : 460)
+        .frame(height: formHeight)
         .alert("Reset keyboard modifiers?", isPresented: $showingResetConfirmation) {
             Button("Cancel", role: .cancel) {}
             Button("Reset", role: .destructive) {

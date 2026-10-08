@@ -10,6 +10,44 @@ import Testing
 @testable import octopus
 
 struct SidebarTests {
+    @Test func wheelPositionRespectsPhysicalDirectionUnitsAndScreenEdges() {
+        #expect(SidebarLayout.scrolledPosition(0.5, deltaY: 3, precise: false, inverted: false, availableTravel: 480) == 0.45)
+        #expect(SidebarLayout.scrolledPosition(0.5, deltaY: -3, precise: false, inverted: true, availableTravel: 480) == 0.45)
+        #expect(SidebarLayout.scrolledPosition(0.5, deltaY: -3, precise: false, inverted: false, availableTravel: 480) == 0.55)
+        #expect(SidebarLayout.scrolledPosition(0.5, deltaY: 24, precise: true, inverted: false, availableTravel: 480) == 0.45)
+        #expect(SidebarLayout.scrolledPosition(0.02, deltaY: 10, precise: false, inverted: false, availableTravel: 480) == 0)
+        #expect(SidebarLayout.scrolledPosition(0.98, deltaY: -10, precise: false, inverted: false, availableTravel: 480) == 1)
+        #expect(SidebarLayout.scrolledPosition(0.5, deltaY: 3, precise: false, inverted: false, availableTravel: 0) == nil)
+        #expect(SidebarLayout.scrolledPosition(0.5, deltaY: .nan, precise: false, inverted: false, availableTravel: 480) == nil)
+    }
+
+    @Test func changingOneSidebarPositionPreservesOtherDisplaysAndGlobalSettings() throws {
+        let suite = "SidebarScrollPosition-\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(false, forKey: "sidebarEnabled")
+        defaults.set(0.33, forKey: "sidebarPosition")
+        var first = SidebarConfiguration.factoryDefaults
+        first.enabled = false
+        first.side = .left
+        first.snapDistance = 460
+        first.position = 0.2
+        var second = SidebarConfiguration.factoryDefaults
+        second.position = 0.7
+        SidebarSettings.save(first, for: "A", name: "A", in: defaults)
+        SidebarSettings.save(second, for: "B", name: "B", in: defaults)
+        SidebarSettings.savePosition(0.8, for: "A", in: defaults)
+        first.position = 0.8
+        #expect(SidebarSettings.configuration(for: "A", in: defaults) == first)
+        #expect(SidebarSettings.configuration(for: "B", in: defaults) == second)
+        #expect(defaults.double(forKey: "sidebarPosition") == 0.33)
+        SidebarSettings.savePosition(0.4, for: nil, in: defaults)
+        #expect(defaults.double(forKey: "sidebarPosition") == 0.4)
+        #expect(!defaults.bool(forKey: "sidebarEnabled"))
+        #expect(SidebarSettings.configuration(for: "A", in: defaults) == first)
+        #expect(SidebarSettings.configuration(for: "B", in: defaults) == second)
+    }
+
     @Test func settingsHeightFitsContentAndTheActualWindowsScreen() {
         #expect(PreferencesFormSizing.height(contentHeight: 610, screenHeight: 1000,
                                              windowHeight: 750, viewportHeight: 660) == 610)

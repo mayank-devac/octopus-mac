@@ -3,6 +3,67 @@ import Testing
 @testable import octopus
 
 struct MouseShortcutTests {
+    @Test func sidebarScrollGestureStaysLatchedUntilRequiredModifiersAreReleased() {
+        var session = SidebarPositionScrollSession()
+        let began = session.begin(.control)
+        #expect(began)
+        // Routing no longer depends on the pointer or the sidebar's moving bounds.
+        let routes = [
+            session.route(.scrollWheel, flags: .control),
+            session.route(.scrollWheel, flags: [.control, .shift]),
+            session.route(.flagsChanged, flags: .control),
+            session.route(.flagsChanged, flags: []),
+            session.route(.scrollWheel, flags: .control)
+        ]
+        #expect(routes == [.consume, .consume, .pass, .end, .pass])
+        let combinationBegan = session.begin([.option, .shift])
+        #expect(combinationBegan)
+        let combinationRoutes = [
+            session.route(.scrollWheel, flags: [.option, .shift]),
+            session.route(.flagsChanged, flags: .option)
+        ]
+        #expect(combinationRoutes == [.consume, .end])
+    }
+
+    @Test func sidebarScrollCaptureDisablesSafelyAndCannotStartWithoutModifiers() {
+        var session = SidebarPositionScrollSession()
+        let disabled = session.begin([])
+        #expect(!disabled)
+        let inactiveRoute = session.route(.scrollWheel, flags: .control)
+        #expect(inactiveRoute == .pass)
+        let began = session.begin(.control)
+        #expect(began)
+        let timeoutRoutes = [
+            session.route(.tapDisabledByTimeout, flags: .control),
+            session.route(.scrollWheel, flags: .control)
+        ]
+        #expect(timeoutRoutes == [.end, .pass])
+        _ = session.begin(.control)
+        session.end()
+        let endedRoute = session.route(.scrollWheel, flags: .control)
+        #expect(endedRoute == .pass)
+    }
+
+    @MainActor @Test func sidebarScrollModifiersPersistDisableAndResetWithoutChangingClicks() throws {
+        try withStore { store, defaults in
+            let clicks = store.bindings
+            #expect(store.positionScrollModifiers == .control)
+            store.setPositionScrollModifiers([.option, .shift, .capsLock])
+            #expect(SidebarPositionScrollShortcut.read(in: defaults) == [.option, .shift])
+            #expect(SidebarPositionScrollShortcut.matches([.option, .shift, .capsLock], required: [.option, .shift]))
+            #expect(!SidebarPositionScrollShortcut.matches([.control, .shift], required: .control))
+            store.setPositionScrollModifiers([])
+            #expect(SidebarPositionScrollShortcut.read(in: defaults).isEmpty)
+            #expect(!SidebarPositionScrollShortcut.matches([], required: []))
+            #expect(store.bindings == clicks)
+            store.resetAll()
+            #expect(store.positionScrollModifiers == .control)
+            #expect(SidebarPositionScrollShortcut.read(in: defaults) == .control)
+            defaults.set("invalid", forKey: SidebarPositionScrollShortcut.key)
+            #expect(SidebarPositionScrollShortcut.read(in: defaults) == .control)
+        }
+    }
+
     @MainActor @Test func defaultsUseDistinctClicksAndShareLeftClickWithDragging() throws {
         try withStore { store, _ in
             #expect(store.bindings.hide == .right)

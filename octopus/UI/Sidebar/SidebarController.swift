@@ -88,6 +88,7 @@ private final class SidebarDisplayController {
     private var sidebarFrame = CGRect.zero
     private var wasFullScreen = false
     private var pointerWasInSidebar = false
+    private let positionScrollCapture = SidebarPositionScrollCapture()
     private var idleOpacityTarget: CGFloat = 1
 
     private struct Settings: Equatable {
@@ -110,6 +111,12 @@ private final class SidebarDisplayController {
         func matchesExceptAppSpacing(_ other: Settings) -> Bool {
             var adjusted = configuration
             adjusted.appSpacing = other.configuration.appSpacing
+            return enabled == other.enabled && monitor == other.monitor && adjusted == other.configuration
+        }
+
+        func matchesExceptPosition(_ other: Settings) -> Bool {
+            var adjusted = configuration
+            adjusted.position = other.configuration.position
             return enabled == other.enabled && monitor == other.monitor && adjusted == other.configuration
         }
     }
@@ -243,16 +250,23 @@ private final class SidebarDisplayController {
     }
 
     func applySettings() {
+        if positionScrollCapture.isActive,
+           positionScrollCapture.modifiers != MouseShortcutStore.shared.positionScrollModifiers {
+            positionScrollCapture.stop()
+        }
         let next = Settings(displayID: displayID)
         guard next != settings else { return }
         let spacingOnlyChange = settings.map {
             $0.matchesExceptAppSpacing(next) && $0.appSpacing != next.appSpacing
         } ?? false
+        let positionOnlyChange = settings.map {
+            $0.matchesExceptPosition(next) && $0.position != next.position
+        } ?? false
         let wasEnabled = settings?.enabled ?? false
         settings = next
         viewState.configuration = next.configuration
         updateInventoryScope(next)
-        if !spacingOnlyChange || dragController.isActive { cancelInteraction() }
+        if (!spacingOnlyChange && !positionOnlyChange) || dragController.isActive { cancelInteraction() }
         guard next.enabled else { stopSidebar(); return }
         if !wasEnabled {
             inventory.start()
@@ -260,6 +274,10 @@ private final class SidebarDisplayController {
         }
         layout()
         if spacingOnlyChange { return }
+        if positionOnlyChange {
+            updatePointer()
+            return
+        }
         if shouldAutoHide { panel.orderOut(nil) } else { panel.orderFrontRegardless() }
         updateIdleOpacity(inUse: false)
         updatePointer()
@@ -534,16 +552,68 @@ private final class SidebarDisplayController {
 
     private func installMouseMonitors() {
         let events: NSEvent.EventTypeMask = [.mouseMoved, .leftMouseDragged, .rightMouseDragged,
-                                           .leftMouseDown, .rightMouseDown, .otherMouseDown, .scrollWheel]
+                                           .leftMouseDown, .rightMouseDown, .otherMouseDown, .scrollWheel, .flagsChanged]
         localMouseMonitor = NSEvent.addLocalMonitorForEvents(matching: events) { [weak self] event in
-            MainActor.assumeIsolated { self?.handleMouse(event) }
-            return event
+            MainActor.assumeIsolated {
+                guard let self else { return event }
+                if self.scrollPosition(event) { return nil }
+                self.handleMouse(event)
+                return event
+            }
         }
         globalMouseMonitor = NSEvent.addGlobalMonitorForEvents(matching: events) { [weak self] event in
             Task { @MainActor in
                 self?.handleMouse(event)
             }
         }
+    }
+
+    // Start over this sidebar, then keep its identity while the pointer moves away.
+    private func scrollPosition(_ event: NSEvent) -> Bool {
+        guard event.type == .scrollWheel, event.window === panel, panel.isVisible,
+              !positionScrollCapture.isActive,
+              settings?.enabled == true, !dragController.isActive, !otherDragActive(),
+              !cycleController.isKeyboardSwitcherVisible,
+              SidebarPositionScrollShortcut.matches(event.modifierFlags,
+                  required: MouseShortcutStore.shared.positionScrollModifiers),
+              event.scrollingDeltaY.isFinite, event.scrollingDeltaY != 0,
+              let screen else { return false }
+        let point = panel.convertToScreen(CGRect(origin: event.locationInWindow, size: .zero)).origin
+        guard SidebarLayout.acceptsSidebarPointer(at: point, sidebar: sidebarFrame,
+            menu: sidebarEntryID == nil ? nil : cycleController.panel.frame) else { return false }
+        // Modifier scrolling must not move the sidebar through trackpad inertia.
+        guard event.momentumPhase.isEmpty else { return true }
+        cancelInteraction()
+        let required = MouseShortcutStore.shared.positionScrollModifiers
+        guard positionScrollCapture.start(modifiers: required, onScroll: { [weak self] event in
+            guard let self else { return }
+            guard MouseShortcutStore.shared.positionScrollModifiers == required else {
+                self.positionScrollCapture.stop()
+                return
+            }
+            self.movePosition(event)
+        }, onEnd: { [weak self] in self?.updatePointer() }) else {
+            dragController.showFeedback("Sidebar scroll capture is unavailable. Check Accessibility access for Octopus.")
+            return true
+        }
+        movePosition(event)
+        return true
+    }
+
+    private func movePosition(_ event: NSEvent) {
+        guard settings?.enabled == true, !dragController.isActive, !otherDragActive(),
+              !cycleController.isKeyboardSwitcherVisible, let screen else {
+            positionScrollCapture.stop()
+            return
+        }
+        guard event.momentumPhase.isEmpty else { return }
+        let usable = isFullScreen ? screen.frame : screen.visibleFrame
+        let current = SidebarSettings.configuration(for: displayID).position
+        guard let next = SidebarLayout.scrolledPosition(current, deltaY: Double(event.scrollingDeltaY),
+            precise: event.hasPreciseScrollingDeltas, inverted: event.isDirectionInvertedFromDevice,
+            availableTravel: usable.height - sidebarFrame.height) else { return }
+        SidebarSettings.savePosition(next, for: displayID)
+        applySettings()
     }
 
     private func handleMouse(_ event: NSEvent) {
@@ -588,7 +658,7 @@ private final class SidebarDisplayController {
 
         // Pointer position is the only hover source. Rebuilding native tracking areas
         // during magnification must not generate exits or reopen the same app's menu.
-        let pointerEntryID = inSidebar && !inMenu ? hoveredSidebarEntryID(at: point) : nil
+        let pointerEntryID = inSidebar && !inMenu && !positionScrollCapture.isActive ? hoveredSidebarEntryID(at: point) : nil
         let highlightedEntryID = pointerEntryID ?? (inMenu ? hoveredEntryID : nil)
         if viewState.highlightedEntryID != highlightedEntryID { viewState.highlightedEntryID = highlightedEntryID }
         if let pointerEntryID, pointerEntryID != hoveredEntryID {
@@ -639,7 +709,7 @@ private final class SidebarDisplayController {
         }
 
         // Hide the sidebar only after its window menu has closed.
-        if shouldAutoHide, panel.isVisible, !inSidebar, !inMenu, !inEdge,
+        if shouldAutoHide, panel.isVisible, !positionScrollCapture.isActive, !inSidebar, !inMenu, !inEdge,
            sidebarEntryID == nil {
             if hideWork == nil {
                 let work = DispatchWorkItem { [weak self] in
@@ -661,10 +731,11 @@ private final class SidebarDisplayController {
             hideWork = nil
         }
 
-        updateIdleOpacity(inUse: inSidebar || inMenu || sidebarEntryID != nil)
+        updateIdleOpacity(inUse: inSidebar || inMenu || sidebarEntryID != nil || positionScrollCapture.isActive)
     }
 
     private func cancelInteraction() {
+        positionScrollCapture.stop()
         dragController.cancel()
         hoveredEntryID = nil
         dismissSidebar()
