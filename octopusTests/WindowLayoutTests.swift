@@ -222,6 +222,30 @@ struct WindowLayoutTests {
         #expect(!WindowLayoutPlanner.overlaps(plan.frames[peers[0].id]!, plan.frames[peers[1].id]!))
     }
 
+    @Test func unequalShelfGroupsFitOneTallWindowBesideThreeShortWindows() throws {
+        let peers = [window(2, minimum: CGSize(width: 400, height: 800)),
+                     window(3, minimum: CGSize(width: 400, height: 200)),
+                     window(4, minimum: CGSize(width: 400, height: 200)),
+                     window(5, minimum: CGSize(width: 400, height: 200))]
+        let plan = try ready(.left, peers: peers, selection: .allNormal)
+        let tall = try #require(plan.frames[peers[0].id])
+        #expect(tall.height == area.height)
+        #expect(peers.dropFirst().allSatisfy { plan.frames[$0.id]?.minX == tall.maxX })
+        #expect(plan.frames.values.reduce(CGFloat(0)) { $0 + $1.width * $1.height } == area.width * area.height)
+    }
+
+    @Test func allocatorRejectsMalformedAndDuplicateInputsWithoutConvertingThemToPixels() {
+        let anchor = window(1).id, peer = window(2).id
+        let invalid = WindowLayoutSizeConstraint(minimum: CGSize(width: CGFloat.nan, height: 200), maximum: area.size)
+        let valid = WindowLayoutSizeConstraint(minimum: CGSize(width: 320, height: 200), maximum: area.size)
+        #expect(WindowLayoutAllocator.allocate(workArea: area, snap: .left, scale: 2,
+            anchor: anchor, peers: [peer], constraints: [anchor: valid, peer: invalid]) == nil)
+        #expect(WindowLayoutAllocator.allocate(workArea: area, snap: .left, scale: 2,
+            anchor: anchor, peers: [peer, peer], constraints: [anchor: valid, peer: valid]) == nil)
+        #expect(WindowLayoutAllocator.allocate(workArea: area, snap: .left, scale: CGFloat.greatestFiniteMagnitude,
+            anchor: anchor, peers: [peer], constraints: [anchor: valid, peer: valid]) == nil)
+    }
+
     @Test func onlyDestinationDesktopNormalVisibleWindowsParticipate() throws {
         let source = WindowLayoutScope(displayID: "source", spaceID: 22)
         let otherSpace = WindowLayoutScope(displayID: "destination", spaceID: 23)
@@ -282,7 +306,8 @@ struct WindowLayoutTests {
         var live = Dictionary(uniqueKeysWithValues: ([plan.anchor] + plan.peers).map { ($0.id, $0) })
         var writes: [WindowLayoutIdentity] = []
         let result = WindowLayoutExecutor.apply(plan, canContinue: { true }, read: { live[$0] },
-            write: { id, frame, _ in
+            write: { window, frame, _ in
+                let id = window.id
                 writes.append(id)
                 live[id] = moved(live[id]!, to: frame)
                 return .placed(frame, adjusted: false)
@@ -314,7 +339,8 @@ struct WindowLayoutTests {
         var learned: WindowLayoutSizeConstraint?
         let result = WindowLayoutExecutor.apply(plan, canContinue: { true },
             read: { live[$0] },
-            write: { id, frame, _ in
+            write: { window, frame, _ in
+                let id = window.id
                 writes.append(id)
                 if id == peer.id && writes.count == 1 {
                     let clamped = CGRect(x: area.maxX - frame.width - 50, y: frame.minY,
@@ -339,7 +365,8 @@ struct WindowLayoutTests {
         var writes: [WindowLayoutIdentity] = []
         var learned: WindowLayoutSizeConstraint?
         let outcome = WindowLayoutExecutor.apply(plan, canContinue: { true }, read: { live[$0] },
-            write: { id, frame, _ in
+            write: { window, frame, _ in
+                let id = window.id
                 writes.append(id)
                 if id == peer.id && writes.count == 1 {
                     let clamped = CGRect(x: area.minX, y: area.minY + area.height - 600,
@@ -362,7 +389,8 @@ struct WindowLayoutTests {
         #expect(nextPlan.frames[peer.id]?.height == 600)
         #expect(nextPlan.frames[plan.anchor.id]?.height == area.height - 600)
         let restored = WindowLayoutExecutor.restore(plan, achieved: achieved, canContinue: { true },
-            read: { live[$0] }, write: { id, frame, _ in
+            read: { live[$0] }, write: { window, frame, _ in
+                let id = window.id
                 live[id] = moved(live[id]!, to: frame)
                 return .placed(frame, adjusted: false)
             }, clock: { 0 })
@@ -389,7 +417,8 @@ struct WindowLayoutTests {
         var time: TimeInterval = 0
         var writes = 0
         let result = WindowLayoutExecutor.apply(plan, canContinue: { true }, read: { live[$0] },
-            write: { id, frame, _ in
+            write: { window, frame, _ in
+                let id = window.id
                 writes += 1
                 live[id] = moved(live[id]!, to: frame)
                 time = 2
@@ -403,6 +432,7 @@ struct WindowLayoutTests {
         let plan = try ready()
         var current = plan.peers[0]
         var writes = 0
+        var learned = false
         let userFrame = CGRect(x: -900, y: 240, width: 500, height: 400)
         let result = WindowLayoutExecutor.apply(plan, canContinue: { true },
             read: { $0 == plan.anchor.id ? plan.anchor : current },
@@ -410,9 +440,43 @@ struct WindowLayoutTests {
                 writes += 1
                 current = moved(current, to: userFrame)
                 return .failed("The frame changed outside Octopus")
-            }, clock: { 0 })
+            }, clock: { 0 }, onLearn: { _, _ in learned = true })
         guard case .stopped = result else { Issue.record("Failed batch must stop"); return }
         #expect(writes == 1 && current.frame == userFrame)
+        #expect(!learned)
+    }
+
+    @Test func writerReceivesTheVerifiedStartingFrameRatherThanAReplacementRead() throws {
+        let plan = try ready()
+        let peer = plan.peers[0]
+        var current = peer
+        let external = CGRect(x: -900, y: 240, width: 500, height: 400)
+        var captured: CGRect?
+        let result = WindowLayoutExecutor.apply(plan, canContinue: { true },
+            read: { $0 == plan.anchor.id ? plan.anchor : current },
+            write: { expected, _, _ in
+                captured = expected.frame
+                current = moved(peer, to: external)
+                // The native boundary compares current state with the executor's supplied frame.
+                return SidebarPlacementGeometry.matches(current.frame, expected.frame) ? .placed(external, adjusted: false) : .cancelled
+            }, clock: { 0 })
+        guard case .stopped = result else { Issue.record("An intervening move must stop the write"); return }
+        #expect(captured == peer.frame && current.frame == external)
+    }
+
+    @Test func cancellationDuringTheLastReadCannotReportSuccess() throws {
+        let plan = try ready()
+        var current = plan.peers[0]
+        var peerReads = 0
+        var cancelled = false
+        let result = WindowLayoutExecutor.apply(plan, canContinue: { !cancelled },
+            read: { id in
+                if id == plan.anchor.id { return plan.anchor }
+                peerReads += 1
+                if peerReads == 4 { cancelled = true }
+                return current
+            }, write: { _, frame, _ in current = moved(current, to: frame); return .placed(frame, adjusted: false) }, clock: { 0 })
+        guard case .stopped = result else { Issue.record("Final cancellation must not be success"); return }
     }
 
     @Test func aLateClampedFrameCannotPassTheFinalReadbackGate() throws {

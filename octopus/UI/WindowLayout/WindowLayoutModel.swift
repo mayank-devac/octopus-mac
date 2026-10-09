@@ -34,7 +34,8 @@ struct WindowLayoutWindow {
     let scope: WindowLayoutScope
     let frame: CGRect
     let minimum: CGSize
-    // False means the app did not expose AXMinSize/AXMinimumSize; zero is then only a safe planning fallback.
+    // False means AXMinSize/AXMinimumSize was unavailable. Zero is an unknown lower-bound placeholder;
+    // the achieved frame must still be verified, and may reveal a larger limit.
     let minimumReported: Bool
     let canMove: Bool
     let canResize: Bool

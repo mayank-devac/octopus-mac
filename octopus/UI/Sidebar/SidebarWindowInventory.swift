@@ -1089,6 +1089,8 @@ final class SidebarWindowReader: @unchecked Sendable {
         recordFocus(id)
     }
 
+    // CG/Space data narrows candidates; only selected normal AX windows pay for metadata reads.
+    // Known non-normal surfaces are skipped, while an unknown provider failure keeps the snapshot incomplete.
     func layoutSnapshot(displays: [WindowLayoutDisplay], desktop: Int, snap: WindowLayoutCompletedSnap,
                         selection: WindowLayoutSelection, budget: WindowControlBudget) -> WindowLayoutSnapshot {
         dispatchPrecondition(condition: .onQueue(queue))
@@ -1149,6 +1151,7 @@ final class SidebarWindowReader: @unchecked Sendable {
             })
     }
 
+    // Resolve inside the owning app under the shared budget. Handle replacement/launch changes mint a new generation.
     private func resolveControlHandle(_ id: SidebarWindowID, budget: WindowControlBudget) -> WindowControlResolution {
         dispatchPrecondition(condition: .onQueue(queue))
         guard budget.isCurrent, id.pid != ProcessInfo.processInfo.processIdentifier,
@@ -1182,25 +1185,6 @@ final class SidebarWindowReader: @unchecked Sendable {
         if layoutGenerations[id] == nil { layoutSequence += 1; layoutGenerations[id] = layoutSequence }
         return .resolved(WindowControlHandle(id: WindowLayoutIdentity(window: id, generation: layoutGenerations[id]!),
             element: known.element, application: app, isFullScreen: fullScreenWindows.contains(id)))
-    }
-
-    func currentLayoutWindow(_ expected: WindowLayoutWindow, displays: [WindowLayoutDisplay],
-                             budget: WindowControlBudget) -> WindowLayoutWindow? {
-        return windowControlAccess.read(expected.id.window, displays: displays, budget: budget, expected: expected).window
-    }
-
-    func writeLayoutWindow(_ expected: WindowLayoutWindow, frame: CGRect, workArea: CGRect,
-                           displays: [WindowLayoutDisplay], token: WindowLayoutBatchToken,
-                           anchorPID: pid_t, deadline: TimeInterval) -> SidebarPlacementResult {
-        let budget = WindowControlBudget(deadline: deadline, canContinue: {
-            let frontmost = NSWorkspace.shared.frontmostApplication?.processIdentifier
-            return !token.isCancelled && (frontmost == token.frontmostPID || frontmost == anchorPID)
-        })
-        // Revalidate this exact live frame before writing; an app may have moved since planning.
-        guard let current = windowControlAccess.read(expected.id.window, displays: displays, budget: budget, expected: expected).window,
-              current.scope == expected.scope, current.eligible else { return .cancelled }
-        return windowControlAccess.write(current, frame: frame, workArea: workArea, destination: expected.scope,
-            displays: displays, budget: budget, policy: .sameDisplayAdjustment)
     }
 
     enum ActionResult {

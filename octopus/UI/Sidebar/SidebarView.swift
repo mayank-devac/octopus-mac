@@ -192,7 +192,9 @@ struct SidebarView: View {
                 onMouseClick: { shortcut in
                     if let action = mouseBindings.clickAction(for: shortcut) { onMouseAction(entry.id, action, dragTarget) }
                     else if shortcut == .left { onClick(entry.id) }
-                }
+                },
+                onDoubleClick: { if let id = dragTarget { onPlacement(id, .maximize) } },
+                doubleClickTarget: dragTarget
             )
         }
         .accessibilityElement(children: .ignore)
@@ -392,6 +394,8 @@ struct SidebarPointerRegion: NSViewRepresentable {
     var onDrag: ((NSView, NSEvent) -> Void)? = nil
     var dragShortcut: MouseShortcut? = .left
     var onMouseClick: ((MouseShortcut) -> Void)? = nil
+    var onDoubleClick: (() -> Void)? = nil
+    var doubleClickTarget: SidebarWindowID? = nil
 
     func makeNSView(context: Context) -> PointerView {
         let view = PointerView()
@@ -406,9 +410,12 @@ struct SidebarPointerRegion: NSViewRepresentable {
         view.onDrag = onDrag
         view.dragShortcut = dragShortcut
         view.onMouseClick = onMouseClick
+        view.onDoubleClick = onDoubleClick
+        view.doubleClickTarget = doubleClickTarget
     }
 
     static func dismantleNSView(_ view: PointerView, coordinator: ()) {
+        view.cancelOperation(nil)
         view.onAnchor?(nil)
     }
 
@@ -418,24 +425,62 @@ struct SidebarPointerRegion: NSViewRepresentable {
         var onDrag: ((NSView, NSEvent) -> Void)?
         var dragShortcut: MouseShortcut? = .left
         var onMouseClick: ((MouseShortcut) -> Void)?
+        var onDoubleClick: (() -> Void)?
+        var doubleClickTarget: SidebarWindowID? {
+            didSet { if oldValue != doubleClickTarget { cancelPendingClick() } }
+        }
         private var clickGate = SidebarClickGate()
-        private var press: (point: CGPoint, button: Int, event: NSEvent, click: (() -> Void)?, drag: ((NSView, NSEvent) -> Void)?)?
+        private struct Press {
+            let point: CGPoint
+            let button: Int
+            let event: NSEvent
+            let click: (() -> Void)?
+            let drag: ((NSView, NSEvent) -> Void)?
+            let primaryTarget: SidebarWindowID?
+            let doubleAction: (() -> Void)?
+        }
+        private struct PendingClick {
+            let id: UUID
+            let target: SidebarWindowID
+            let timestamp: TimeInterval
+            let action: (() -> Void)?
+            let work: DispatchWorkItem
+        }
+        private var press: Press?
+        private var pendingClick: PendingClick?
         override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
         override func mouseDown(with event: NSEvent) {
             startPress(event)
         }
         override func rightMouseDown(with event: NSEvent) { startPress(event) }
         override func otherMouseDown(with event: NSEvent) { startPress(event) }
+        // Capture actions and identity at mouse down. Plain-left app clicks arbitrate single versus double;
+        // other buttons and modifier bindings retain the existing immediate click policy.
         private func startPress(_ event: NSEvent) {
-            // Suppress only very fast repeats, even if macOS groups later clicks together.
             press = nil
-            guard clickGate.accepts(timestamp: event.timestamp, clickCount: event.clickCount) else { return }
             let shortcut = MouseShortcut(button: event.buttonNumber, modifiers: event.modifierFlags)
+            let primary = shortcut == .left && onDoubleClick != nil ? doubleClickTarget : nil
+            var double: (() -> Void)?
+            if let primary {
+                guard event.timestamp.isFinite else { return }
+                // A handled double must not become a minimise/hide action on its third grouped click.
+                guard (1...2).contains(event.clickCount) else { cancelPendingClick(); return }
+                if let pending = pendingClick, pending.target == primary, event.clickCount == 2,
+                   event.timestamp >= pending.timestamp,
+                   event.timestamp - pending.timestamp <= NSEvent.doubleClickInterval {
+                    cancelPendingClick()
+                    double = onDoubleClick
+                } else { commitPendingClick() }
+            } else {
+                commitPendingClick()
+                guard clickGate.accepts(timestamp: event.timestamp, clickCount: event.clickCount) else { return }
+            }
             let click: (() -> Void)?
             if let onMouseClick { click = { onMouseClick(shortcut) } }
             else { click = shortcut == .left ? onClick : nil }
-            press = (event.locationInWindow, event.buttonNumber, event, click,
-                     shortcut == dragShortcut ? onDrag : nil)
+            press = Press(point: event.locationInWindow, button: event.buttonNumber, event: event,
+                click: click, drag: shortcut == dragShortcut ? onDrag : nil,
+                primaryTarget: primary, doubleAction: double)
         }
         override func mouseDragged(with event: NSEvent) {
             continuePress(event)
@@ -446,6 +491,7 @@ struct SidebarPointerRegion: NSViewRepresentable {
             guard let press, event.buttonNumber == press.button,
                   Self.hasStartedDrag(from: press.point, to: event.locationInWindow) else { return }
             self.press = nil
+            cancelPendingClick()
             press.drag?(self, press.event)
         }
         override func mouseUp(with event: NSEvent) {
@@ -453,13 +499,38 @@ struct SidebarPointerRegion: NSViewRepresentable {
         }
         override func rightMouseUp(with event: NSEvent) { endPress(event) }
         override func otherMouseUp(with event: NSEvent) { endPress(event) }
+        // Commit a double only on an in-bounds release still classified by macOS as a click.
         private func endPress(_ event: NSEvent) {
-            guard event.buttonNumber == press?.button else { return }
-            let click = press?.click
+            guard let completed = press, event.buttonNumber == completed.button else { return }
             press = nil
-            if bounds.contains(convert(event.locationInWindow, from: nil)) { click?() }
+            guard bounds.contains(convert(event.locationInWindow, from: nil)) else { return }
+            if let double = completed.doubleAction {
+                if event.clickCount == 2 { double() }
+                return
+            }
+            guard let target = completed.primaryTarget else { completed.click?(); return }
+            let id = UUID()
+            let work = DispatchWorkItem { [weak self] in self?.commitPendingClick(expectedID: id) }
+            pendingClick = PendingClick(id: id, target: target, timestamp: completed.event.timestamp,
+                action: completed.click, work: work)
+            let delay = max(0, NSEvent.doubleClickInterval - max(0, event.timestamp - completed.event.timestamp))
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
         }
-        override func cancelOperation(_ sender: Any?) { press = nil }
+        override func cancelOperation(_ sender: Any?) { press = nil; cancelPendingClick() }
+
+        // Delay only the single primary action, otherwise a double could first minimise/hide its window.
+        // The nonce prevents a cancelled timer from committing a newer pending click.
+        func commitPendingClick(expectedID: UUID? = nil) {
+            guard let pending = pendingClick, expectedID == nil || expectedID == pending.id else { return }
+            cancelPendingClick()
+            guard pending.target == doubleClickTarget else { return }
+            pending.action?()
+        }
+
+        private func cancelPendingClick() {
+            pendingClick?.work.cancel()
+            pendingClick = nil
+        }
 
         static func hasStartedDrag(from start: CGPoint, to end: CGPoint) -> Bool {
             hypot(end.x - start.x, end.y - start.y) > 6

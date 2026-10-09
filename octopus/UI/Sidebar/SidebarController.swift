@@ -268,6 +268,10 @@ private final class SidebarDisplayController {
 
     // Freeze displayed identities across all sidebars, while keeping actual window state live.
     func freezePairCatalogue(_ active: Bool) {
+        if active {
+            // A drag on another display must cancel delayed single clicks before they can hide its source.
+            anchors.values.forEach { ($0 as? SidebarPointerRegion.PointerView)?.cancelOperation(nil) }
+        }
         if active { pairVisibleWindowIDs = Set(inventory.entries.flatMap { $0.visibleIDs }) }
         else { pairVisibleWindowIDs = nil }
         if active, viewState.dragSections == nil {
@@ -635,12 +639,15 @@ private final class SidebarDisplayController {
         let events: NSEvent.EventTypeMask = [.mouseMoved, .leftMouseDragged, .rightMouseDragged,
                                            .leftMouseDown, .rightMouseDown, .otherMouseDown, .scrollWheel, .flagsChanged]
         localMouseMonitor = NSEvent.addLocalMonitorForEvents(matching: events) { [weak self] event in
-            MainActor.assumeIsolated {
-                guard let self else { return event }
-                if self.scrollPosition(event) { return nil }
+            // AppKit runs this monitor on the main thread. Return a Sendable decision from the
+            // actor assertion rather than passing NSEvent itself across its generic result boundary.
+            let consumed = MainActor.assumeIsolated {
+                guard let self else { return false }
+                if self.scrollPosition(event) { return true }
                 self.handleMouse(event)
-                return event
+                return false
             }
+            return consumed ? nil : event
         }
         globalMouseMonitor = NSEvent.addGlobalMonitorForEvents(matching: events) { [weak self] event in
             Task { @MainActor in
@@ -658,7 +665,7 @@ private final class SidebarDisplayController {
               SidebarPositionScrollShortcut.matches(event.modifierFlags,
                   required: MouseShortcutStore.shared.positionScrollModifiers),
               event.scrollingDeltaY.isFinite, event.scrollingDeltaY != 0,
-              let screen else { return false }
+              screen != nil else { return false }
         let point = panel.convertToScreen(CGRect(origin: event.locationInWindow, size: .zero)).origin
         guard SidebarLayout.acceptsSidebarPointer(at: point, sidebar: sidebarFrame,
             menu: sidebarEntryID == nil ? nil : cycleController.panel.frame) else { return false }

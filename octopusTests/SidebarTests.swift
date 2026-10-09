@@ -632,6 +632,95 @@ struct SidebarTests {
         }
     }
 
+    @MainActor private func primaryClick(_ view: SidebarPointerRegion.PointerView, count: Int,
+                                         time: TimeInterval, modifiers: NSEvent.ModifierFlags = []) throws {
+        let point = CGPoint(x: 10, y: 10)
+        let down = try #require(NSEvent.mouseEvent(with: .leftMouseDown, location: point,
+            modifierFlags: modifiers, timestamp: time, windowNumber: 0, context: nil,
+            eventNumber: count, clickCount: count, pressure: 1))
+        let up = try #require(NSEvent.mouseEvent(with: .leftMouseUp, location: point,
+            modifierFlags: modifiers, timestamp: time + 0.001, windowNumber: 0, context: nil,
+            eventNumber: count, clickCount: count, pressure: 0))
+        view.mouseDown(with: down)
+        view.mouseUp(with: up)
+    }
+
+    @MainActor @Test func doubleClickMaximisesOnceWithoutFiringTheMappedSingleAction() throws {
+        let view = SidebarPointerRegion.PointerView(frame: CGRect(x: 0, y: 0, width: 86, height: 86))
+        var singles = 0, maximises = 0
+        view.doubleClickTarget = SidebarWindowID(pid: 42, windowID: 1)
+        view.onMouseClick = { _ in singles += 1 }
+        view.onDoubleClick = { maximises += 1 }
+        try primaryClick(view, count: 1, time: 1)
+        #expect(singles == 0 && maximises == 0)
+        try primaryClick(view, count: 2, time: 1 + NSEvent.doubleClickInterval / 2)
+        try primaryClick(view, count: 3, time: 1 + NSEvent.doubleClickInterval * 0.75)
+        view.commitPendingClick()
+        #expect(singles == 0 && maximises == 1)
+    }
+
+    @MainActor @Test func singleClickFallbackAndModifierClicksKeepTheirMappedAction() throws {
+        let view = SidebarPointerRegion.PointerView(frame: CGRect(x: 0, y: 0, width: 86, height: 86))
+        var singles = 0, maximises = 0
+        view.doubleClickTarget = SidebarWindowID(pid: 42, windowID: 1)
+        view.onMouseClick = { _ in singles += 1 }
+        view.onDoubleClick = { maximises += 1 }
+        try primaryClick(view, count: 1, time: 1)
+        view.commitPendingClick()
+        #expect(singles == 1)
+        try primaryClick(view, count: 1, time: 2, modifiers: .shift)
+        #expect(singles == 2 && maximises == 0)
+        try primaryClick(view, count: 1, time: 3)
+        view.doubleClickTarget = SidebarWindowID(pid: 42, windowID: 2)
+        view.commitPendingClick()
+        #expect(singles == 2 && maximises == 0)
+    }
+
+    @MainActor @Test func draggingAndEscapeCancelDeferredClickActions() throws {
+        let view = SidebarPointerRegion.PointerView(frame: CGRect(x: 0, y: 0, width: 86, height: 86))
+        var singles = 0, maximises = 0, drags = 0
+        view.doubleClickTarget = SidebarWindowID(pid: 42, windowID: 1)
+        view.onClick = { singles += 1 }
+        view.onDoubleClick = { maximises += 1 }
+        view.onDrag = { _, _ in drags += 1 }
+        try primaryClick(view, count: 1, time: 1)
+        let down = try #require(NSEvent.mouseEvent(with: .leftMouseDown, location: CGPoint(x: 10, y: 10),
+            modifierFlags: [], timestamp: 1 + NSEvent.doubleClickInterval / 2, windowNumber: 0,
+            context: nil, eventNumber: 2, clickCount: 2, pressure: 1))
+        let drag = try #require(NSEvent.mouseEvent(with: .leftMouseDragged, location: CGPoint(x: 30, y: 10),
+            modifierFlags: [], timestamp: down.timestamp + 0.01, windowNumber: 0,
+            context: nil, eventNumber: 2, clickCount: 2, pressure: 1))
+        view.mouseDown(with: down)
+        view.mouseDragged(with: drag)
+        view.commitPendingClick()
+        #expect(drags == 1 && singles == 0 && maximises == 0)
+        try primaryClick(view, count: 1, time: 3)
+        view.cancelOperation(nil)
+        view.commitPendingClick()
+        #expect(singles == 0 && maximises == 0)
+    }
+
+    @MainActor @Test func aDoubleClickRequiresAnInBoundsClickRelease() throws {
+        for (point, releaseCount) in [(CGPoint(x: 100, y: 10), 2), (CGPoint(x: 10, y: 10), 0)] {
+            let view = SidebarPointerRegion.PointerView(frame: CGRect(x: 0, y: 0, width: 86, height: 86))
+            var actions = 0
+            view.doubleClickTarget = SidebarWindowID(pid: 42, windowID: 1)
+            view.onClick = { actions += 1 }
+            view.onDoubleClick = { actions += 1 }
+            try primaryClick(view, count: 1, time: 1)
+            let down = try #require(NSEvent.mouseEvent(with: .leftMouseDown, location: CGPoint(x: 10, y: 10),
+                modifierFlags: [], timestamp: 1 + NSEvent.doubleClickInterval / 2,
+                windowNumber: 0, context: nil, eventNumber: 2, clickCount: 2, pressure: 1))
+            let up = try #require(NSEvent.mouseEvent(with: .leftMouseUp, location: point,
+                modifierFlags: [], timestamp: down.timestamp + 0.001, windowNumber: 0,
+                context: nil, eventNumber: 2, clickCount: releaseCount, pressure: 0))
+            view.mouseDown(with: down)
+            view.mouseUp(with: up)
+            view.commitPendingClick()
+            #expect(actions == 0)
+        }
+    }
+
     @MainActor @Test func menuStateRefreshesWindowControlsAndClearsThemForKeyboardMode() {
         let app = Application(NSRunningApplication.current)
         let window = Window(AXUIElementCreateApplication(getpid()), app, cachedTitle: "Example")

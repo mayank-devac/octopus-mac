@@ -9,7 +9,7 @@ enum WindowLayoutExecutor {
     // Learn an app's hidden size limit only from its verified post-write frame, then redistribute.
     static func apply(_ plan: WindowLayoutPlan, canContinue: () -> Bool,
                       read: (WindowLayoutIdentity) -> WindowLayoutWindow?,
-                      write: (WindowLayoutIdentity, CGRect, TimeInterval) -> SidebarPlacementResult,
+                      write: (WindowLayoutWindow, CGRect, TimeInterval) -> SidebarPlacementResult,
                       clock: () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
                       deadline requestedDeadline: TimeInterval? = nil,
                       onLearn: (WindowLayoutIdentity, WindowLayoutSizeConstraint) -> Void = { _, _ in }) -> WindowLayoutBatchResult {
@@ -51,7 +51,8 @@ enum WindowLayoutExecutor {
                     return .stopped("A window changed during adjustment; achieved positions were kept.")
                 }
                 if SidebarPlacementGeometry.matches(live.frame, target) { continue }
-                let result = write(window.id, target, deadline)
+                // Carry this exact starting frame to native preflight; do not replace it with another read.
+                let result = write(live, target, deadline)
                 guard canContinue(), clock() < deadline else {
                     return .stopped("Layout stopped; achieved positions were kept.")
                 }
@@ -90,11 +91,11 @@ enum WindowLayoutExecutor {
                     peers: plan.peers.map(\.id), constraints: constraints) else {
                     return .stopped("The apps' size limits cannot fit on this display; achieved positions were kept.")
                 }
-                targets = allocation.frames
+                targets = allocation
                 continue
             }
             let final = windows.compactMap { current($0) }
-            guard final.count == windows.count,
+            guard canContinue(), clock() < deadline, final.count == windows.count,
                   final.allSatisfy({ window in
                       targets[window.id].map { SidebarPlacementGeometry.matches(window.frame, $0) } == true
                   }) else {
@@ -105,6 +106,7 @@ enum WindowLayoutExecutor {
                     return .stopped("The apps could not confirm a non-overlapping layout.")
                 }
             }
+            guard canContinue(), clock() < deadline else { return .stopped("Layout was interrupted before confirmation.") }
             return .applied(Dictionary(uniqueKeysWithValues: final.map { ($0.id, $0.frame) }))
         }
         return .stopped("The apps changed their size limits during layout; achieved positions were kept.")
@@ -114,7 +116,7 @@ enum WindowLayoutExecutor {
     static func restore(_ plan: WindowLayoutPlan, achieved: [WindowLayoutIdentity: CGRect],
                         canContinue: () -> Bool,
                         read: (WindowLayoutIdentity) -> WindowLayoutWindow?,
-                        write: (WindowLayoutIdentity, CGRect, TimeInterval) -> SidebarPlacementResult,
+                        write: (WindowLayoutWindow, CGRect, TimeInterval) -> SidebarPlacementResult,
                         clock: () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
                         deadline requestedDeadline: TimeInterval? = nil) -> WindowLayoutBatchResult {
         let deadline = requestedDeadline ?? clock() + 4
@@ -126,29 +128,27 @@ enum WindowLayoutExecutor {
                 && SidebarPlacementGeometry.matches(live.frame, frame)
         }) else { return .stopped("Undo is unavailable because a window or Desktop changed.") }
 
-        var latest = achieved
         for original in order {
             guard canContinue(), clock() < deadline, let live = read(original.id),
                   live.id == original.id, live.scope == plan.scope, live.eligible,
-                  let expected = latest[original.id],
+                  let expected = achieved[original.id],
                   SidebarPlacementGeometry.matches(live.frame, expected) else {
                 return .stopped("Undo stopped because a window changed; achieved positions were kept.")
             }
             if SidebarPlacementGeometry.matches(live.frame, original.frame) { continue }
-            let result = write(original.id, original.frame, deadline)
+            let result = write(live, original.frame, deadline)
             guard case .placed = result, canContinue(), clock() < deadline,
                   let actual = read(original.id), actual.id == original.id,
                   actual.scope == plan.scope, actual.eligible,
                   SidebarPlacementGeometry.matches(actual.frame, original.frame) else {
                 return .stopped("An app could not finish Undo; some windows may have moved.")
             }
-            latest[original.id] = actual.frame
         }
         guard canContinue(), clock() < deadline, order.allSatisfy({ original in
             guard let live = read(original.id) else { return false }
             return live.id == original.id && live.scope == plan.scope && live.eligible
                 && SidebarPlacementGeometry.matches(live.frame, original.frame)
-        }) else { return .stopped("The apps could not confirm Undo.") }
+        }), canContinue(), clock() < deadline else { return .stopped("The apps could not confirm Undo.") }
         return .applied(Dictionary(uniqueKeysWithValues: order.map { ($0.id, $0.frame) }))
     }
 }

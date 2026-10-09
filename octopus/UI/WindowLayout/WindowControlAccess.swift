@@ -78,6 +78,7 @@ final class WindowControlAccess: @unchecked Sendable {
         }
     }
 
+    // Admit only the exact normal AX window on one visible Desktop; optional metadata absence is not a read error.
     func read(_ id: SidebarWindowID, displays: [WindowLayoutDisplay], budget: WindowControlBudget,
               expected: WindowLayoutWindow? = nil, recency: UInt64 = 0, stackOrder: Int = Int.max) -> WindowControlRead {
         dispatchPrecondition(condition: .onQueue(queue))
@@ -144,6 +145,7 @@ final class WindowControlAccess: @unchecked Sendable {
             blocked: fullScreen || handle.isFullScreen || modal || !sheets.isEmpty, recency: recency, stackOrder: stackOrder))
     }
 
+    // The caller supplies its last verified starting frame. Reject intervening movement before any setter.
     func write(_ expected: WindowLayoutWindow, frame: CGRect, workArea: CGRect,
                destination: WindowLayoutScope, displays: [WindowLayoutDisplay], budget: WindowControlBudget,
                policy: WindowFrameWritePolicy) -> SidebarPlacementResult {
@@ -165,32 +167,37 @@ final class WindowControlAccess: @unchecked Sendable {
         }
         let request = SidebarPlacementRequest(frame: frame, workArea: workArea, resize: true, desktopGeneration: 0)
         var writeResults: [String] = []
+        var nativeFailure: AXError?
+        var blocked = false
+        // Both setters share failure bookkeeping so a refused command cannot be learned as an app size limit.
+        func set(_ attribute: String, value: AXValue?, label: String) -> Bool {
+            guard permitted() else { blocked = true; writeResults.append("\(label):blocked"); return false }
+            guard let value else {
+                nativeFailure = .illegalArgument
+                writeResults.append("\(label):value-failed")
+                return false
+            }
+            let error = AXUIElementSetAttributeValue(handle.element, attribute as CFString, value)
+            writeResults.append("\(label):\(error.rawValue)")
+            if error != .success { nativeFailure = error }
+            return error == .success
+        }
         let policyName = policy == .crossDisplayPlacement ? "cross-display" : "same-display"
         let startedAt = budget.clock()
         logger.debug("Resize start window=\(expected.id.window.windowID, privacy: .public) policy=\(policyName, privacy: .public) start=\(String(describing: current.frame), privacy: .public) requested=\(String(describing: frame), privacy: .public) minimum=\(String(describing: expected.minimum), privacy: .public) minimumReported=\(expected.minimumReported, privacy: .public)")
-        let result = Self.withoutEnhancedUserInterface(pid: expected.id.window.pid) {
+        var result = Self.withoutEnhancedUserInterface(pid: expected.id.window.pid) {
             SidebarPlacementWriter.apply(request, canContinue: { budget.isCurrent },
                 readFrame: { budget.isCurrent ? handle.element.getWindowFrame() : nil },
                 writePosition: { position in
-                    guard permitted() else { writeResults.append("position:blocked"); return false }
                     var position = position
-                    guard let value = AXValueCreate(.cgPoint, &position) else {
-                        writeResults.append("position:value-failed"); return false
-                    }
-                    let error = AXUIElementSetAttributeValue(handle.element, kAXPositionAttribute as CFString, value)
-                    writeResults.append("position:\(error.rawValue)")
-                    return error == .success
+                    return set(kAXPositionAttribute, value: AXValueCreate(.cgPoint, &position), label: "position")
                 }, writeSize: { size in
-                    guard permitted() else { writeResults.append("size:blocked"); return false }
                     var size = size
-                    guard let value = AXValueCreate(.cgSize, &size) else {
-                        writeResults.append("size:value-failed"); return false
-                    }
-                    let error = AXUIElementSetAttributeValue(handle.element, kAXSizeAttribute as CFString, value)
-                    writeResults.append("size:\(error.rawValue)")
-                    return error == .success
+                    return set(kAXSizeAttribute, value: AXValueCreate(.cgSize, &size), label: "size")
                 }, repeatSizeAfterMove: policy == .crossDisplayPlacement, acceptStableMismatch: false)
         }
+        if blocked { result = .cancelled }
+        else if nativeFailure != nil { result = .failed("The app rejected this size or position adjustment.") }
         let finalFrame: CGRect?
         let outcome: String
         switch result {

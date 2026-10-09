@@ -105,7 +105,11 @@ final class SidebarDragController: NSObject, NSDraggingSource {
 
     func place(_ id: SidebarWindowID, at snap: SidebarSnapTarget) {
         guard !isActive else { return }
+        // A new explicit placement supersedes earlier preparation and any pending automatic layout.
+        generation += 1
         let requestGeneration = generation
+        NotificationCenter.default.post(name: WindowLayoutController.userActionNotification,
+            object: ProcessInfo.processInfo.systemUptime)
         inventory.preparePlacement(id) { [weak self] target in
             guard let self, !self.isActive, self.generation == requestGeneration else { return }
             guard let target else { self.showFeedback("This window cannot be moved on the current desktop."); return }

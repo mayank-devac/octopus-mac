@@ -54,6 +54,8 @@ enum WindowLayoutPlanner {
         }
     }
 
+    // Validate the complete selected set before mutation. Allocation includes the snapped window so
+    // its dividing line can move only when a reported or recently observed app bound requires it.
     static func plan(snapshot: WindowLayoutSnapshot, anchorID: SidebarWindowID,
                      request: SidebarPlacementRequest, selection: WindowLayoutSelection = .mostRecent,
                      learned: [WindowLayoutIdentity: WindowLayoutSizeConstraint] = [:]) -> WindowLayoutPlanningResult {
@@ -96,7 +98,7 @@ enum WindowLayoutPlanner {
         }
         return .ready(WindowLayoutPlan(scope: anchor.scope, desktopGeneration: snapshot.desktopGeneration,
             workArea: request.workArea, snap: snap, scale: display.scale,
-            anchor: anchor, peers: selected, constraints: constraints, frames: allocation.frames))
+            anchor: anchor, peers: selected, constraints: constraints, frames: allocation))
     }
 
     static func overlaps(_ a: CGRect, _ b: CGRect) -> Bool {
