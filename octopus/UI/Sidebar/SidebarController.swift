@@ -104,6 +104,7 @@ private final class SidebarDisplayController {
     private var edgeFrame = CGRect.zero
     private var sidebarFrame = CGRect.zero
     private var wasFullScreen = false
+    private var needsSpacePresentation = false
     private var pointerWasInSidebar = false
     private let positionScrollCapture = SidebarPositionScrollCapture()
     private var idleOpacityTarget: CGFloat = 1
@@ -146,6 +147,13 @@ private final class SidebarDisplayController {
 
     private func dismissSidebar() {
         if ownsMenu { cycleController.dismissSidebar() }
+    }
+
+    private func isHoveringMenuOrIcon(_ entryID: SidebarEntryID) -> Bool {
+        guard sidebarEntryID == entryID, panel.isVisible else { return false }
+        let point = NSEvent.mouseLocation
+        return (cycleController.panel.isVisible && cycleController.panel.frame.contains(point))
+            || (sidebarFrame.contains(point) && hoveredSidebarEntryID(at: point) == entryID)
     }
 
     private func claimMenu() {
@@ -203,8 +211,13 @@ private final class SidebarDisplayController {
         panel.contentView = hostingView
         inventory.onChange = { [weak self] in self?.inventoryChanged() }
         inventory.onDesktopChange = { [weak self] in
-            self?.cancelInteraction()
-            if self?.settings?.desktopScope == .visibleDesktops { self?.panel.orderOut(nil) }
+            guard let self else { return }
+            self.needsSpacePresentation = true
+            // All-desktop entries retain their identity across a Space switch. Keep
+            // the hovered icon and its menu until pointer/inventory reconciliation,
+            // instead of closing and reopening them during the same transition.
+            self.cancelInteraction(preservingHoveredEntry: self.settings?.desktopScope == .allDesktops)
+            if self.settings?.desktopScope == .visibleDesktops { self.panel.orderOut(nil) }
         }
         dragController.snapDistanceProvider = { [weak self] in
             self?.settings?.configuration.snapDistance ?? SidebarSettings.defaultSnapDistance
@@ -363,7 +376,7 @@ private final class SidebarDisplayController {
             updatePointer()
             return
         }
-        if shouldAutoHide { panel.orderOut(nil) } else { panel.orderFrontRegardless() }
+        if shouldAutoHide { panel.orderOut(nil) } else { restoreSidebarIfNeeded() }
         updateIdleOpacity(inUse: false)
         updatePointer()
     }
@@ -381,11 +394,28 @@ private final class SidebarDisplayController {
 
     func screensChanged() {
         cancelInteraction()
+        needsSpacePresentation = true
         panel.orderOut(nil)
         layout()
         inventory.refresh()
-        if !shouldAutoHide { panel.orderFrontRegardless() }
+        restoreSidebarIfNeeded()
         updatePointer()
+    }
+
+    private func restoreSidebarIfNeeded() {
+        let menuVisible = ownsMenu && cycleController.panel.isVisible && cycleController.panel.isOnActiveSpace
+        // Auto-hide applies when idle, not while this sidebar's window list is open.
+        guard settings?.enabled == true, screen != nil, !shouldAutoHide || menuVisible,
+              needsSpacePresentation || !panel.isVisible || !panel.isOnActiveSpace else { return }
+        // isVisible alone does not establish that the panel is on this Desktop.
+        // Reassert its order once after a Space change, without activating Octopus
+        // or covering the shared window list that the user is still hovering.
+        if menuVisible {
+            panel.order(.below, relativeTo: cycleController.panel.windowNumber)
+        } else {
+            panel.orderFrontRegardless()
+        }
+        needsSpacePresentation = !panel.isVisible || !panel.isOnActiveSpace
     }
 
     private var isFullScreen: Bool {
@@ -416,7 +446,7 @@ private final class SidebarDisplayController {
         } else {
             target = SidebarSettings.selectedScreen()
         }
-        guard let target else { panel.orderOut(nil); return }
+        guard let target else { screen = nil; panel.orderOut(nil); return }
         screen = target
         updateInventoryScope(settings)
         let monitors = NSScreen.screens.enumerated().compactMap { index, screen -> SidebarMonitor? in
@@ -473,8 +503,7 @@ private final class SidebarDisplayController {
         layout()
         if isFullScreen && !wasFullScreen { cancelInteraction(); panel.orderOut(nil) }
         wasFullScreen = isFullScreen
-        // A refresh must not raise the sidebar over the popup's overlapping edge.
-        if !shouldAutoHide, !panel.isVisible { panel.orderFrontRegardless() }
+        restoreSidebarIfNeeded()
         // A second window can appear while the pointer stays on an app whose menu was hidden.
         if let entryID = sidebarEntryID ?? (panel.isVisible ? hoveredEntryID : nil) {
             if let entry = inventory.entries.first(where: { $0.id == entryID }), let icon = iconFrame(entryID) {
@@ -621,7 +650,7 @@ private final class SidebarDisplayController {
         let frontmostPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
         let action = SidebarIconClickPolicy.action(for: entry, frontmostPID: frontmostPID,
                                                   setting: .none)
-        dismissSidebar()
+        if !isHoveringMenuOrIcon(entryID) { dismissSidebar() }
         if let action { inventory.perform(action, frontmostPID: frontmostPID) }
         else { inventory.refresh() }
     }
@@ -632,7 +661,7 @@ private final class SidebarDisplayController {
         let frontmostPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
         let windowAction = SidebarIconMousePolicy.action(action, for: entry, frontmostPID: frontmostPID, target: target)
         cancelPendingHover()
-        dismissSidebar()
+        if !isHoveringMenuOrIcon(entryID) { dismissSidebar() }
         if let windowAction { inventory.perform(windowAction, frontmostPID: frontmostPID) }
         else { inventory.refresh() }
     }
@@ -737,9 +766,11 @@ private final class SidebarDisplayController {
 
     private func updatePointer() {
         guard settings?.enabled == true, !dragController.isActive, !otherDragActive() else { return }
+        restoreSidebarIfNeeded()
         let point = NSEvent.mouseLocation
-        let inSidebar = panel.isVisible && sidebarFrame.contains(point)
-        let inMenu = sidebarEntryID != nil && cycleController.panel.frame.contains(point)
+        let inSidebar = panel.isVisible && panel.isOnActiveSpace && sidebarFrame.contains(point)
+        let inMenu = sidebarEntryID != nil && cycleController.panel.isVisible
+            && cycleController.panel.isOnActiveSpace && cycleController.panel.frame.contains(point)
         // The popup can overlap the sidebar's wide icon hit area. Give it all input there.
         panel.ignoresMouseEvents = !panel.isVisible || !SidebarLayout.acceptsSidebarPointer(
             at: point, sidebar: sidebarFrame,
@@ -777,7 +808,7 @@ private final class SidebarDisplayController {
             dismissWork = nil
         }
 
-        if !panel.isVisible, inEdge, !cycleController.isKeyboardSwitcherVisible {
+        if (!panel.isVisible || !panel.isOnActiveSpace), inEdge, !cycleController.isKeyboardSwitcherVisible {
             if revealWork == nil {
                 let work = DispatchWorkItem { [weak self] in
                     guard let self else { return }
@@ -806,8 +837,9 @@ private final class SidebarDisplayController {
                     guard let self else { return }
                     self.hideWork = nil
                     let point = NSEvent.mouseLocation
-                    guard self.shouldAutoHide, !self.sidebarFrame.contains(point), !self.edgeFrame.contains(point),
-                          !(self.sidebarEntryID != nil && self.cycleController.panel.frame.contains(point)) else { return }
+                    guard self.shouldAutoHide, self.sidebarEntryID == nil,
+                          !self.positionScrollCapture.isActive,
+                          !self.sidebarFrame.contains(point), !self.edgeFrame.contains(point) else { return }
                     self.panel.orderOut(nil)
                     self.dismissSidebar()
                     self.hoveredEntryID = nil
@@ -824,18 +856,22 @@ private final class SidebarDisplayController {
         updateIdleOpacity(inUse: inSidebar || inMenu || sidebarEntryID != nil || positionScrollCapture.isActive)
     }
 
-    private func cancelInteraction() {
+    private func cancelInteraction(preservingHoveredEntry: Bool = false) {
+        let keepMenu = preservingHoveredEntry && !dragController.isActive
+            && sidebarEntryID.map { isHoveringMenuOrIcon($0) } == true
         positionScrollCapture.stop()
         dragController.cancel()
-        hoveredEntryID = nil
-        dismissSidebar()
+        if !keepMenu {
+            hoveredEntryID = nil
+            dismissSidebar()
+        }
         cancelPendingHover()
         for work in [dismissWork, revealWork, hideWork] { work?.cancel() }
         dismissWork = nil
         revealWork = nil
         hideWork = nil
         pointerWasInSidebar = false
-        viewState.highlightedEntryID = nil
+        if !preservingHoveredEntry { viewState.highlightedEntryID = nil }
     }
 
     private func beginDrag(_ entryID: SidebarEntryID, target: SidebarWindowID?, title: String, source: NSView, event: NSEvent) {

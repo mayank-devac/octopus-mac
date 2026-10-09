@@ -256,12 +256,15 @@ struct SidebarView: View {
     }
 }
 
-// The thin outline identifies B; the thick segment tells the user where dragged A will land.
+// A quiet neutral outline identifies B; the thick segment shows where dragged A will land.
 private struct SidebarPairBorder: View {
     let direction: PairDropDirection?
+    @Environment(\.colorScheme) private var colorScheme
+
     var body: some View {
         ZStack {
-            RoundedRectangle(cornerRadius: 7).stroke(Color.accentColor, lineWidth: 2)
+            RoundedRectangle(cornerRadius: 7)
+                .stroke(Color.primary.opacity(colorScheme == .dark ? 0.32 : 0.22), lineWidth: 1.5)
             GeometryReader { geometry in
                 Path { path in
                     let w = geometry.size.width, h = geometry.size.height

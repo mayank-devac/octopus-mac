@@ -150,7 +150,6 @@ struct CyclePanelView: View {
                     Button { onWindowClose(item.id) } label: {
                         Image(systemName: "xmark")
                             .font(.system(size: 11, weight: .semibold))
-                            .foregroundStyle(.white)
                             .frame(width: SidebarLayout.menuWindowActionWidth, height: SidebarLayout.menuRowHeight)
                             .contentShape(Rectangle())
                     }
