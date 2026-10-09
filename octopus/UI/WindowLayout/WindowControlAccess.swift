@@ -195,7 +195,7 @@ final class WindowControlAccess: @unchecked Sendable {
                 }, writeSize: { size in
                     var size = size
                     return set(kAXSizeAttribute, value: AXValueCreate(.cgSize, &size), label: "size")
-                }, repeatSizeAfterMove: request.crossesDisplay, acceptStableMismatch: false)
+                }, acceptStableMismatch: false)
         }
         if blocked { result = .cancelled }
         else if nativeFailure != nil { result = .failed("The app rejected this size or position adjustment.") }

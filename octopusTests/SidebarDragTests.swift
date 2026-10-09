@@ -18,7 +18,9 @@ struct SidebarDragTests {
             func resolve(_ flags: NSEvent.ModifierFlags) -> SidebarPlacementGeometry.Decision? {
                 SidebarPlacementGeometry.resolve(at: point, screen: screen, workArea: area,
                     originalSize: CGSize(width: 500, height: 300), sourceDisplay: screen, canResize: true,
-                    distance: 120, modifiers: flags, cornerModifiers: chord, moveSize: .fullScreen)
+                    distance: 120,
+                    cornersEnabled: SidebarCornerSnapShortcut.matches(flags, required: chord),
+                    moveSize: .fullScreen)
             }
             let free = try #require(resolve([]))
             let preview = try #require(resolve(chord))
@@ -36,7 +38,7 @@ struct SidebarDragTests {
                      canResize: Bool = true) throws -> SidebarPlacementGeometry.Decision {
             try #require(SidebarPlacementGeometry.resolve(at: point, screen: screen, workArea: area,
                 originalSize: original, sourceDisplay: source, canResize: canResize, distance: 120,
-                modifiers: [], cornerModifiers: [], moveSize: preference))
+                cornersEnabled: false, moveSize: preference))
         }
         let middle = CGPoint(x: screen.midX, y: screen.midY)
         let full = try resolve(middle, source: other, preference: .fullScreen)
@@ -243,14 +245,6 @@ struct SidebarDragTests {
             displayIsFullScreen: true) == .focus)
     }
 
-    @Test func placementSkipsActivationOnlyWhenTheExactWindowIsAlreadyFocused() {
-        let target = SidebarWindowID(pid: 42, windowID: 7)
-        #expect(SidebarPlacementFocusPolicy.isAlreadyFocused(target, frontmostPID: 42, focusedWindowID: 7))
-        #expect(!SidebarPlacementFocusPolicy.isAlreadyFocused(target, frontmostPID: 12, focusedWindowID: 7))
-        #expect(!SidebarPlacementFocusPolicy.isAlreadyFocused(target, frontmostPID: 42, focusedWindowID: 8))
-        #expect(!SidebarPlacementFocusPolicy.isAlreadyFocused(target, frontmostPID: nil, focusedWindowID: 7))
-    }
-
     @Test func desktopMetadataNeverTreatsFullscreenOrMissingDataAsAnOrdinaryDesktop() {
         let metadata: [[String: Any]] = [
             ["Current Space": ["ManagedSpaceID": 8, "type": 0]],
@@ -351,8 +345,7 @@ struct SidebarDragTests {
         var sizeWrites = 0
         let result = SidebarPlacementWriter.apply(placement, canContinue: { true },
             readFrame: { placement.frame }, writePosition: { _ in true },
-            writeSize: { _ in sizeWrites += 1; return true },
-            repeatSizeAfterMove: placement.crossesDisplay)
+            writeSize: { _ in sizeWrites += 1; return true })
         #expect(sizeWrites == 1)
         #expect(result == .placed(placement.frame, adjusted: false))
     }

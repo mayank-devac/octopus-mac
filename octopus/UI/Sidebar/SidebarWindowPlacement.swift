@@ -95,12 +95,6 @@ struct SidebarPlacementRequest: Equatable {
     var crossesDisplay = false
 }
 
-enum SidebarPlacementFocusPolicy {
-    static func isAlreadyFocused(_ target: SidebarWindowID, frontmostPID: pid_t?, focusedWindowID: CGWindowID?) -> Bool {
-        frontmostPID == target.pid && focusedWindowID == target.windowID
-    }
-}
-
 enum SidebarPlacementResult: Equatable {
     case placed(CGRect, adjusted: Bool)
     case failed(String)
@@ -199,10 +193,9 @@ enum SidebarPlacementGeometry {
     // Both preview and commit resolve here. Desktop-menu and icon-pair drops bypass this path.
     static func resolve(at point: CGPoint, screen: CGRect, workArea: CGRect, originalSize: CGSize,
                         sourceDisplay: CGRect?, canResize: Bool, distance: Double,
-                        modifiers: NSEvent.ModifierFlags, cornerModifiers: NSEvent.ModifierFlags,
+                        cornersEnabled: Bool,
                         moveSize: VisibleDisplayMoveSize) -> Decision? {
-        let snap = snap(at: point, screen: screen, distance: distance,
-                        corners: SidebarCornerSnapShortcut.matches(modifiers, required: cornerModifiers))
+        let snap = snap(at: point, screen: screen, distance: distance, corners: cornersEnabled)
         if let snap {
             guard canResize else { return nil }
             return Decision(frame: frame(for: snap, in: workArea), snap: snap, resize: true)
@@ -251,9 +244,9 @@ enum SidebarPlacementWriter {
     static func apply(_ request: SidebarPlacementRequest, canContinue: () -> Bool,
                       readFrame: () -> CGRect?, writePosition: (CGPoint) -> Bool,
                       writeSize: (CGSize) -> Bool,
-                      repeatSizeAfterMove: Bool? = nil, acceptStableMismatch: Bool = true,
+                      acceptStableMismatch: Bool = true,
                       wait: () -> Void = { Thread.sleep(forTimeInterval: 0.025) }) -> SidebarPlacementResult {
-        let repeatsAfterMove = repeatSizeAfterMove ?? request.crossesDisplay
+        let repeatsAfterMove = request.crossesDisplay
         guard SidebarPlacementGeometry.isValid(request.frame),
               SidebarPlacementGeometry.isValid(request.workArea) else { return .failed("Invalid window placement.") }
         guard canContinue() else { return .cancelled }

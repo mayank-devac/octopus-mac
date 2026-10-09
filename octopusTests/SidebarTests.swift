@@ -654,9 +654,25 @@ struct SidebarTests {
         try primaryClick(view, count: 1, time: 1)
         #expect(singles == 0 && maximises == 0)
         try primaryClick(view, count: 2, time: 1 + SidebarClickGate.interval / 2)
-        try primaryClick(view, count: 3, time: 1 + SidebarClickGate.interval * 0.75)
         view.commitPendingClick()
         #expect(singles == 0 && maximises == 1)
+    }
+
+    @MainActor @Test func groupedClicksWorkAgainWhenActionFinishesWithoutMovingTheMouse() throws {
+        let view = SidebarPointerRegion.PointerView(frame: CGRect(x: 0, y: 0, width: 86, height: 86))
+        view.doubleClickTarget = SidebarWindowID(pid: 42, windowID: 1)
+        var busy = false
+        var singles = 0, maximises = 0
+        view.onMouseClick = { _ in if !busy { singles += 1 } }
+        view.onDoubleClick = { maximises += 1; busy = true }
+        try primaryClick(view, count: 1, time: 1)
+        try primaryClick(view, count: 2, time: 1 + SidebarClickGate.interval / 2)
+        #expect(maximises == 1 && singles == 0)
+        try primaryClick(view, count: 3, time: 1 + SidebarClickGate.interval * 0.75)
+        #expect(singles == 0) // The inventory ignores clicks while its action is busy.
+        busy = false
+        try primaryClick(view, count: 4, time: 1 + SidebarClickGate.interval * 0.9)
+        #expect(singles == 1 && maximises == 1)
     }
 
     @MainActor @Test func secondClickAfter230MillisecondsRunsAsASingleClick() throws {

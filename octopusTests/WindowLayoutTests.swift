@@ -731,7 +731,7 @@ struct WindowLayoutTests {
                 return frame
             }, writePosition: { point in positions += 1; frame.origin = point; return true },
             writeSize: { size in sizes += 1; pendingSize = size; return true },
-            repeatSizeAfterMove: false, acceptStableMismatch: false, wait: {})
+            acceptStableMismatch: false, wait: {})
         #expect(result == .placed(desired, adjusted: false))
         #expect(sizes == 1 && positions == 1 && reads == 4)
     }

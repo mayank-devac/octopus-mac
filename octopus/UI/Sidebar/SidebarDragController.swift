@@ -270,10 +270,12 @@ final class SidebarDragController: NSObject, NSDraggingSource {
             previewPanel?.orderOut(nil)
             return []
         }
+        let cornerSnapEnabled = SidebarCornerSnapShortcut.matches(
+            modifiers ?? NSEvent.modifierFlags, required: cornerModifiers)
         guard let decision = SidebarPlacementGeometry.resolve(at: point, screen: screen.frame,
             workArea: screen.visibleFrame, originalSize: target.frame.size, sourceDisplay: sourceDisplay,
-            canResize: target.canResize, distance: snapDistance, modifiers: modifiers ?? NSEvent.modifierFlags,
-            cornerModifiers: cornerModifiers, moveSize: moveSize) else {
+            canResize: target.canResize, distance: snapDistance, cornersEnabled: cornerSnapEnabled,
+            moveSize: moveSize) else {
             previewPanel?.orderOut(nil)
             return []
         }

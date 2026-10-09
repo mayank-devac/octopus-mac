@@ -465,8 +465,9 @@ struct SidebarPointerRegion: NSViewRepresentable {
             var double: (() -> Void)?
             if let primary {
                 guard event.timestamp.isFinite else { return }
-                // A handled double must not become a minimise/hide action on its third grouped click.
-                guard (1...2).contains(event.clickCount) else { cancelPendingClick(); return }
+                // macOS can keep numbering clicks at the same pointer location after our
+                // action finishes. Only a matching second click is a double; later clicks
+                // start a fresh action and the per-app busy guard handles overlap.
                 if let pending = pendingClick, pending.target == primary, event.clickCount == 2,
                    event.timestamp >= pending.timestamp,
                    event.timestamp - pending.timestamp <= SidebarClickGate.interval {
