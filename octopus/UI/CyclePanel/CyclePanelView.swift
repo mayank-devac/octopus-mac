@@ -231,7 +231,7 @@ struct CyclePanelRow: View {
     var showsSelectionBackground = true
     
     var body: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: isCompact ? 0 : 12) {
             if !isCompact {
                 Circle()
                     .fill(isSelected ? Color.accentColor : Color.clear)
@@ -243,9 +243,10 @@ struct CyclePanelRow: View {
                 .foregroundStyle(isCompact ? Color.primary : (isSelected ? .white : .primary))
                 .lineLimit(1)
             
-            Spacer()
+            Spacer(minLength: isCompact ? 0 : 8)
         }
-        .padding(.horizontal, isCompact ? 10 : 16)
+        .padding(.leading, isCompact ? 10 : 16)
+        .padding(.trailing, isCompact ? 4 : 16)
         .frame(height: isCompact ? SidebarLayout.menuRowHeight : 44)
         .contentShape(Rectangle())
         .help(title)

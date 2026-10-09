@@ -49,7 +49,7 @@ final class CyclePanelController: NSObject {
     var isKeyboardSwitcherVisible: Bool { panel.isVisible && presentation == .keyboard }
 
     private let panelContentWidth: CGFloat = 400
-    private let sidebarContentWidth: CGFloat = 280
+    private let sidebarContentWidth: CGFloat = 260
     private let maxPanelFrameHeightCap: CGFloat = 520
 
     // Keep these aligned with CyclePanelView.
