@@ -94,6 +94,10 @@ enum WindowLayoutAllocator {
         }) else { return nil }
         let bounds = PixelBounds(workArea, scale: scale)
         guard bounds.width > 0, bounds.height > 0 else { return nil }
+        if snap.isCorner {
+            return allocateCorner(bounds: bounds, snap: snap, scale: scale, anchor: anchor,
+                peers: peers, anchorConstraint: anchorConstraint, constraints: constraints)
+        }
 
         // Preserve the familiar single band first. Use additional columns only when constraints require it.
         let columnChoices = (snap == .left || snap == .right)
@@ -176,31 +180,120 @@ enum WindowLayoutAllocator {
                 right: bounds.right, bottom: bounds.top + peerLength)
             anchorBounds = PixelBounds(left: bounds.left, top: peerBounds.bottom,
                 right: bounds.right, bottom: bounds.bottom)
-        case .maximize: return nil
+        case .maximize, .topLeft, .topRight, .bottomLeft, .bottomRight: return nil
         }
 
         guard contains(anchorConstraint, size: anchorBounds, scale: scale),
-              let columnWidths = balancedLengths(total: peerBounds.width, limits: limits.map(\.width)) else { return nil }
-        var frames = [anchor: anchorBounds.rect(scale: scale)]
-        var x = peerBounds.left
-        for (index, group) in groups.enumerated() {
-            let columnWidth = columnWidths[index]
-            let heightLimits = group.compactMap { id -> RangeLimit? in
-                guard let value = constraints[id] else { return nil }
-                return range(value.minimum.height, value.maximum.height, scale: scale)
+              var frames = allocateRegion(peerBounds, groups: groups, constraints: constraints, scale: scale) else { return nil }
+        frames[anchor] = anchorBounds.rect(scale: scale)
+        return frames
+    }
+
+    // Two regions remain beside a corner: a full-height band and the opposite quarter.
+    // Try MRU-preserving populations near 2:1, then the same bounded column shapes as edge layouts.
+    private static func allocateCorner(bounds: PixelBounds, snap: SidebarSnapTarget, scale: CGFloat,
+                                       anchor: WindowLayoutIdentity, peers: [WindowLayoutIdentity],
+                                       anchorConstraint: WindowLayoutSizeConstraint,
+                                       constraints: [WindowLayoutIdentity: WindowLayoutSizeConstraint]) -> [WindowLayoutIdentity: CGRect]? {
+        guard peers.count >= 2 else { return nil }
+        let preferred = min(peers.count - 1, max(1, Int((Double(peers.count) * 2 / 3).rounded())))
+        let populations = (1..<peers.count).sorted {
+            let a = abs($0 - preferred), b = abs($1 - preferred)
+            return a == b ? $0 < $1 : a < b
+        }
+        for population in populations {
+            let bandPeers = Array(peers.prefix(population))
+            let quarterPeers = Array(peers.dropFirst(population))
+            let bandShapes = regionShapes(bandPeers, constraints: constraints, heights: [CGFloat(bounds.height) / scale])
+            let quarterShapes = regionShapes(quarterPeers, constraints: constraints,
+                heights: [CGFloat(bounds.height) / scale / 2, CGFloat(bounds.height) / scale - anchorConstraint.minimum.height])
+            for bandGroups in bandShapes {
+                guard let band = regionLimit(bandGroups, constraints: constraints, scale: scale),
+                      bounds.height >= band.height.minimum, bounds.height <= band.height.maximum else { continue }
+                for quarterGroups in quarterShapes {
+                    guard let quarter = regionLimit(quarterGroups, constraints: constraints, scale: scale) else { continue }
+                    let anchorWidth = range(anchorConstraint.minimum.width, anchorConstraint.maximum.width, scale: scale)
+                    let sharedWidth = RangeLimit(minimum: max(anchorWidth.minimum, quarter.width.minimum),
+                                                 maximum: min(anchorWidth.maximum, quarter.width.maximum))
+                    guard let widths = balancedLengths(total: bounds.width, limits: [sharedWidth, band.width]),
+                          let heights = balancedLengths(total: bounds.height,
+                            limits: [range(anchorConstraint.minimum.height, anchorConstraint.maximum.height, scale: scale), quarter.height]) else { continue }
+                    let splitX = snap.isRightCorner ? bounds.right - widths[0] : bounds.left + widths[0]
+                    let splitY = snap.isBottomCorner ? bounds.bottom - heights[0] : bounds.top + heights[0]
+                    let columnLeft = snap.isRightCorner ? splitX : bounds.left
+                    let columnRight = snap.isRightCorner ? bounds.right : splitX
+                    let anchorBounds = PixelBounds(left: columnLeft,
+                        top: snap.isBottomCorner ? splitY : bounds.top, right: columnRight,
+                        bottom: snap.isBottomCorner ? bounds.bottom : splitY)
+                    let quarterBounds = PixelBounds(left: columnLeft,
+                        top: snap.isBottomCorner ? bounds.top : splitY, right: columnRight,
+                        bottom: snap.isBottomCorner ? splitY : bounds.bottom)
+                    let bandBounds = PixelBounds(left: snap.isRightCorner ? bounds.left : splitX,
+                        top: bounds.top, right: snap.isRightCorner ? splitX : bounds.right, bottom: bounds.bottom)
+                    guard contains(anchorConstraint, size: anchorBounds, scale: scale),
+                          let bandFrames = allocateRegion(bandBounds, groups: bandGroups, constraints: constraints, scale: scale),
+                          let quarterFrames = allocateRegion(quarterBounds, groups: quarterGroups, constraints: constraints, scale: scale) else { continue }
+                    return bandFrames.merging(quarterFrames, uniquingKeysWith: { first, _ in first })
+                        .merging([anchor: anchorBounds.rect(scale: scale)], uniquingKeysWith: { first, _ in first })
+                }
             }
-            guard heightLimits.count == group.count,
-                  let heights = balancedLengths(total: peerBounds.height, limits: heightLimits) else { return nil }
-            var y = peerBounds.top
+        }
+        return nil
+    }
+
+    private static func regionShapes(_ peers: [WindowLayoutIdentity],
+                                     constraints: [WindowLayoutIdentity: WindowLayoutSizeConstraint],
+                                     heights: [CGFloat]) -> [[[WindowLayoutIdentity]]] {
+        var shapes = (1...peers.count).map { grouped(peers, columns: $0) }
+        for height in heights where height > 0 {
+            if let shelf = shelfGroups(peers, constraints: constraints, height: height), !shapes.contains(shelf) {
+                shapes.append(shelf)
+            }
+        }
+        return shapes
+    }
+
+    private static func regionLimit(_ groups: [[WindowLayoutIdentity]],
+                                    constraints: [WindowLayoutIdentity: WindowLayoutSizeConstraint], scale: CGFloat)
+        -> (width: RangeLimit, height: RangeLimit)? {
+        guard !groups.isEmpty, groups.allSatisfy({ !$0.isEmpty }) else { return nil }
+        var widths: [RangeLimit] = []
+        var heights: [RangeLimit] = []
+        for group in groups {
+            let values = group.compactMap { constraints[$0] }
+            guard values.count == group.count else { return nil }
+            widths.append(RangeLimit(minimum: values.map { pixels($0.minimum.width, scale: scale, up: true) }.max()!,
+                                     maximum: values.map { pixels($0.maximum.width, scale: scale, up: false) }.min()!))
+            heights.append(RangeLimit(minimum: values.reduce(0) { $0 + pixels($1.minimum.height, scale: scale, up: true) },
+                                      maximum: values.reduce(0) { $0 + pixels($1.maximum.height, scale: scale, up: false) }))
+        }
+        return (RangeLimit(minimum: widths.reduce(0) { $0 + $1.minimum }, maximum: widths.reduce(0) { $0 + $1.maximum }),
+                RangeLimit(minimum: heights.map(\.minimum).max()!, maximum: heights.map(\.maximum).min()!))
+    }
+
+    private static func allocateRegion(_ bounds: PixelBounds, groups: [[WindowLayoutIdentity]],
+                                       constraints: [WindowLayoutIdentity: WindowLayoutSizeConstraint], scale: CGFloat)
+        -> [WindowLayoutIdentity: CGRect]? {
+        let widthLimits = groups.map { group -> RangeLimit in
+            RangeLimit(minimum: group.map { pixels(constraints[$0]!.minimum.width, scale: scale, up: true) }.max()!,
+                       maximum: group.map { pixels(constraints[$0]!.maximum.width, scale: scale, up: false) }.min()!)
+        }
+        guard let widths = balancedLengths(total: bounds.width, limits: widthLimits) else { return nil }
+        var result: [WindowLayoutIdentity: CGRect] = [:]
+        var x = bounds.left
+        for (group, width) in zip(groups, widths) {
+            let limits = group.map { range(constraints[$0]!.minimum.height, constraints[$0]!.maximum.height, scale: scale) }
+            guard let heights = balancedLengths(total: bounds.height, limits: limits) else { return nil }
+            var y = bounds.top
             for (id, height) in zip(group, heights) {
-                let frame = PixelBounds(left: x, top: y, right: x + columnWidth, bottom: y + height)
-                guard let constraint = constraints[id], contains(constraint, size: frame, scale: scale) else { return nil }
-                frames[id] = frame.rect(scale: scale)
+                let frame = PixelBounds(left: x, top: y, right: x + width, bottom: y + height)
+                guard contains(constraints[id]!, size: frame, scale: scale) else { return nil }
+                result[id] = frame.rect(scale: scale)
                 y += height
             }
-            x += columnWidth
+            x += width
         }
-        return frames
+        return result
     }
 
     // Balanced populations preserve the existing order and layout whenever they can fit.

@@ -13,6 +13,14 @@ enum WindowPairResult {
 
 // Explicit pairing never selects a third window and never guesses ownership for automatic rollback.
 enum WindowPairSnapService {
+    // Raise the companion before the dragged app so both paired windows sit above old windows,
+    // then leave the dragged app active. Keep each focus/raise request sequential.
+    static func focusAfterPair(companion: WindowLayoutWindow, dragged: WindowLayoutWindow,
+                               focus: @escaping (WindowLayoutWindow, @escaping () -> Void) -> Void,
+                               completion: @escaping () -> Void) {
+        focus(companion) { focus(dragged, completion) }
+    }
+
     static func prepare(source: SidebarWindowID, target: SidebarWindowID,
                         displays: [WindowLayoutDisplay], access: WindowControlAccess,
                         budget: WindowControlBudget) -> WindowPairPreparation? {

@@ -424,6 +424,7 @@ struct SidebarPointerRegion: NSViewRepresentable {
         var onAnchor: ((NSView?) -> Void)?
         var onDrag: ((NSView, NSEvent) -> Void)?
         var dragShortcut: MouseShortcut? = .left
+        var cornerModifiersProvider: () -> NSEvent.ModifierFlags = { MouseShortcutStore.shared.cornerSnapModifiers }
         var onMouseClick: ((MouseShortcut) -> Void)?
         var onDoubleClick: (() -> Void)?
         var doubleClickTarget: SidebarWindowID? {
@@ -460,6 +461,7 @@ struct SidebarPointerRegion: NSViewRepresentable {
             press = nil
             let shortcut = MouseShortcut(button: event.buttonNumber, modifiers: event.modifierFlags)
             let primary = shortcut == .left && onDoubleClick != nil ? doubleClickTarget : nil
+            var primaryTarget = primary
             var double: (() -> Void)?
             if let primary {
                 guard event.timestamp.isFinite else { return }
@@ -467,10 +469,15 @@ struct SidebarPointerRegion: NSViewRepresentable {
                 guard (1...2).contains(event.clickCount) else { cancelPendingClick(); return }
                 if let pending = pendingClick, pending.target == primary, event.clickCount == 2,
                    event.timestamp >= pending.timestamp,
-                   event.timestamp - pending.timestamp <= NSEvent.doubleClickInterval {
+                   event.timestamp - pending.timestamp <= SidebarClickGate.interval {
                     cancelPendingClick()
                     double = onDoubleClick
-                } else { commitPendingClick() }
+                } else {
+                    commitPendingClick()
+                    // AppKit may still call this a double within its longer system interval.
+                    // Outside Octopus's 230 ms window, let this release act as a single click.
+                    if event.clickCount > 1 { primaryTarget = nil }
+                }
             } else {
                 commitPendingClick()
                 guard clickGate.accepts(timestamp: event.timestamp, clickCount: event.clickCount) else { return }
@@ -479,8 +486,9 @@ struct SidebarPointerRegion: NSViewRepresentable {
             if let onMouseClick { click = { onMouseClick(shortcut) } }
             else { click = shortcut == .left ? onClick : nil }
             press = Press(point: event.locationInWindow, button: event.buttonNumber, event: event,
-                click: click, drag: shortcut == dragShortcut ? onDrag : nil,
-                primaryTarget: primary, doubleAction: double)
+                click: click, drag: SidebarCornerSnapShortcut.allowsDrag(shortcut, binding: dragShortcut,
+                    cornerModifiers: cornerModifiersProvider()) ? onDrag : nil,
+                primaryTarget: primaryTarget, doubleAction: double)
         }
         override func mouseDragged(with event: NSEvent) {
             continuePress(event)
@@ -513,12 +521,12 @@ struct SidebarPointerRegion: NSViewRepresentable {
             let work = DispatchWorkItem { [weak self] in self?.commitPendingClick(expectedID: id) }
             pendingClick = PendingClick(id: id, target: target, timestamp: completed.event.timestamp,
                 action: completed.click, work: work)
-            let delay = max(0, NSEvent.doubleClickInterval - max(0, event.timestamp - completed.event.timestamp))
+            let delay = max(0, SidebarClickGate.interval - max(0, event.timestamp - completed.event.timestamp))
             DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
         }
         override func cancelOperation(_ sender: Any?) { press = nil; cancelPendingClick() }
 
-        // Delay only the single primary action, otherwise a double could first minimise/hide its window.
+        // Delay the single primary action so a double cannot first minimise or hide its window.
         // The nonce prevents a cancelled timer from committing a newer pending click.
         func commitPendingClick(expectedID: UUID? = nil) {
             guard let pending = pendingClick, expectedID == nil || expectedID == pending.id else { return }

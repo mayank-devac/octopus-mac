@@ -149,6 +149,9 @@ struct WindowLayoutTests {
         case .top: return CGRect(x: area.minX, y: area.minY, width: area.width, height: area.height / 2)
         case .bottom: return CGRect(x: area.minX, y: area.midY, width: area.width, height: area.height / 2)
         case .maximize: return area
+        case .topLeft, .topRight, .bottomLeft, .bottomRight:
+            return SidebarPlacementGeometry.cornerFrame(snap,
+                size: CGSize(width: area.width / 2, height: area.height / 2), inAX: area)
         }
     }
 
@@ -172,6 +175,145 @@ struct WindowLayoutTests {
     }
 
     private enum FixtureError: Error { case notReady }
+
+    @Test func pairedWindowFocusRaisesCompanionThenLeavesDraggedWindowActive() throws {
+        let plan = try ready(.left)
+        let companion = plan.peers[0]
+        var requests: [WindowLayoutWindow] = []
+        var completions: [() -> Void] = []
+        var finished = false
+        WindowPairSnapService.focusAfterPair(companion: companion, dragged: plan.anchor,
+            focus: { window, completion in requests.append(window); completions.append(completion) },
+            completion: { finished = true })
+        #expect(requests.map(\.id) == [companion.id])
+        #expect(!finished)
+        let first = try #require(completions.first)
+        first()
+        #expect(requests.map(\.id) == [companion.id, plan.anchor.id])
+        #expect(!finished)
+        let last = try #require(completions.last)
+        last()
+        #expect(finished)
+    }
+
+    @Test(arguments: [SidebarSnapTarget.topLeft, .topRight, .bottomLeft, .bottomRight])
+    func cornerSnapMirrorsTwoCompanionRegionsAndPreservesMRU(_ corner: SidebarSnapTarget) throws {
+        let plan = try ready(corner, peers: [window(2, recency: 9), window(3, recency: 4)], selection: .allNormal)
+        #expect(plan.frames[plan.anchor.id] == target(corner))
+        let first = try #require(plan.frames[plan.peers[0].id])
+        let second = try #require(plan.frames[plan.peers[1].id])
+        #expect(first.width == area.width / 2 && first.height == area.height)
+        #expect(first.minX == (corner.isRightCorner ? area.minX : area.midX))
+        #expect(second.width == area.width / 2 && second.height == area.height / 2)
+        #expect(second.minY == (corner.isBottomCorner ? area.minY : area.midY))
+        #expect(second.minX == target(corner).minX)
+        #expect(!WindowLayoutPlanner.overlaps(first, second))
+        #expect(!WindowLayoutPlanner.overlaps(first, target(corner)))
+        #expect(!WindowLayoutPlanner.overlaps(second, target(corner)))
+        #expect(first.width * first.height + second.width * second.height + target(corner).width * target(corner).height == area.width * area.height)
+    }
+
+    @Test func cornerSnapsLeaveZeroOrOneSelectedCompanionUntouched() {
+        for selection in [WindowLayoutSelection.mostRecent, .allNormal] {
+            for peers in [[], [window(2)]] {
+                let anchor = window(1, frame: target(.topRight))
+                let result = WindowLayoutPlanner.plan(snapshot: snapshot([anchor] + peers),
+                    anchorID: anchor.id.window, request: request(.topRight), selection: selection)
+                guard case .noPeer = result else { Issue.record("Corner needs two selected companions"); continue }
+            }
+        }
+        let anchor = window(1, frame: target(.topRight))
+        let recent = WindowLayoutPlanner.plan(snapshot: snapshot([anchor, window(2), window(3)]),
+            anchorID: anchor.id.window, request: request(.topRight), selection: .mostRecent)
+        guard case .noPeer = recent else { Issue.record("Recent mode must never arrange a corner"); return }
+    }
+
+    @Test func cornerLimitsMoveBothDividingLinesWithoutLosingTheChosenCorner() throws {
+        let requested = request(.bottomRight)
+        let achieved = SidebarPlacementGeometry.cornerFrame(.bottomRight, size: CGSize(width: 800, height: 550), inAX: area)
+        let anchor = window(1, frame: achieved)
+        let result = WindowLayoutPlanner.plan(snapshot: snapshot([anchor, window(2), window(3)]),
+            anchorID: anchor.id.window, request: requested, selection: .allNormal, achievedFrame: achieved)
+        guard case .ready(let plan) = result else { Issue.record("Verified clamp should replan"); return }
+        let frame = try #require(plan.frames[anchor.id])
+        #expect(frame.width == 800 && frame.height == 550)
+        #expect(frame.maxX == area.maxX && frame.maxY == area.maxY)
+        #expect(plan.frames[window(2).id]?.width == area.width - 800)
+        #expect(plan.frames[window(3).id]?.height == area.height - 550)
+    }
+
+    @Test func largerCornerGroupsFillAreaAndTryNearbyPopulationsForLimits() throws {
+        let peers = (2...7).map { window(UInt32($0), recency: UInt64(10 - $0), minimum: CGSize(width: 320, height: 240)) }
+        let plan = try ready(.topRight, peers: peers, selection: .allNormal)
+        let frames = plan.windows.map { plan.frames[$0.id]! }
+        #expect(frames.reduce(CGFloat(0)) { $0 + $1.width * $1.height } == area.width * area.height)
+        for (index, frame) in frames.enumerated() {
+            #expect(area.contains(frame))
+            #expect(!frames.dropFirst(index + 1).contains { WindowLayoutPlanner.overlaps(frame, $0) })
+        }
+        // Two preferred band windows cannot fit as a stack or adjacent columns.
+        // A nearby count puts the wide MRU window in the band and stacks the others in the quarter.
+        let constrained = try ready(.topRight,
+            peers: [window(2, recency: 9, minimum: CGSize(width: 900, height: 550)),
+                    window(3, recency: 8, minimum: CGSize(width: 320, height: 450)),
+                    window(4, recency: 7)], selection: .allNormal)
+        #expect(constrained.frames[window(2).id]?.height == 900)
+        #expect((constrained.frames[window(3).id]?.height ?? 0) >= 450)
+    }
+
+    @Test func impossibleCornerLimitsRejectBeforeAnyWrite() {
+        let anchor = window(1, frame: target(.topRight))
+        let result = WindowLayoutPlanner.plan(snapshot: snapshot([anchor,
+            window(2, minimum: CGSize(width: 1400, height: 800)),
+            window(3, minimum: CGSize(width: 1400, height: 800))]),
+            anchorID: anchor.id.window, request: request(.topRight), selection: .allNormal)
+        guard case .rejected = result else { Issue.record("Impossible corner must be rejected before execution"); return }
+    }
+
+    @Test func hiddenCornerCompanionLimitReflowsAndUndoRestoresAllThreeWindows() throws {
+        let plan = try ready(.bottomRight, peers: [window(2, recency: 9), window(3, recency: 8)], selection: .allNormal)
+        var live = Dictionary(uniqueKeysWithValues: plan.windows.map { ($0.id, $0) })
+        var clamped = false
+        let result = WindowLayoutExecutor.apply(plan, canContinue: { true }, read: { live[$0] },
+            write: { current, frame, _ in
+                if current.id == plan.peers[1].id && !clamped {
+                    clamped = true
+                    let achieved = CGRect(x: frame.minX, y: frame.minY, width: frame.width, height: 550)
+                    live[current.id] = moved(current, to: achieved)
+                    return .placed(achieved, adjusted: true)
+                }
+                live[current.id] = moved(current, to: frame)
+                return .placed(frame, adjusted: false)
+            }, clock: { 0 })
+        guard case .applied(let achieved) = result else { Issue.record("Feasible hidden limit should reflow"); return }
+        #expect(achieved[plan.anchor.id]?.maxY == area.maxY)
+        #expect(achieved[plan.anchor.id]?.height == 350)
+        let restored = WindowLayoutExecutor.restore(plan, achieved: achieved, canContinue: { true }, read: { live[$0] },
+            write: { current, frame, _ in live[current.id] = moved(current, to: frame); return .placed(frame, adjusted: false) }, clock: { 0 })
+        guard case .applied = restored else { Issue.record("Corner Undo should restore all participants"); return }
+        #expect(plan.windows.allSatisfy { live[$0.id]?.frame == $0.frame })
+    }
+
+    @Test func partiallyAppliedCornerKeepsVerifiedUndoAndDoesNotLearnSetterFailure() throws {
+        let plan = try ready(.topRight, peers: [window(2, recency: 9), window(3, recency: 8)], selection: .allNormal)
+        var live = Dictionary(uniqueKeysWithValues: plan.windows.map { ($0.id, $0) })
+        var writes = 0, learned = 0
+        var progress: [WindowLayoutIdentity: CGRect]?
+        let result = WindowLayoutExecutor.apply(plan, canContinue: { true }, read: { live[$0] },
+            write: { current, frame, _ in
+                writes += 1
+                if writes == 2 { return .failed("Refused") }
+                live[current.id] = moved(current, to: frame)
+                return .placed(frame, adjusted: false)
+            }, clock: { 0 }, onLearn: { _, _ in learned += 1 }, onProgress: { progress = $0 })
+        guard case .stopped = result else { Issue.record("Setter failure must stop the layout"); return }
+        #expect(writes == 2 && learned == 0)
+        let achieved = try #require(progress)
+        #expect(achieved[plan.peers[0].id] == live[plan.peers[0].id]?.frame)
+        let restored = WindowLayoutExecutor.restore(plan, achieved: achieved, canContinue: { true }, read: { live[$0] },
+            write: { current, frame, _ in live[current.id] = moved(current, to: frame); return .placed(frame, adjusted: false) }, clock: { 0 })
+        guard case .applied = restored else { Issue.record("Verified partial corner should offer guarded Undo"); return }
+    }
 
     @Test(arguments: [SidebarSnapTarget.left, .right, .top, .bottom])
     func complementaryHalvesUseDestinationAXCoordinates(_ snap: SidebarSnapTarget) throws {

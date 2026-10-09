@@ -615,8 +615,9 @@ private final class SidebarDisplayController {
     }
 
     private func activate(_ entryID: SidebarEntryID) {
-        cancelPendingHover()
         guard let entry = inventory.entries.first(where: { $0.id == entryID }) else { return }
+        guard !inventory.hasPendingAction(for: entry.pid) else { return }
+        cancelPendingHover()
         let frontmostPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
         let action = SidebarIconClickPolicy.action(for: entry, frontmostPID: frontmostPID,
                                                   setting: .none)
@@ -627,6 +628,7 @@ private final class SidebarDisplayController {
 
     private func performMouseAction(_ action: MouseShortcutAction, entryID: SidebarEntryID, target: SidebarWindowID?) {
         guard let entry = inventory.entries.first(where: { $0.id == entryID }) else { return }
+        guard !inventory.hasPendingAction(for: entry.pid) else { return }
         let frontmostPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
         let windowAction = SidebarIconMousePolicy.action(action, for: entry, frontmostPID: frontmostPID, target: target)
         cancelPendingHover()

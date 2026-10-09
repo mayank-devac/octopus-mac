@@ -3,6 +3,56 @@ import Testing
 @testable import octopus
 
 struct MouseShortcutTests {
+    @MainActor @Test func cornerChordPersistsCustomDisableAndResetIndependentlyOfDragBinding() throws {
+        try withStore { store, defaults in
+            let binding = MouseShortcut(button: 2, modifiers: .command)
+            #expect(store.assign(binding, to: .place) == nil)
+            #expect(store.cornerSnapModifiers == [.control, .option, .shift])
+            store.setCornerSnapModifiers([.option, .shift, .capsLock])
+            #expect(MouseShortcutStore(defaults: defaults).cornerSnapModifiers == [.option, .shift])
+            store.setCornerSnapModifiers([])
+            #expect(SidebarCornerSnapShortcut.read(in: defaults).isEmpty)
+            #expect(!SidebarCornerSnapShortcut.matches([], required: []))
+            store.resetCornerSnapModifiers()
+            #expect(store.cornerSnapModifiers == SidebarCornerSnapShortcut.defaultModifiers)
+            #expect(store.bindings.place == binding)
+            defaults.set("invalid", forKey: SidebarCornerSnapShortcut.key)
+            #expect(SidebarCornerSnapShortcut.read(in: defaults) == SidebarCornerSnapShortcut.defaultModifiers)
+            store.resetAll()
+            #expect(store.cornerSnapModifiers == SidebarCornerSnapShortcut.defaultModifiers)
+        }
+    }
+
+    @Test func cornerChordAugmentsOnlyTheConfiguredDragButtonAndModifiers() {
+        let chord = SidebarCornerSnapShortcut.defaultModifiers
+        let binding = MouseShortcut(button: 2, modifiers: .command)
+        func allowed(_ button: Int, _ flags: NSEvent.ModifierFlags, required: NSEvent.ModifierFlags = chord) -> Bool {
+            SidebarCornerSnapShortcut.allowsDrag(MouseShortcut(button: button, modifiers: flags), binding: binding, cornerModifiers: required)
+        }
+        #expect(allowed(2, .command))
+        #expect(allowed(2, chord.union(.command)))
+        #expect(!allowed(0, chord.union(.command)))
+        #expect(!allowed(2, chord)) // The drag's Command modifier is still required.
+        #expect(!allowed(2, chord.union(.command), required: []))
+        #expect(!SidebarCornerSnapShortcut.allowsDrag(.left, binding: nil, cornerModifiers: chord))
+        #expect(SidebarCornerSnapShortcut.matches(chord.union(.command), required: chord))
+        #expect(!SidebarCornerSnapShortcut.matches([.control, .option], required: chord))
+    }
+
+    @MainActor @Test func preheldCornerChordStartsNativeDragAndSuppressesClick() throws {
+        let view = SidebarPointerRegion.PointerView(frame: CGRect(x: 0, y: 0, width: 100, height: 100))
+        view.dragShortcut = MouseShortcut(button: 1, modifiers: .command)
+        view.cornerModifiersProvider = { [.control, .option, .shift] }
+        var drags = 0, clicks = 0
+        view.onDrag = { _, _ in drags += 1 }
+        view.onMouseClick = { _ in clicks += 1 }
+        let flags: NSEvent.ModifierFlags = [.control, .option, .shift, .command]
+        view.rightMouseDown(with: try event(.rightMouseDown, modifiers: flags))
+        view.rightMouseDragged(with: try event(.rightMouseDragged, point: CGPoint(x: 30, y: 10), modifiers: flags))
+        view.rightMouseUp(with: try event(.rightMouseUp, modifiers: flags))
+        #expect(drags == 1 && clicks == 0)
+    }
+
     @Test func sidebarScrollGestureStaysLatchedUntilRequiredModifiersAreReleased() {
         var session = SidebarPositionScrollSession()
         let began = session.begin(.control)

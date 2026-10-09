@@ -33,6 +33,11 @@ enum SidebarIconMousePolicy {
 
 enum SidebarSnapTarget: String, CaseIterable {
     case left, right, top, bottom, maximize
+    case topLeft, topRight, bottomLeft, bottomRight
+
+    var isCorner: Bool { self == .topLeft || self == .topRight || self == .bottomLeft || self == .bottomRight }
+    var isRightCorner: Bool { self == .topRight || self == .bottomRight }
+    var isBottomCorner: Bool { self == .bottomLeft || self == .bottomRight }
 
     var title: String {
         switch self {
@@ -41,6 +46,10 @@ enum SidebarSnapTarget: String, CaseIterable {
         case .bottom: return "Bottom half"
         case .top: return "Top half"
         case .maximize: return "Maximise"
+        case .topLeft: return "Top-left quarter"
+        case .topRight: return "Top-right quarter"
+        case .bottomLeft: return "Bottom-left quarter"
+        case .bottomRight: return "Bottom-right quarter"
         }
     }
 }
@@ -50,7 +59,23 @@ struct SidebarPlacementTarget {
     let frame: CGRect // Accessibility coordinates, in points.
     let canResize: Bool
     let isMinimized: Bool
+    let isHidden: Bool
     let desktopGeneration: Int
+}
+
+enum SidebarMaximizeDisposition: Equatable {
+    case noOp, place, focus
+}
+
+enum SidebarMaximizePolicy {
+    static func disposition(target: SidebarPlacementTarget?, workArea: CGRect?,
+                            displayIsFullScreen: Bool) -> SidebarMaximizeDisposition {
+        guard let target, let workArea, !displayIsFullScreen,
+              SidebarPlacementGeometry.isValid(workArea) else { return .focus }
+        if SidebarPlacementGeometry.isAlreadyMaximized(target.frame, in: workArea,
+            isMinimized: target.isMinimized, isHidden: target.isHidden) { return .noOp }
+        return target.canResize ? .place : .focus
+    }
 }
 
 enum SidebarPlacementEligibility {
@@ -67,6 +92,13 @@ struct SidebarPlacementRequest: Equatable {
     let resize: Bool
     let desktopGeneration: Int
     var snap: SidebarSnapTarget? = nil
+    var crossesDisplay = false
+}
+
+enum SidebarPlacementFocusPolicy {
+    static func isAlreadyFocused(_ target: SidebarWindowID, frontmostPID: pid_t?, focusedWindowID: CGWindowID?) -> Bool {
+        frontmostPID == target.pid && focusedWindowID == target.windowID
+    }
 }
 
 enum SidebarPlacementResult: Equatable {
@@ -95,7 +127,8 @@ enum SidebarPlacementGeometry {
         CGRect(x: rect.minX, y: primaryTop - rect.maxY, width: rect.width, height: rect.height)
     }
 
-    static func snap(at point: CGPoint, screen: CGRect, distance: Double = SidebarSettings.defaultSnapDistance) -> SidebarSnapTarget? {
+    static func snap(at point: CGPoint, screen: CGRect, distance: Double = SidebarSettings.defaultSnapDistance,
+                     corners: Bool = false) -> SidebarSnapTarget? {
         guard screen.contains(point) else { return nil }
         let left = point.x - screen.minX
         let right = screen.maxX - point.x
@@ -110,8 +143,12 @@ enum SidebarPlacementGeometry {
         let nearRight = right <= horizontalReach
         let nearTop = top <= verticalReach
         let nearBottom = bottom <= verticalReach
-        // Corners are free movement; they must not fall through to either adjacent edge.
-        if (nearLeft || nearRight) && (nearTop || nearBottom) { return nil }
+        // A corner without the chord remains free movement rather than becoming an adjacent half.
+        if (nearLeft || nearRight) && (nearTop || nearBottom) {
+            guard corners else { return nil }
+            if nearTop { return nearLeft ? .topLeft : .topRight }
+            return nearLeft ? .bottomLeft : .bottomRight
+        }
         if nearLeft { return .left }
         if nearRight { return .right }
         if nearTop { return .top }
@@ -128,7 +165,52 @@ enum SidebarPlacementGeometry {
         case .right: return CGRect(x: area.midX, y: area.minY, width: halfWidth, height: area.height)
         case .bottom: return CGRect(x: area.minX, y: area.minY, width: area.width, height: halfHeight)
         case .top: return CGRect(x: area.minX, y: area.midY, width: area.width, height: halfHeight)
+        case .topLeft: return CGRect(x: area.minX, y: area.midY, width: halfWidth, height: halfHeight)
+        case .topRight: return CGRect(x: area.midX, y: area.midY, width: halfWidth, height: halfHeight)
+        case .bottomLeft: return CGRect(x: area.minX, y: area.minY, width: halfWidth, height: halfHeight)
+        case .bottomRight: return CGRect(x: area.midX, y: area.minY, width: halfWidth, height: halfHeight)
         }
+    }
+
+    // AX grows downward. Preserve the chosen corner even when the app enlarges the quarter.
+    static func cornerFrame(_ snap: SidebarSnapTarget, size: CGSize, inAX area: CGRect) -> CGRect {
+        CGRect(x: snap.isRightCorner ? area.maxX - size.width : area.minX,
+               y: snap.isBottomCorner ? area.maxY - size.height : area.minY,
+               width: size.width, height: size.height)
+    }
+
+    static func sourceDisplay(for frame: CGRect, displays: [CGRect]) -> CGRect? {
+        guard isValid(frame) else { return nil }
+        func overlap(_ display: CGRect) -> CGFloat {
+            let intersection = display.intersection(frame)
+            return intersection.isNull ? 0 : intersection.width * intersection.height
+        }
+        return displays.filter { overlap($0) > 0 }.max {
+            overlap($0) < overlap($1)
+        }
+    }
+
+    struct Decision: Equatable {
+        let frame: CGRect // AppKit coordinates, used directly by the preview.
+        let snap: SidebarSnapTarget?
+        let resize: Bool
+    }
+
+    // Both preview and commit resolve here. Desktop-menu and icon-pair drops bypass this path.
+    static func resolve(at point: CGPoint, screen: CGRect, workArea: CGRect, originalSize: CGSize,
+                        sourceDisplay: CGRect?, canResize: Bool, distance: Double,
+                        modifiers: NSEvent.ModifierFlags, cornerModifiers: NSEvent.ModifierFlags,
+                        moveSize: VisibleDisplayMoveSize) -> Decision? {
+        let snap = snap(at: point, screen: screen, distance: distance,
+                        corners: SidebarCornerSnapShortcut.matches(modifiers, required: cornerModifiers))
+        if let snap {
+            guard canResize else { return nil }
+            return Decision(frame: frame(for: snap, in: workArea), snap: snap, resize: true)
+        }
+        let crossDisplay = canResize && sourceDisplay != nil && sourceDisplay != screen
+        let fillDisplay = crossDisplay && moveSize == .fullScreen
+        return Decision(frame: fillDisplay ? workArea : freeFrame(at: point, size: originalSize, in: workArea),
+                        snap: nil, resize: crossDisplay)
     }
 
     static func freeFrame(at point: CGPoint, size: CGSize, in area: CGRect) -> CGRect {
@@ -149,6 +231,11 @@ enum SidebarPlacementGeometry {
         abs(actual.minX - requested.minX) <= 2 && abs(actual.minY - requested.minY) <= 2
             && abs(actual.width - requested.width) <= 2 && abs(actual.height - requested.height) <= 2
     }
+
+    static func isAlreadyMaximized(_ frame: CGRect, in workArea: CGRect,
+                                   isMinimized: Bool, isHidden: Bool) -> Bool {
+        !isMinimized && !isHidden && isValid(frame) && isValid(workArea) && matches(frame, workArea)
+    }
 }
 
 // Keep the operation order and failure handling testable without controlling another app.
@@ -164,8 +251,9 @@ enum SidebarPlacementWriter {
     static func apply(_ request: SidebarPlacementRequest, canContinue: () -> Bool,
                       readFrame: () -> CGRect?, writePosition: (CGPoint) -> Bool,
                       writeSize: (CGSize) -> Bool,
-                      repeatSizeAfterMove: Bool = true, acceptStableMismatch: Bool = true,
+                      repeatSizeAfterMove: Bool? = nil, acceptStableMismatch: Bool = true,
                       wait: () -> Void = { Thread.sleep(forTimeInterval: 0.025) }) -> SidebarPlacementResult {
+        let repeatsAfterMove = repeatSizeAfterMove ?? request.crossesDisplay
         guard SidebarPlacementGeometry.isValid(request.frame),
               SidebarPlacementGeometry.isValid(request.workArea) else { return .failed("Invalid window placement.") }
         guard canContinue() else { return .cancelled }
@@ -203,11 +291,11 @@ enum SidebarPlacementWriter {
         // A window on another display would visibly shrink there and then jump across if
         // resized first. Land on the target display and wait for macOS to register it, so
         // the size writes are fitted to, and animate on, the display the window ends on.
-        if request.resize, repeatSizeAfterMove, let current = readFrame(), SidebarPlacementGeometry.isValid(current),
+        if request.resize, repeatsAfterMove, let current = readFrame(), SidebarPlacementGeometry.isValid(current),
            !isOnTargetDisplay(current) {
-            _ = writePosition(request.workArea.origin)
+            guard writePosition(request.workArea.origin) else { return .failed("The app could not move this window to the display.") }
             let landed = settledFrame(until: isOnTargetDisplay, unreadable: "The app did not report the window's position.")
-            if case .cancelled = landed { return .cancelled }
+            guard case .placed = landed else { return landed }
         }
 
         var writeFailed = false
@@ -220,7 +308,7 @@ enum SidebarPlacementWriter {
         guard canContinue() else { return .cancelled }
         guard writePosition(request.frame.origin) else { return .failed("The app could not move this window; its size may have changed.") }
         guard canContinue() else { return .cancelled }
-        if repeatSizeAfterMove { writeRequestedSize() }
+        if repeatsAfterMove { writeRequestedSize() }
 
         var actual: CGRect
         switch settledFrame(until: reached, unreadable: "The app did not report the window's final position.") {
@@ -237,8 +325,8 @@ enum SidebarPlacementWriter {
             let needsPosition = !originMatches(actual)
             guard needsSize || needsPosition, canContinue() else { break }
             if needsSize { writeRequestedSize() }
-            if needsPosition, !writePosition(request.frame.origin) { break }
-            if repeatSizeAfterMove, needsPosition, needsSize, canContinue() { writeRequestedSize() }
+            if needsPosition, !writePosition(request.frame.origin) { writeFailed = true; break }
+            if repeatsAfterMove, needsPosition, needsSize, canContinue() { writeRequestedSize() }
             switch settledFrame(until: reached, unreadable: "The app did not report the window's final position.") {
             case .placed(let frame, _): actual = frame
             case let other: return other
@@ -246,17 +334,31 @@ enum SidebarPlacementWriter {
             attempt += 1
         }
 
-        let reachable = SidebarPlacementGeometry.constrained(actual, to: request.workArea)
+        guard canContinue() else { return .cancelled }
+        let reachable: CGRect
+        if let snap = request.snap, snap.isCorner {
+            reachable = SidebarPlacementGeometry.cornerFrame(snap, size: actual.size, inAX: request.workArea)
+            guard request.workArea.contains(reachable) else {
+                return .failed("This app's minimum size cannot fit on the display; the window may have moved.")
+            }
+        } else { reachable = SidebarPlacementGeometry.constrained(actual, to: request.workArea) }
         if reachable.origin != actual.origin {
             guard canContinue() else { return .cancelled }
             guard writePosition(reachable.origin) else {
                 return .failed("The app limited placement; the window may extend beyond the display.")
             }
-            switch settledFrame(until: { _ in true }, unreadable: "The app limited placement; the window may extend beyond the display.") {
+            switch settledFrame(until: { abs($0.minX - reachable.minX) <= 2 && abs($0.minY - reachable.minY) <= 2 },
+                                unreadable: "The app limited placement; the window may extend beyond the display.") {
             case .placed(let frame, _): actual = frame
             case let other: return other
             }
         }
-        return .placed(actual, adjusted: writeFailed || !SidebarPlacementGeometry.matches(actual, request.frame))
+        guard canContinue() else { return .cancelled }
+        guard !writeFailed else { return .failed("The app rejected the window's size or position; it may have moved.") }
+        if let snap = request.snap, snap.isCorner,
+           !SidebarPlacementGeometry.matches(actual, SidebarPlacementGeometry.cornerFrame(snap, size: actual.size, inAX: request.workArea)) {
+            return .failed("The app could not keep the window at the chosen corner; it may have moved.")
+        }
+        return .placed(actual, adjusted: !SidebarPlacementGeometry.matches(actual, request.frame))
     }
 }

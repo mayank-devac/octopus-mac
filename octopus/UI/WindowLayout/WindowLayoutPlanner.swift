@@ -50,7 +50,7 @@ enum WindowLayoutPlanner {
         case .right: return CGRect(x: area.minX, y: area.minY, width: area.width / 2, height: area.height)
         case .top: return CGRect(x: area.minX, y: area.midY, width: area.width, height: area.height / 2)
         case .bottom: return CGRect(x: area.minX, y: area.minY, width: area.width, height: area.height / 2)
-        case .maximize: return nil
+        case .maximize, .topLeft, .topRight, .bottomLeft, .bottomRight: return nil
         }
     }
 
@@ -58,14 +58,15 @@ enum WindowLayoutPlanner {
     // its dividing line can move only when a reported or recently observed app bound requires it.
     static func plan(snapshot: WindowLayoutSnapshot, anchorID: SidebarWindowID,
                      request: SidebarPlacementRequest, selection: WindowLayoutSelection = .mostRecent,
-                     learned: [WindowLayoutIdentity: WindowLayoutSizeConstraint] = [:]) -> WindowLayoutPlanningResult {
+                     learned: [WindowLayoutIdentity: WindowLayoutSizeConstraint] = [:],
+                     achievedFrame: CGRect? = nil) -> WindowLayoutPlanningResult {
         if !snapshot.complete { return .rejected(snapshot.failureReason ?? "An open window could not be verified. Your snap stays in place.") }
         guard snapshot.complete, Set(snapshot.windows.map { $0.id.window }).count == snapshot.windows.count,
               let snap = request.snap,
               let anchor = snapshot.windows.first(where: { $0.id.window == anchorID }), anchor.eligible,
               let display = snapshot.displays.first(where: { $0.id == anchor.scope.displayID }),
               SidebarPlacementGeometry.matches(display.workArea, request.workArea),
-              SidebarPlacementGeometry.matches(anchor.frame, request.frame) else {
+              SidebarPlacementGeometry.matches(anchor.frame, achievedFrame ?? request.frame) else {
             return .rejected("The snapped window's display or Desktop could not be verified.")
         }
         let peers = snapshot.windows(in: anchor.scope).filter { $0.id != anchor.id && $0.visible && !$0.blocked }
@@ -76,6 +77,8 @@ enum WindowLayoutPlanner {
             return a.id.window.windowID < b.id.window.windowID
         }
         let selected = selection == .mostRecent ? Array(ordered.prefix(1)) : ordered
+        // One selected companion stays untouched. Recent mode therefore never rearranges corners.
+        if snap.isCorner && selected.count < 2 { return .noPeer }
         guard !selected.isEmpty else { return .noPeer }
         guard selected.count <= 32, Set(selected.map(\.id)).count == selected.count else {
             return .rejected("The window list could not be arranged safely.")
@@ -88,10 +91,23 @@ enum WindowLayoutPlanner {
             }
         }
         let windows = [anchor] + selected
-        let constraints = Dictionary(uniqueKeysWithValues: windows.map { window in
+        var constraints = Dictionary(uniqueKeysWithValues: windows.map { window in
             (window.id, WindowLayoutSizeConstraint.initial(for: window, workArea: request.workArea,
                                                             learned: learned[window.id]))
         })
+        if snap.isCorner {
+            guard SidebarPlacementGeometry.matches(anchor.frame,
+                SidebarPlacementGeometry.cornerFrame(snap, size: anchor.frame.size, inAX: request.workArea)),
+                  let initial = constraints[anchor.id] else {
+                return .rejected("The app could not keep the window at the chosen corner.")
+            }
+            if !SidebarPlacementGeometry.matches(anchor.frame, request.frame) {
+                guard let observed = initial.observing(requested: request.frame, achieved: anchor.frame) else {
+                    return .rejected("The corner window's size limits cannot fit on this display.")
+                }
+                constraints[anchor.id] = observed
+            }
+        }
         guard let allocation = WindowLayoutAllocator.allocate(workArea: request.workArea, snap: snap,
             scale: display.scale, anchor: anchor.id, peers: selected.map(\.id), constraints: constraints) else {
             return .rejected("These windows cannot fit together on this display without overlapping.")

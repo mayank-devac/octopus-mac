@@ -12,7 +12,8 @@ enum WindowLayoutExecutor {
                       write: (WindowLayoutWindow, CGRect, TimeInterval) -> SidebarPlacementResult,
                       clock: () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
                       deadline requestedDeadline: TimeInterval? = nil,
-                      onLearn: (WindowLayoutIdentity, WindowLayoutSizeConstraint) -> Void = { _, _ in }) -> WindowLayoutBatchResult {
+                      onLearn: (WindowLayoutIdentity, WindowLayoutSizeConstraint) -> Void = { _, _ in },
+                      onProgress: ([WindowLayoutIdentity: CGRect]) -> Void = { _ in }) -> WindowLayoutBatchResult {
         let deadline = requestedDeadline ?? clock() + 4
         let windows = plan.windows
         let identities = windows.map(\.id)
@@ -72,6 +73,12 @@ enum WindowLayoutExecutor {
                     writerFrame = frame
                     wasAdjusted = adjusted
                 }
+                // Keep only verified achieved states for user-requested Undo. A failed setter or
+                // uncertain readback never becomes an owned frame that Undo may overwrite.
+                guard SidebarPlacementGeometry.matches(writerFrame, actual.frame) else {
+                    return .stopped("An app's achieved position could not be confirmed; achieved positions were kept.")
+                }
+                onProgress(frames)
                 if SidebarPlacementGeometry.matches(actual.frame, target) { continue }
                 // A newer external move must not become a supposed app size limit.
                 guard wasAdjusted, SidebarPlacementGeometry.matches(writerFrame, actual.frame),

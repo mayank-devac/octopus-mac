@@ -98,6 +98,9 @@ struct WindowLayoutCompletedSnap {
     let window: SidebarWindowID
     let request: SidebarPlacementRequest
     let startedAt: TimeInterval
+    var achievedFrame: CGRect? = nil
+
+    var verifiedFrame: CGRect { achievedFrame ?? request.frame }
 
     func isCurrent(after latestAction: TimeInterval) -> Bool { startedAt >= latestAction }
 }

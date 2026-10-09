@@ -35,6 +35,20 @@ struct PreferencesShortcutsView: View {
         .accessibilityLabel("Use \(name) to move the sidebar with the scroll wheel")
     }
 
+    private func cornerModifier(_ flag: NSEvent.ModifierFlags, symbol: String, name: String) -> some View {
+        Toggle(symbol, isOn: Binding(
+            get: { mouseShortcuts.cornerSnapModifiers.contains(flag) },
+            set: { enabled in
+                var modifiers = mouseShortcuts.cornerSnapModifiers
+                if enabled { modifiers.insert(flag) } else { modifiers.remove(flag) }
+                mouseShortcuts.setCornerSnapModifiers(modifiers)
+            }
+        ))
+        .toggleStyle(.checkbox)
+        .help(name)
+        .accessibilityLabel("Use \(name) to snap to corners while dragging")
+    }
+
     private var disabledCapabilityNote: String? {
         var disabledCapabilities: [String] = []
         if !modifierManager.activateEnabled {
@@ -186,6 +200,21 @@ struct PreferencesShortcutsView: View {
                 if let mouseShortcutError {
                     Text(mouseShortcutError).font(.caption).foregroundStyle(.red)
                 }
+                HStack {
+                    Text("Snap to corners while dragging").frame(width: 155, alignment: .leading)
+                    cornerModifier(.control, symbol: "⌃", name: "Control")
+                    cornerModifier(.option, symbol: "⌥", name: "Option (Alt)")
+                    cornerModifier(.shift, symbol: "⇧", name: "Shift")
+                    cornerModifier(.command, symbol: "⌘", name: "Command")
+                    Spacer(minLength: 8)
+                    Button("Reset") { mouseShortcuts.resetCornerSnapModifiers() }
+                        .help("Restore Control + Option + Shift")
+                        .accessibilityLabel("Reset corner snap shortcut")
+                    Button("Disable") { mouseShortcuts.setCornerSnapModifiers([]) }
+                        .disabled(mouseShortcuts.cornerSnapModifiers.isEmpty)
+                        .accessibilityLabel("Disable corner snap shortcut")
+                }
+                .help("Hold these modifiers before or during your configured drag to select a corner quarter. Clearing all modifiers disables the gesture.")
                 HStack {
                     Text("Move sidebar vertically").frame(width: 155, alignment: .leading)
                     positionModifier(.control, symbol: "⌃", name: "Control")

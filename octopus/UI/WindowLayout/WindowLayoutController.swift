@@ -110,6 +110,7 @@ final class WindowLayoutController: ObservableObject {
 
     private func schedule(_ snap: WindowLayoutCompletedSnap) {
         guard enabled, snap.request.snap != .maximize, snap.isCurrent(after: latestAction) else { return }
+        if snap.request.snap?.isCorner == true && selection == .mostRecent { return }
         cancel()
         // The native writer already confirmed its frame. Prepare companions on the next turn.
         let work = DispatchWorkItem { [weak self] in self?.adjust(snap) }
@@ -169,11 +170,14 @@ final class WindowLayoutController: ObservableObject {
                     self.pairUndo = WindowPairUndoRecord(plan: plan, sourceAfter: source, targetAfter: target)
                     self.canUndo = true
                     self.status = "Paired the two selected windows on the target display and Desktop."
-                    // Keep input cancellation through the follow-up raise so a new click cannot lose focus to it.
-                    access.focusConfirmed(source, token: batch) { [weak self] in
-                        guard let self, self.token === batch else { return }
-                        self.finishInput()
-                    }
+                    // Raise both paired windows in stacking order. Leave the dragged app active,
+                    // while ensuring its companion is not left behind the previously frontmost app.
+                    WindowPairSnapService.focusAfterPair(companion: target, dragged: source,
+                        focus: { window, completion in access.focusConfirmed(window, token: batch, completion: completion) },
+                        completion: { [weak self] in
+                            guard let self, self.token === batch else { return }
+                            self.finishInput()
+                        })
                 case .stopped(let reason): self.finishInput(); self.token = nil; self.report(reason)
                 }
             }
@@ -218,22 +222,23 @@ final class WindowLayoutController: ObservableObject {
             })
             let planning: WindowLayoutPlanningResult = ProcessInfo.processInfo.systemUptime < deadline
                 ? WindowLayoutPlanner.plan(snapshot: snapshot, anchorID: snap.window, request: snap.request,
-                    selection: selection, learned: applicable)
+                    selection: selection, learned: applicable, achievedFrame: snap.achievedFrame)
                 : .rejected("Window preparation took too long; your snap stays in place.")
             var result: WindowLayoutBatchResult?
             var plan: WindowLayoutPlan?
             var learnedUpdates: [WindowLayoutIdentity: WindowLayoutSizeConstraint] = [:]
+            var progress: [WindowLayoutIdentity: CGRect]?
             if case .ready(let ready) = planning {
                 plan = ready
                 logger.notice("Planning anchor \(ready.anchor.id.window.windowID, privacy: .public), peers \(String(describing: ready.peers.map { $0.id.window.windowID }), privacy: .public), targets \(String(describing: ready.frames), privacy: .public)")
                 result = Self.execute(ready, reader: reader, displays: displays, batch: batch,
-                    deadline: deadline, onLearn: { id, value in learnedUpdates[id] = value })
+                    deadline: deadline, onLearn: { id, value in learnedUpdates[id] = value },
+                    onProgress: { progress = $0 })
             }
             DispatchQueue.main.async {
                 guard let self, self.token === batch, requestGeneration == self.generation else { return }
                 self.finishInput()
                 self.token = nil
-                guard !batch.isCancelled else { return }
                 if let plan {
                     for window in plan.windows {
                         guard let value = learnedUpdates[window.id] else { continue }
@@ -244,7 +249,9 @@ final class WindowLayoutController: ObservableObject {
                     if self.learnedConstraints.count > Self.maximumCachedConstraints { self.learnedConstraints.removeAll() }
                 }
                 switch planning {
-                case .noPeer: self.status = "No other normal window on this display and Desktop."
+                case .noPeer: self.status = snap.request.snap?.isCorner == true
+                    ? "Corner snaps leave companions untouched unless at least two are selected."
+                    : "No other normal window on this display and Desktop."
                 case .rejected(let reason): self.report(reason)
                 case .ready:
                     guard let plan, let result else { return }
@@ -254,7 +261,15 @@ final class WindowLayoutController: ObservableObject {
                         self.canUndo = true
                         self.status = "Arranged \(plan.windows.count) windows around their size limits."
                         self.logger.notice("Adjusted \(plan.peers.count, privacy: .public) peers, display \(plan.scope.displayID, privacy: .public), Desktop \(plan.scope.spaceID, privacy: .public), anchor \(String(describing: plan.anchor.frame), privacy: .public), actual \(String(describing: actual), privacy: .public)")
-                    case .stopped(let reason): self.report(reason)
+                    case .stopped(let reason):
+                        if plan.snap.isCorner, let progress,
+                           plan.windows.contains(where: { window in
+                               progress[window.id].map { !SidebarPlacementGeometry.matches($0, window.frame) } == true
+                           }) {
+                            self.undo = (plan, progress)
+                            self.canUndo = true
+                        }
+                        self.report(reason)
                     }
                 }
             }
@@ -265,7 +280,8 @@ final class WindowLayoutController: ObservableObject {
     nonisolated private static func execute(_ plan: WindowLayoutPlan, reader: SidebarWindowReader,
                                            displays: [WindowLayoutDisplay], batch: WindowLayoutBatchToken,
                                            deadline: TimeInterval,
-                                           onLearn: (WindowLayoutIdentity, WindowLayoutSizeConstraint) -> Void) -> WindowLayoutBatchResult {
+                                           onLearn: (WindowLayoutIdentity, WindowLayoutSizeConstraint) -> Void,
+                                           onProgress: ([WindowLayoutIdentity: CGRect]) -> Void) -> WindowLayoutBatchResult {
         func canContinue() -> Bool {
             let focused = NSWorkspace.shared.frontmostApplication?.processIdentifier
             return !batch.isCancelled && AXIsProcessTrusted()
@@ -287,7 +303,7 @@ final class WindowLayoutController: ObservableObject {
                 logger.notice("Writer window \(window.id.window.windowID, privacy: .public), requested \(String(describing: frame), privacy: .public), result \(String(describing: result), privacy: .public)")
                 #endif
                 return result
-            }, deadline: deadline, onLearn: onLearn)
+            }, deadline: deadline, onLearn: onLearn, onProgress: onProgress)
     }
 
     func undoAdjustment() {

@@ -49,6 +49,28 @@ enum SidebarPositionScrollShortcut {
     }
 }
 
+enum SidebarCornerSnapShortcut {
+    static let key = "sidebarCornerSnapModifiers"
+    static let defaultModifiers: NSEvent.ModifierFlags = [.control, .option, .shift]
+
+    static func read(in defaults: UserDefaults) -> NSEvent.ModifierFlags {
+        guard let saved = defaults.string(forKey: key), let raw = UInt(saved),
+              raw & ~MouseShortcut.supportedModifiers.rawValue == 0 else { return defaultModifiers }
+        return NSEvent.ModifierFlags(rawValue: raw)
+    }
+
+    static func matches(_ flags: NSEvent.ModifierFlags, required: NSEvent.ModifierFlags) -> Bool {
+        !required.isEmpty && flags.intersection(required) == required
+    }
+
+    // The corner chord augments the configured drag; it never changes its mouse button.
+    static func allowsDrag(_ input: MouseShortcut, binding: MouseShortcut?, cornerModifiers: NSEvent.ModifierFlags) -> Bool {
+        guard let binding, input.button == binding.button else { return false }
+        return input.modifiers == binding.modifiers
+            || (!cornerModifiers.isEmpty && input.modifiers == binding.modifiers.union(cornerModifiers))
+    }
+}
+
 enum MouseShortcutAction: String, CaseIterable {
     case minimize, place, hide
 
@@ -116,13 +138,23 @@ final class MouseShortcutStore: ObservableObject {
     static let shared = MouseShortcutStore()
     @Published private(set) var bindings: MouseShortcutBindings
     @Published private(set) var positionScrollModifiers: NSEvent.ModifierFlags
+    @Published private(set) var cornerSnapModifiers: NSEvent.ModifierFlags
     private let defaults: UserDefaults
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         bindings = MouseShortcutBindings(defaults: defaults)
         positionScrollModifiers = SidebarPositionScrollShortcut.read(in: defaults)
+        cornerSnapModifiers = SidebarCornerSnapShortcut.read(in: defaults)
     }
+
+    func setCornerSnapModifiers(_ modifiers: NSEvent.ModifierFlags) {
+        let supported = modifiers.intersection(MouseShortcut.supportedModifiers)
+        defaults.set(String(supported.rawValue), forKey: SidebarCornerSnapShortcut.key)
+        cornerSnapModifiers = supported
+    }
+
+    func resetCornerSnapModifiers() { setCornerSnapModifiers(SidebarCornerSnapShortcut.defaultModifiers) }
 
     func setPositionScrollModifiers(_ modifiers: NSEvent.ModifierFlags) {
         let supported = modifiers.intersection(MouseShortcut.supportedModifiers)
@@ -163,5 +195,6 @@ final class MouseShortcutStore: ObservableObject {
         }
         bindings = MouseShortcutBindings(defaults: defaults)
         resetPositionScrollModifiers()
+        resetCornerSnapModifiers()
     }
 }

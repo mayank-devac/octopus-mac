@@ -165,7 +165,8 @@ final class WindowControlAccess: @unchecked Sendable {
             return [expected.scope.displayID, destination.displayID].contains(live.scope.displayID)
                 && [expected.scope.spaceID, destination.spaceID].contains(live.scope.spaceID)
         }
-        let request = SidebarPlacementRequest(frame: frame, workArea: workArea, resize: true, desktopGeneration: 0)
+        let request = SidebarPlacementRequest(frame: frame, workArea: workArea, resize: true,
+            desktopGeneration: 0, crossesDisplay: policy == .crossDisplayPlacement)
         var writeResults: [String] = []
         var nativeFailure: AXError?
         var blocked = false
@@ -194,7 +195,7 @@ final class WindowControlAccess: @unchecked Sendable {
                 }, writeSize: { size in
                     var size = size
                     return set(kAXSizeAttribute, value: AXValueCreate(.cgSize, &size), label: "size")
-                }, repeatSizeAfterMove: policy == .crossDisplayPlacement, acceptStableMismatch: false)
+                }, repeatSizeAfterMove: request.crossesDisplay, acceptStableMismatch: false)
         }
         if blocked { result = .cancelled }
         else if nativeFailure != nil { result = .failed("The app rejected this size or position adjustment.") }
