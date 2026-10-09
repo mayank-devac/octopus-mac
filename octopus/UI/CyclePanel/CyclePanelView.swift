@@ -13,6 +13,7 @@ struct CyclePanelView: View {
     var onActivate: (CyclePanelItem.ID) -> Void = { _ in }
     var onAnchor: (CyclePanelItem.ID, NSView?) -> Void = { _, _ in }
     var onWindowAction: (CyclePanelItem.ID) -> Void = { _ in }
+    var onWindowClose: (CyclePanelItem.ID) -> Void = { _ in }
     var onToggleAppVisibility: () -> Void = {}
     var onHideAnchor: (NSView?) -> Void = { _ in }
     var onQuitApp: () -> Void = {}
@@ -145,6 +146,20 @@ struct CyclePanelView: View {
                                      : "\(actionTitle) window")
                           : "This window cannot be minimised or restored")
                     .accessibilityLabel("\(actionTitle) \(item.title)")
+
+                    Button { onWindowClose(item.id) } label: {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(.white)
+                            .frame(width: SidebarLayout.menuWindowActionWidth, height: SidebarLayout.menuRowHeight)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(SidebarActionButtonStyle(
+                        isHovered: state.sidebarPointerTarget == .windowClose(item.id)))
+                    .focusEffectDisabled()
+                    .disabled(!status.canClose)
+                    .help(status.canClose ? "Close window" : "This window cannot be closed")
+                    .accessibilityLabel("Close \(item.title)")
                 }
             }
             .background(RoundedRectangle(cornerRadius: 6)

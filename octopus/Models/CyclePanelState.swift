@@ -51,12 +51,13 @@ enum CyclePanelItem: Identifiable {
 enum SidebarPointerTarget: Equatable {
     case row(CyclePanelItem.ID)
     case windowAction(CyclePanelItem.ID)
+    case windowClose(CyclePanelItem.ID)
     case hideApp
     case quitApp
 
     var itemID: CyclePanelItem.ID? {
         switch self {
-        case .row(let id), .windowAction(let id): return id
+        case .row(let id), .windowAction(let id), .windowClose(let id): return id
         case .hideApp, .quitApp: return nil
         }
     }

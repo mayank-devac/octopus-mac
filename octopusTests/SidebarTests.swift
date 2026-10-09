@@ -1028,13 +1028,16 @@ struct SidebarTests {
         let initialSize = panel.frame.size
         for index in 0..<12 {
             let row = index % 2 == 0 ? first : second
-            // Alternate between the title and action-button region without waiting for a scan.
-            let x = index % 3 == 0 ? row.bounds.maxX - 15 : row.bounds.midX
+            // Alternate between the title, minimise/restore, and close regions without waiting for a scan.
+            let zone = index % 3
+            let x = zone == 0 ? row.bounds.midX : row.bounds.maxX - (zone == 1 ? 45 : 15)
             let point = panel.convertPoint(toScreen: row.convert(CGPoint(x: x, y: row.bounds.midY), to: nil))
             let target = CyclePanelController.sidebarPointerTarget(at: point, items: state.items,
                 anchors: anchors, hideAnchor: hideAnchor)
             let id = CyclePanelItem.ID.window(index % 2 == 0 ? 10 : 20)
-            #expect(target == (index % 3 == 0 ? .windowAction(id) : .row(id)))
+            let expected: SidebarPointerTarget = zone == 0 ? .row(id)
+                : zone == 1 ? .windowAction(id) : .windowClose(id)
+            #expect(target == expected)
             state.setSidebarPointerTarget(target)
             #expect(state.currentWindow?.cgWindowID == (index % 2 == 0 ? 10 : 20))
             #expect(state.sidebarPointerTarget == target)
@@ -1057,7 +1060,7 @@ struct SidebarTests {
             eventNumber: 0, clickCount: 0, pressure: 0))
         first.mouseMoved(with: staleMove)
         #expect(state.currentWindow?.cgWindowID == 20)
-        #expect(state.sidebarPointerTarget == .row(.window(20)))
+        #expect(state.sidebarPointerTarget == .windowClose(.window(20)))
         let footer = try #require(hideAnchor)
         let footerPoint = panel.convertPoint(toScreen: footer.convert(
             CGPoint(x: footer.bounds.midX, y: footer.bounds.midY), to: nil))

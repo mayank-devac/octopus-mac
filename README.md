@@ -1,12 +1,6 @@
 # octopus
 
-The macOS window manager that gives every app its own Alt-Tab. 
 
-![Cover photo. octopus logo and UI.](./github-assets/octopus-banner-1280-short.jpg)
-
-[Download for macOS](https://getoctopus.app) · [GitHub Releases](https://github.com/gouwsxander/octopus/releases/latest) (Requires macOS 14.6+)
-
-[How we made octopus (YouTube)](https://youtu.be/niRCi5zJvHU)
 
 ## Key Features
 
@@ -61,8 +55,6 @@ octopus also pairs well with [Rectangle](https://github.com/rxhanson/Rectangle):
 
 ## Installation
 
-Download the latest release on [our website](https://getoctopus.app) or [GitHub](https://github.com/gouwsxander/octopus/releases/latest)
-
 Simply: 
 1) Download the `.zip` and unzip the file.
 2) Drag `octopus.app` into your Applications folder.
@@ -78,7 +70,6 @@ You can find your macOS version from the ** → About This Mac** page.
 
 ## Development
 
-Please share issues and feedback via the [GitHub issues page](https://github.com/gouwsxander/octopus/issues).
 
 Feel free to submit pull requests, though we can't guarantee that we'll get to them.
 

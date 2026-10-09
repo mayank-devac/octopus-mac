@@ -36,6 +36,7 @@ struct SidebarEntry: Identifiable {
 struct SidebarWindowState: Equatable {
     let isMinimized: Bool
     let canMinimize: Bool
+    var canClose = true
     var isOnScreen = true
     var desktops: [SidebarDesktop] = []
     var desktopLabel: String? = nil
@@ -46,20 +47,21 @@ enum SidebarWindowAction: Equatable {
     case activateApp(pid_t)
     case focus(SidebarWindowID)
     case minimize(SidebarWindowID, requireFocused: Bool)
+    case close(SidebarWindowID)
     case hide(SidebarWindowID)
     case place(SidebarWindowID, SidebarPlacementRequest)
 
     var target: SidebarWindowID? {
         switch self {
         case .activateApp: return nil
-        case .focus(let id), .minimize(let id, _), .hide(let id), .place(let id, _): return id
+        case .focus(let id), .minimize(let id, _), .close(let id), .hide(let id), .place(let id, _): return id
         }
     }
 
     var processIdentifier: pid_t {
         switch self {
         case .activateApp(let pid): return pid
-        case .focus(let id), .minimize(let id, _), .hide(let id), .place(let id, _): return id.pid
+        case .focus(let id), .minimize(let id, _), .close(let id), .hide(let id), .place(let id, _): return id.pid
         }
     }
 }
@@ -1009,6 +1011,7 @@ final class SidebarWindowReader: @unchecked Sendable {
                 states[id] = SidebarWindowState(isMinimized: minimized,
                     canMinimize: !fullScreen && !geometryFullScreen
                         && isMinimizedSettable(axWindow),
+                    canClose: closeButton(for: axWindow) != nil,
                     isOnScreen: match?.1.onScreen == true, desktops: desktops[id] ?? [],
                     desktopLabel: desktops[id]?.first?.windowPrefix,
                     displayIdentifier: SidebarWindowPolicy.displayIdentifier(desktops: desktops[id] ?? [],
@@ -1362,6 +1365,11 @@ final class SidebarWindowReader: @unchecked Sendable {
         case .hide:
             guard !running.isHidden, token.isCurrent else { return .rejected }
             return running.hide() ? .completed : .rejected
+        case .close:
+            // Use the app's normal close control so document windows can still ask to save.
+            guard let button = closeButton(for: element), token.isCurrent else { return .rejected }
+            return AXUIElementPerformAction(button, kAXPressAction as CFString) == .success
+                ? .completed : .rejected
         case .minimize(_, let requireFocused):
             // A cached visible window may have moved to another Desktop before this
             // queued action runs. Navigate to the exact window instead of minimising it.
@@ -1450,6 +1458,22 @@ final class SidebarWindowReader: @unchecked Sendable {
         var settable = DarwinBoolean(false)
         return AXUIElementIsAttributeSettable(element, kAXMinimizedAttribute as CFString, &settable) == .success
             && settable.boolValue
+    }
+
+    private func closeButton(for element: AXUIElement) -> AXUIElement? {
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, kAXCloseButtonAttribute as CFString, &value) == .success,
+              let value, CFGetTypeID(value) == AXUIElementGetTypeID() else { return nil }
+        let button = value as! AXUIElement
+        let enabled: Bool = button.getAttributeValue(
+            NSAccessibility.Attribute(rawValue: kAXEnabledAttribute as String)) ?? true
+        guard enabled else { return nil }
+        let owner: AXUIElement? = button.getAttributeValue(
+            NSAccessibility.Attribute(rawValue: kAXWindowAttribute as String))
+        if let windowID = element.getWindowID(), let ownerID = owner?.getWindowID(), ownerID != windowID {
+            return nil
+        }
+        return button
     }
 
     private func isBrowserHelper(_ element: AXUIElement, applicationTitle: String, title: String?,
