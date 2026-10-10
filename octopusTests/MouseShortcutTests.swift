@@ -305,6 +305,41 @@ struct MouseShortcutTests {
         #expect(SidebarIconMousePolicy.action(.minimize, for: closed, frontmostPID: pid, target: id) == nil)
     }
 
+    @MainActor @Test func defaultLeftClickOnWindowlessAppReachesAppActivation() throws {
+        try withStore { store, _ in
+            let app = Application(NSRunningApplication.current)
+            let pid = NSRunningApplication.current.processIdentifier
+            let entry = SidebarEntry(pid: pid, application: app, windows: [], preferredID: nil)
+            #expect(store.bindings.clickAction(for: .left) == .minimize)
+            for frontmost in [Optional(pid), nil] {
+                let view = SidebarPointerRegion.PointerView(frame: CGRect(x: 0, y: 0, width: 100, height: 100))
+                view.dragShortcut = store.bindings.place
+                var actions: [SidebarWindowAction] = []
+                view.onMouseClick = { shortcut in
+                    guard let mapping = store.bindings.clickAction(for: shortcut),
+                          let action = SidebarIconMousePolicy.action(mapping, for: entry,
+                              frontmostPID: frontmost, target: SidebarIconDragPolicy.target(for: entry)) else { return }
+                    actions.append(action)
+                }
+                view.mouseDown(with: try event(.leftMouseDown))
+                view.mouseUp(with: try event(.leftMouseUp, time: 1.01))
+                #expect(actions == [.activateApp(pid)])
+            }
+        }
+    }
+
+    @MainActor @Test func windowlessClickDoesNotReopenAStaleTargetOrAnotherWindowGroup() {
+        let app = Application(NSRunningApplication.current)
+        let pid = NSRunningApplication.current.processIdentifier
+        var entry = SidebarEntry(pid: pid, application: app, windows: [], preferredID: nil)
+        let stale = SidebarWindowID(pid: pid, windowID: 11)
+        #expect(SidebarIconMousePolicy.action(.minimize, for: entry, frontmostPID: pid, target: stale) == nil)
+        entry.hasOtherWindows = true
+        #expect(SidebarIconMousePolicy.action(.minimize, for: entry, frontmostPID: pid, target: nil) == nil)
+        let staleEntry = SidebarEntry(pid: pid, application: app, windows: [], preferredID: stale)
+        #expect(SidebarIconMousePolicy.action(.minimize, for: staleEntry, frontmostPID: pid, target: nil) == nil)
+    }
+
     @MainActor @Test func remoteWindowClickFocusesBeforeMinimizingEvenWhenItsAppIsAlreadyActive() {
         let app = Application(NSRunningApplication.current)
         let pid = NSRunningApplication.current.processIdentifier

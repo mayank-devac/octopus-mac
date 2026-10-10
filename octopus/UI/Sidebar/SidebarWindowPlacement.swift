@@ -16,6 +16,12 @@ enum SidebarIconMousePolicy {
         case .hide:
             return SidebarIconClickPolicy.action(for: entry, frontmostPID: frontmostPID, setting: .hide)
         case .minimize:
+            // The default left click is bound to minimise/restore. With no window,
+            // route it to app activation so the inventory can validate reopening.
+            // A captured stale target or another Desktop's window must not reopen.
+            if target == nil, entry.preferredID == nil, entry.windows.isEmpty, !entry.hasOtherWindows {
+                return .activateApp(entry.pid)
+            }
             guard let id = target, id.pid == entry.pid,
                   entry.windows.contains(where: { $0.cgWindowID == id.windowID }) else { return nil }
             let state = entry.windowStates[id.windowID]
