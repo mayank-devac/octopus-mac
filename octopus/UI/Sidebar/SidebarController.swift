@@ -181,7 +181,7 @@ private final class SidebarDisplayController {
         panel.backgroundColor = .clear
         panel.hasShadow = false
         panel.animationBehavior = .none
-        panel.level = .floating
+        panel.level = SidebarWindowLevels.sidebar
         panel.hidesOnDeactivate = false
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
         panel.isReleasedWhenClosed = false
@@ -407,15 +407,18 @@ private final class SidebarDisplayController {
         // Auto-hide applies when idle, not while this sidebar's window list is open.
         guard settings?.enabled == true, screen != nil, !shouldAutoHide || menuVisible,
               needsSpacePresentation || !panel.isVisible || !panel.isOnActiveSpace else { return }
-        // isVisible alone does not establish that the panel is on this Desktop.
-        // Reassert its order once after a Space change, without activating Octopus
-        // or covering the shared window list that the user is still hovering.
-        if menuVisible {
-            panel.order(.below, relativeTo: cycleController.panel.windowNumber)
-        } else {
-            panel.orderFrontRegardless()
-        }
+        // Ordering below an existing popup does not explicitly bring the sidebar
+        // forward. Establish both windows' order, even while another app is active.
+        bringSidebarForward(keepingMenuAbove: menuVisible)
         needsSpacePresentation = !panel.isVisible || !panel.isOnActiveSpace
+    }
+
+    private func bringSidebarForward(keepingMenuAbove: Bool) {
+        // These calls preserve the sidebar levels and do not take keyboard focus.
+        panel.orderFrontRegardless()
+        if keepingMenuAbove {
+            cycleController.panel.orderFrontRegardless()
+        }
     }
 
     private var isFullScreen: Bool {

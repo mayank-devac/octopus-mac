@@ -1,6 +1,15 @@
 import AppKit
 import ColorSync
 
+// Keep app palettes below the sidebar, and its interaction surfaces above it.
+// These levels remain below modal panels and system menus.
+enum SidebarWindowLevels {
+    static let sidebar = NSWindow.Level(rawValue: NSWindow.Level.floating.rawValue + 1)
+    static let menu = NSWindow.Level(rawValue: NSWindow.Level.floating.rawValue + 2)
+    static let dragPreview = NSWindow.Level(rawValue: NSWindow.Level.floating.rawValue + 3)
+    static let dragIcon = NSWindow.Level(rawValue: NSWindow.Level.floating.rawValue + 4)
+}
+
 enum SidebarSide: String, CaseIterable, Codable {
     case left, right
 }

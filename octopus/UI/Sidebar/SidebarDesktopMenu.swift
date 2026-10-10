@@ -14,6 +14,7 @@ final class SidebarDesktopMenu {
     func contains(_ point: CGPoint) -> Bool { interactionFrames.contains { $0.contains(point) } }
 
     init() {
+        panel.level = SidebarWindowLevels.menu
         panel.hidesOnDeactivate = false
         panel.ignoresMouseEvents = true // The drag controller's native receiver owns input.
         let host = NSHostingView(rootView: DesktopMenuView(state: state, onAnchor: { [weak self] id, view in

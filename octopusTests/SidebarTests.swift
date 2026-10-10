@@ -10,6 +10,14 @@ import Testing
 @testable import octopus
 
 struct SidebarTests {
+    @Test func sidebarLevelsStayAboveAppPalettesAndBelowModalDialogs() {
+        #expect(NSWindow.Level.floating.rawValue < SidebarWindowLevels.sidebar.rawValue)
+        #expect(SidebarWindowLevels.sidebar.rawValue < SidebarWindowLevels.menu.rawValue)
+        #expect(SidebarWindowLevels.menu.rawValue < SidebarWindowLevels.dragPreview.rawValue)
+        #expect(SidebarWindowLevels.dragPreview.rawValue < SidebarWindowLevels.dragIcon.rawValue)
+        #expect(SidebarWindowLevels.dragIcon.rawValue < NSWindow.Level.modalPanel.rawValue)
+    }
+
     @Test func wheelPositionRespectsPhysicalDirectionUnitsAndScreenEdges() {
         #expect(SidebarLayout.scrolledPosition(0.5, deltaY: 3, precise: false, inverted: false, availableTravel: 480) == 0.45)
         #expect(SidebarLayout.scrolledPosition(0.5, deltaY: -3, precise: false, inverted: true, availableTravel: 480) == 0.45)

@@ -399,7 +399,7 @@ final class SidebarDragController: NSObject, NSDraggingSource {
             view.imageScaling = .scaleProportionallyUpOrDown
             panel.contentView = view
             panel.alphaValue = 0.85
-            panel.level = NSWindow.Level(rawValue: NSWindow.Level.floating.rawValue + 2)
+            panel.level = SidebarWindowLevels.dragIcon
             dragIconPanel = panel
         }
         panel.setFrame(frame, display: true)
@@ -447,7 +447,7 @@ final class SidebarDragController: NSObject, NSDraggingSource {
         panel.animationBehavior = .none
         panel.hidesOnDeactivate = false
         panel.ignoresMouseEvents = ignoresMouse
-        panel.level = NSWindow.Level(rawValue: NSWindow.Level.floating.rawValue + 1)
+        panel.level = SidebarWindowLevels.dragPreview
         panel.collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary]
         panel.isReleasedWhenClosed = false
         return panel

@@ -148,6 +148,7 @@ final class CyclePanelController: NSObject {
     func showSwitcher(for application: Application, startIndex: Int = 0) {
         if presentation == .sidebar { hideSwitcher() }
         presentation = .keyboard
+        panel.level = .floating
         panel.hidesOnDeactivate = true
         currentApplication = application
         state.setApplication(application)
@@ -196,6 +197,7 @@ final class CyclePanelController: NSObject {
 
     func showSidebar(for entry: SidebarEntry, icon: CGRect, screen: CGRect, side: SidebarSide) {
         guard !isKeyboardSwitcherVisible, !entry.windows.isEmpty else { return }
+        panel.level = SidebarWindowLevels.menu
         let isRefresh = sidebarEntryID == entry.id
         let selectedID = isRefresh ? state.currentWindow?.cgWindowID : nil
         presentation = .sidebar
