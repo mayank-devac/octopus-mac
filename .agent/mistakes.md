@@ -1,5 +1,28 @@
 # octopus Mistakes and Prevention
 
+## 2026-10-08 — Automatic snap adjustment
+
+- **Scope mistake:** The first design grew into a general layout/tree system before the existing-drag follow-up behaviour was settled. Mayank explicitly narrowed it to Octopus snaps, then requested a recent/all affected-window dropdown. Follow the latest decisions, not the superseded three-trigger proposal.
+- **Performance mistake:** Most-recent adjustment initially reread the whole app/Space inventory, repeated AX metadata checks and added a fixed 150 ms delay. The revised path scopes visible candidates and reads selected metadata; a 100-candidate test verifies one companion metadata callback, not one total AX call or measured latency.
+- **Resize/focus mistake:** Companions reused duplicate size writes and could reassert too early on repeated old frames. Placement also retained AXMain/AXRaise before exact-window focus, despite the prior focus incident. Same-display companion policy and placement focus ordering were corrected; final visual effectiveness remains unverified.
+- **Verification mistake:** Two app builds, stale accessibility IDs and conflicting monitor focus made live checks difficult to attribute. A green test run cannot dismiss reported delay/flicker. Mayank requested stopping UI clicks; do not resume them without a new request.
+- **Prevention:** Preserve the already-snapped anchor on companion failure, validate exact identity/display/Space, keep live frame readback, obtain scope approval for shared helpers, and verify the whole real interaction before claiming smoothness. Final focused checks passed 48 tests / 51 executions; no final flicker-free claim was made.
+- **Full story, prompts, failed attempts, evidence and remaining limits:** [Automatic snap process](auto-snap-process.md).
+
+### Additional lessons from the strict review at `17a248e`
+
+The [source-verified review](auto-snap-review.md) found outstanding issues; these are not marked fixed by the successful test run.
+
+- **Bulk AX contract:** A successful bulk call can contain optional CFNull or per-attribute errors. The faster path does not yet handle every permitted representation. Test the actual provider boundary, preserve genuine optional absence and keep transient failure distinct from it.
+- **Recovery ownership:** A stable post-write frame is not proof that Octopus caused it. Recovery can overwrite an external update when the token remains valid. Test that counterexample without flipping cancellation, and decline ambiguous automatic rollback.
+- **Whole-request budget:** The four-second executor budget starts after snapshot preparation. Bound and cancel handle-resolution/metadata loops too; per-call timeouts alone do not bound a queued operation.
+- **Normal-window admission:** A layer-zero CG surface is not automatically a normal AX window. Separate verified non-normal surfaces from failed/unknown reads so an auxiliary surface does not invalidate otherwise eligible companions.
+- **Mutation safety:** Cheap identity/display/Space checks do not replace live modal/sheet/minimised eligibility checks when another write attempt occurs. Recheck only the necessary safety state rather than reinstating full inventory scans.
+- **Lost lifecycle work:** A Boolean “refresh queued” gate can discard a launch/termination event. Coalesce a follow-up reconciliation and preserve the event's app identity when updating recency.
+- **Structural debt:** The inventory grew from 1,410 to 1,669 lines; it was already above 1k. Establish a focused native-access boundary rather than adding more feature modes and near-duplicate validators. Showing feedback should not require an unused inventory/full drag controller.
+- **Review honesty:** The independent critic's stale-Undo claim was rejected because `undoAdjustment` already calls `cancel`, which clears Undo before validation. Verify call chains before recording or fixing an alleged bug; strict reviews must not manufacture findings.
+- **Baseline/UI discipline:** The original full real-window baseline gate was not completed, and monitor-focus interference prevented a clean final visual verdict. Do not silently replace live gates with fixture counts or resume stopped UI automation through another technology.
+
 ## 2026-10-07 — Cross-Desktop focus and minimise
 
 - **Mistake:** Adding a targeted private focus request left an earlier `AXMain`/`AXRaise` in the production focus path; unit-test success was previously treated as stronger evidence than it was. The icon and popup minimise decisions also ignored whether the target window was on a visible Desktop.

@@ -7,6 +7,9 @@ final class SidebarViewState: ObservableObject {
     @Published var side: SidebarSide = .right
     @Published var dragSections: [SidebarDesktopSection]?
     @Published var dropDesktopID: UInt64?
+    // Pair feedback is icon-specific, separate from a whole Desktop section's transfer highlight.
+    @Published var pairDropEntryID: SidebarEntryID?
+    @Published var pairDropDirection: PairDropDirection?
     @Published var monitors: [SidebarMonitor] = []
     @Published var configuration = SidebarConfiguration()
     var dragDesktops: [SidebarDesktop]?
@@ -22,6 +25,9 @@ struct SidebarView: View {
     @Environment(\.colorScheme) private var colorScheme
     var onClick: (SidebarEntryID) -> Void
     var onAnchor: (SidebarEntryID, NSView?) -> Void
+    var onIconAnchor: (SidebarEntryID, NSView?) -> Void = { _, _ in }
+    var pairTargetsProvider: () -> [SidebarIconPairTarget] = { [] }
+    var onPairCommand: (SidebarWindowID, SidebarWindowID, PairDropDirection) -> Void = { _, _, _ in }
     var onDrag: (SidebarEntryID, SidebarWindowID?, String, NSView, NSEvent) -> Void = { _, _, _, _, _ in }
     var onPlacement: (SidebarWindowID, SidebarSnapTarget) -> Void = { _, _ in }
     var onMouseAction: (SidebarEntryID, MouseShortcutAction, SidebarWindowID?) -> Void = { _, _, _ in }
@@ -143,6 +149,16 @@ struct SidebarView: View {
                 }
             }
             .frame(width: SidebarLayout.iconSize, height: SidebarLayout.iconSize)
+            .overlay {
+                // Measure the actual icon, rather than using its larger row/title hit area.
+                SidebarGeometryAnchor(id: entry.id, onAnchor: onIconAnchor).allowsHitTesting(false)
+            }
+            .overlay {
+                if state.pairDropEntryID == entry.id {
+                    SidebarPairBorder(direction: state.pairDropDirection)
+                        .padding(-3).allowsHitTesting(false)
+                }
+            }
             .scaleEffect(scale(for: index))
             .frame(height: SidebarLayout.iconSlotHeight)
 
@@ -176,7 +192,9 @@ struct SidebarView: View {
                 onMouseClick: { shortcut in
                     if let action = mouseBindings.clickAction(for: shortcut) { onMouseAction(entry.id, action, dragTarget) }
                     else if shortcut == .left { onClick(entry.id) }
-                }
+                },
+                onDoubleClick: { if let id = dragTarget { onPlacement(id, .maximize) } },
+                doubleClickTarget: dragTarget
             )
         }
         .accessibilityElement(children: .ignore)
@@ -192,6 +210,16 @@ struct SidebarView: View {
                 Button("Minimise or restore window") { onMouseAction(entry.id, .minimize, dragTarget) }
             }
             if let id = dragTarget {
+                // Screen-reader users can invoke the same explicit pair command without a pointer drag.
+                if entry.visibleIDs.contains(id) {
+                    ForEach(accessiblePairTargets(excluding: id), id: \.window) { destination in
+                        ForEach(PairDropDirection.allCases, id: \.rawValue) { direction in
+                            Button("Pair \(direction.rawValue) of \(destination.title)") {
+                                onPairCommand(id, destination.window, direction)
+                            }
+                        }
+                    }
+                }
                 ForEach(SidebarSnapTarget.allCases, id: \.self) { target in
                     Button(target.title) { onPlacement(id, target) }
                 }
@@ -207,6 +235,11 @@ struct SidebarView: View {
         }
     }
 
+    private func accessiblePairTargets(excluding source: SidebarWindowID) -> [SidebarIconPairTarget] {
+        var seen = Set<SidebarWindowID>()
+        return pairTargetsProvider().filter { $0.isVisible && $0.window != source && seen.insert($0.window).inserted }
+    }
+
     private func scale(for index: Int) -> CGFloat {
         guard state.dragSections == nil, !reduceMotion,
               let highlighted = displayedEntries.firstIndex(where: { $0.id == state.highlightedEntryID }) else { return 1 }
@@ -220,6 +253,32 @@ struct SidebarView: View {
     private func openAccessibilitySettings() {
         guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") else { return }
         NSWorkspace.shared.open(url)
+    }
+}
+
+// A quiet neutral outline identifies B; the thick segment shows where dragged A will land.
+private struct SidebarPairBorder: View {
+    let direction: PairDropDirection?
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 7)
+                .stroke(Color.primary.opacity(colorScheme == .dark ? 0.32 : 0.22), lineWidth: 1.5)
+            GeometryReader { geometry in
+                Path { path in
+                    let w = geometry.size.width, h = geometry.size.height
+                    switch direction {
+                    case .left: path.move(to: CGPoint(x: 0, y: 5)); path.addLine(to: CGPoint(x: 0, y: h - 5))
+                    case .right: path.move(to: CGPoint(x: w, y: 5)); path.addLine(to: CGPoint(x: w, y: h - 5))
+                    case .top: path.move(to: CGPoint(x: 5, y: 0)); path.addLine(to: CGPoint(x: w - 5, y: 0))
+                    case .bottom: path.move(to: CGPoint(x: 5, y: h)); path.addLine(to: CGPoint(x: w - 5, y: h))
+                    case nil: break
+                    }
+                }.stroke(.red, style: StrokeStyle(lineWidth: 5, lineCap: .round))
+            }
+        }
+        .accessibilityHidden(true)
     }
 }
 
@@ -338,6 +397,8 @@ struct SidebarPointerRegion: NSViewRepresentable {
     var onDrag: ((NSView, NSEvent) -> Void)? = nil
     var dragShortcut: MouseShortcut? = .left
     var onMouseClick: ((MouseShortcut) -> Void)? = nil
+    var onDoubleClick: (() -> Void)? = nil
+    var doubleClickTarget: SidebarWindowID? = nil
 
     func makeNSView(context: Context) -> PointerView {
         let view = PointerView()
@@ -352,9 +413,12 @@ struct SidebarPointerRegion: NSViewRepresentable {
         view.onDrag = onDrag
         view.dragShortcut = dragShortcut
         view.onMouseClick = onMouseClick
+        view.onDoubleClick = onDoubleClick
+        view.doubleClickTarget = doubleClickTarget
     }
 
     static func dismantleNSView(_ view: PointerView, coordinator: ()) {
+        view.cancelOperation(nil)
         view.onAnchor?(nil)
     }
 
@@ -363,25 +427,72 @@ struct SidebarPointerRegion: NSViewRepresentable {
         var onAnchor: ((NSView?) -> Void)?
         var onDrag: ((NSView, NSEvent) -> Void)?
         var dragShortcut: MouseShortcut? = .left
+        var cornerModifiersProvider: () -> NSEvent.ModifierFlags = { MouseShortcutStore.shared.cornerSnapModifiers }
         var onMouseClick: ((MouseShortcut) -> Void)?
+        var onDoubleClick: (() -> Void)?
+        var doubleClickTarget: SidebarWindowID? {
+            didSet { if oldValue != doubleClickTarget { cancelPendingClick() } }
+        }
         private var clickGate = SidebarClickGate()
-        private var press: (point: CGPoint, button: Int, event: NSEvent, click: (() -> Void)?, drag: ((NSView, NSEvent) -> Void)?)?
+        private struct Press {
+            let point: CGPoint
+            let button: Int
+            let event: NSEvent
+            let click: (() -> Void)?
+            let drag: ((NSView, NSEvent) -> Void)?
+            let primaryTarget: SidebarWindowID?
+            let doubleAction: (() -> Void)?
+        }
+        private struct PendingClick {
+            let id: UUID
+            let target: SidebarWindowID
+            let timestamp: TimeInterval
+            let action: (() -> Void)?
+            let work: DispatchWorkItem
+        }
+        private var press: Press?
+        private var pendingClick: PendingClick?
         override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
         override func mouseDown(with event: NSEvent) {
             startPress(event)
         }
         override func rightMouseDown(with event: NSEvent) { startPress(event) }
         override func otherMouseDown(with event: NSEvent) { startPress(event) }
+        // Capture actions and identity at mouse down. Plain-left app clicks arbitrate single versus double;
+        // other buttons and modifier bindings retain the existing immediate click policy.
         private func startPress(_ event: NSEvent) {
-            // Suppress only very fast repeats, even if macOS groups later clicks together.
             press = nil
-            guard clickGate.accepts(timestamp: event.timestamp, clickCount: event.clickCount) else { return }
             let shortcut = MouseShortcut(button: event.buttonNumber, modifiers: event.modifierFlags)
+            let primary = shortcut == .left && onDoubleClick != nil ? doubleClickTarget : nil
+            var primaryTarget = primary
+            var double: (() -> Void)?
+            if let primary {
+                guard event.timestamp.isFinite else { return }
+                // macOS can keep numbering clicks at the same pointer location after our
+                // action finishes. Only a matching second click is a double; later clicks
+                // start a fresh action and the per-app busy guard handles overlap.
+                if let pending = pendingClick, pending.target == primary, event.clickCount == 2,
+                   event.timestamp >= pending.timestamp,
+                   event.timestamp - pending.timestamp <= SidebarClickGate.interval {
+                    cancelPendingClick()
+                    double = onDoubleClick
+                } else {
+                    commitPendingClick()
+                    // AppKit may still call this a double within its longer system interval.
+                    // Outside Octopus's 230 ms window, let this release act as a single click.
+                    if event.clickCount > 1 { primaryTarget = nil }
+                }
+            } else {
+                commitPendingClick()
+                guard clickGate.accepts(timestamp: event.timestamp, clickCount: event.clickCount) else { return }
+            }
             let click: (() -> Void)?
             if let onMouseClick { click = { onMouseClick(shortcut) } }
             else { click = shortcut == .left ? onClick : nil }
-            press = (event.locationInWindow, event.buttonNumber, event, click,
-                     shortcut == dragShortcut ? onDrag : nil)
+            press = Press(point: event.locationInWindow, button: event.buttonNumber, event: event,
+                click: click, drag: SidebarCornerSnapShortcut.allowsDrag(shortcut, binding: dragShortcut,
+                    cornerModifiers: cornerModifiersProvider()) ? onDrag : nil,
+                primaryTarget: primaryTarget, doubleAction: double)
         }
         override func mouseDragged(with event: NSEvent) {
             continuePress(event)
@@ -392,6 +503,7 @@ struct SidebarPointerRegion: NSViewRepresentable {
             guard let press, event.buttonNumber == press.button,
                   Self.hasStartedDrag(from: press.point, to: event.locationInWindow) else { return }
             self.press = nil
+            cancelPendingClick()
             press.drag?(self, press.event)
         }
         override func mouseUp(with event: NSEvent) {
@@ -399,13 +511,38 @@ struct SidebarPointerRegion: NSViewRepresentable {
         }
         override func rightMouseUp(with event: NSEvent) { endPress(event) }
         override func otherMouseUp(with event: NSEvent) { endPress(event) }
+        // Commit a double only on an in-bounds release still classified by macOS as a click.
         private func endPress(_ event: NSEvent) {
-            guard event.buttonNumber == press?.button else { return }
-            let click = press?.click
+            guard let completed = press, event.buttonNumber == completed.button else { return }
             press = nil
-            if bounds.contains(convert(event.locationInWindow, from: nil)) { click?() }
+            guard bounds.contains(convert(event.locationInWindow, from: nil)) else { return }
+            if let double = completed.doubleAction {
+                if event.clickCount == 2 { double() }
+                return
+            }
+            guard let target = completed.primaryTarget else { completed.click?(); return }
+            let id = UUID()
+            let work = DispatchWorkItem { [weak self] in self?.commitPendingClick(expectedID: id) }
+            pendingClick = PendingClick(id: id, target: target, timestamp: completed.event.timestamp,
+                action: completed.click, work: work)
+            let delay = max(0, SidebarClickGate.interval - max(0, event.timestamp - completed.event.timestamp))
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
         }
-        override func cancelOperation(_ sender: Any?) { press = nil }
+        override func cancelOperation(_ sender: Any?) { press = nil; cancelPendingClick() }
+
+        // Delay the single primary action so a double cannot first minimise or hide its window.
+        // The nonce prevents a cancelled timer from committing a newer pending click.
+        func commitPendingClick(expectedID: UUID? = nil) {
+            guard let pending = pendingClick, expectedID == nil || expectedID == pending.id else { return }
+            cancelPendingClick()
+            guard pending.target == doubleClickTarget else { return }
+            pending.action?()
+        }
+
+        private func cancelPendingClick() {
+            pendingClick?.work.cancel()
+            pendingClick = nil
+        }
 
         static func hasStartedDrag(from start: CGPoint, to end: CGPoint) -> Bool {
             hypot(end.x - start.x, end.y - start.y) > 6

@@ -1,6 +1,15 @@
 import AppKit
 import ColorSync
 
+// Keep app palettes below the sidebar, and its interaction surfaces above it.
+// These levels remain below modal panels and system menus.
+enum SidebarWindowLevels {
+    static let sidebar = NSWindow.Level(rawValue: NSWindow.Level.floating.rawValue + 1)
+    static let menu = NSWindow.Level(rawValue: NSWindow.Level.floating.rawValue + 2)
+    static let dragPreview = NSWindow.Level(rawValue: NSWindow.Level.floating.rawValue + 3)
+    static let dragIcon = NSWindow.Level(rawValue: NSWindow.Level.floating.rawValue + 4)
+}
+
 enum SidebarSide: String, CaseIterable, Codable {
     case left, right
 }
@@ -274,6 +283,21 @@ enum SidebarSettings {
         defaults.set(saved, forKey: displayPreferencesKey)
     }
 
+    static func savePosition(_ position: Double, for displayID: String?, in defaults: UserDefaults = .standard) {
+        guard position.isFinite else { return }
+        let bounded = min(1, max(0, position))
+        if let displayID {
+            let preference = displayPreferences(in: defaults)[displayID]
+            var configuration = preference?.configuration ?? SidebarConfiguration(defaults: defaults)
+            configuration.position = bounded
+            save(configuration, for: displayID, name: preference?.name ?? "Display", in: defaults)
+        } else {
+            if defaults.double(forKey: "sidebarPosition") != bounded {
+                defaults.set(bounded, forKey: "sidebarPosition")
+            }
+        }
+    }
+
     static func displayID(_ screen: NSScreen) -> CGDirectDisplayID? {
         (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value
     }
@@ -295,6 +319,17 @@ enum SidebarSettings {
 }
 
 enum SidebarLayout {
+    static func scrolledPosition(_ position: Double, deltaY: Double, precise: Bool,
+                                 inverted: Bool, availableTravel: CGFloat) -> Double? {
+        guard position.isFinite, deltaY.isFinite, deltaY != 0,
+              availableTravel.isFinite, availableTravel > 0 else { return nil }
+        // Wheel events use lines; high-resolution devices already report points.
+        // Undo Natural Scrolling so rolling the wheel up moves the sidebar up.
+        let distance = deltaY * (inverted ? -1 : 1) * (precise ? 1 : 8)
+        guard distance.isFinite else { return nil }
+        return min(1, max(0, position - distance / Double(availableTravel)))
+    }
+
     // Keep the icon close to the display edge while leaving room for its label.
     static let width: CGFloat = 86
     // Extra canvas toward the desktop for the magnified frost's soft edges.

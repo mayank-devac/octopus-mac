@@ -10,6 +10,52 @@ import Testing
 @testable import octopus
 
 struct SidebarTests {
+    @Test func sidebarLevelsStayAboveAppPalettesAndBelowModalDialogs() {
+        #expect(NSWindow.Level.floating.rawValue < SidebarWindowLevels.sidebar.rawValue)
+        #expect(SidebarWindowLevels.sidebar.rawValue < SidebarWindowLevels.menu.rawValue)
+        #expect(SidebarWindowLevels.menu.rawValue < SidebarWindowLevels.dragPreview.rawValue)
+        #expect(SidebarWindowLevels.dragPreview.rawValue < SidebarWindowLevels.dragIcon.rawValue)
+        #expect(SidebarWindowLevels.dragIcon.rawValue < NSWindow.Level.modalPanel.rawValue)
+    }
+
+    @Test func wheelPositionRespectsPhysicalDirectionUnitsAndScreenEdges() {
+        #expect(SidebarLayout.scrolledPosition(0.5, deltaY: 3, precise: false, inverted: false, availableTravel: 480) == 0.45)
+        #expect(SidebarLayout.scrolledPosition(0.5, deltaY: -3, precise: false, inverted: true, availableTravel: 480) == 0.45)
+        #expect(SidebarLayout.scrolledPosition(0.5, deltaY: -3, precise: false, inverted: false, availableTravel: 480) == 0.55)
+        #expect(SidebarLayout.scrolledPosition(0.5, deltaY: 24, precise: true, inverted: false, availableTravel: 480) == 0.45)
+        #expect(SidebarLayout.scrolledPosition(0.02, deltaY: 10, precise: false, inverted: false, availableTravel: 480) == 0)
+        #expect(SidebarLayout.scrolledPosition(0.98, deltaY: -10, precise: false, inverted: false, availableTravel: 480) == 1)
+        #expect(SidebarLayout.scrolledPosition(0.5, deltaY: 3, precise: false, inverted: false, availableTravel: 0) == nil)
+        #expect(SidebarLayout.scrolledPosition(0.5, deltaY: .nan, precise: false, inverted: false, availableTravel: 480) == nil)
+    }
+
+    @Test func changingOneSidebarPositionPreservesOtherDisplaysAndGlobalSettings() throws {
+        let suite = "SidebarScrollPosition-\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(false, forKey: "sidebarEnabled")
+        defaults.set(0.33, forKey: "sidebarPosition")
+        var first = SidebarConfiguration.factoryDefaults
+        first.enabled = false
+        first.side = .left
+        first.snapDistance = 460
+        first.position = 0.2
+        var second = SidebarConfiguration.factoryDefaults
+        second.position = 0.7
+        SidebarSettings.save(first, for: "A", name: "A", in: defaults)
+        SidebarSettings.save(second, for: "B", name: "B", in: defaults)
+        SidebarSettings.savePosition(0.8, for: "A", in: defaults)
+        first.position = 0.8
+        #expect(SidebarSettings.configuration(for: "A", in: defaults) == first)
+        #expect(SidebarSettings.configuration(for: "B", in: defaults) == second)
+        #expect(defaults.double(forKey: "sidebarPosition") == 0.33)
+        SidebarSettings.savePosition(0.4, for: nil, in: defaults)
+        #expect(defaults.double(forKey: "sidebarPosition") == 0.4)
+        #expect(!defaults.bool(forKey: "sidebarEnabled"))
+        #expect(SidebarSettings.configuration(for: "A", in: defaults) == first)
+        #expect(SidebarSettings.configuration(for: "B", in: defaults) == second)
+    }
+
     @Test func settingsHeightFitsContentAndTheActualWindowsScreen() {
         #expect(PreferencesFormSizing.height(contentHeight: 610, screenHeight: 1000,
                                              windowHeight: 750, viewportHeight: 660) == 610)
@@ -594,6 +640,122 @@ struct SidebarTests {
         }
     }
 
+    @MainActor private func primaryClick(_ view: SidebarPointerRegion.PointerView, count: Int,
+                                         time: TimeInterval, modifiers: NSEvent.ModifierFlags = []) throws {
+        let point = CGPoint(x: 10, y: 10)
+        let down = try #require(NSEvent.mouseEvent(with: .leftMouseDown, location: point,
+            modifierFlags: modifiers, timestamp: time, windowNumber: 0, context: nil,
+            eventNumber: count, clickCount: count, pressure: 1))
+        let up = try #require(NSEvent.mouseEvent(with: .leftMouseUp, location: point,
+            modifierFlags: modifiers, timestamp: time + 0.001, windowNumber: 0, context: nil,
+            eventNumber: count, clickCount: count, pressure: 0))
+        view.mouseDown(with: down)
+        view.mouseUp(with: up)
+    }
+
+    @MainActor @Test func doubleClickMaximisesOnceWithoutFiringTheMappedSingleAction() throws {
+        let view = SidebarPointerRegion.PointerView(frame: CGRect(x: 0, y: 0, width: 86, height: 86))
+        var singles = 0, maximises = 0
+        view.doubleClickTarget = SidebarWindowID(pid: 42, windowID: 1)
+        view.onMouseClick = { _ in singles += 1 }
+        view.onDoubleClick = { maximises += 1 }
+        try primaryClick(view, count: 1, time: 1)
+        #expect(singles == 0 && maximises == 0)
+        try primaryClick(view, count: 2, time: 1 + SidebarClickGate.interval / 2)
+        view.commitPendingClick()
+        #expect(singles == 0 && maximises == 1)
+    }
+
+    @MainActor @Test func groupedClicksWorkAgainWhenActionFinishesWithoutMovingTheMouse() throws {
+        let view = SidebarPointerRegion.PointerView(frame: CGRect(x: 0, y: 0, width: 86, height: 86))
+        view.doubleClickTarget = SidebarWindowID(pid: 42, windowID: 1)
+        var busy = false
+        var singles = 0, maximises = 0
+        view.onMouseClick = { _ in if !busy { singles += 1 } }
+        view.onDoubleClick = { maximises += 1; busy = true }
+        try primaryClick(view, count: 1, time: 1)
+        try primaryClick(view, count: 2, time: 1 + SidebarClickGate.interval / 2)
+        #expect(maximises == 1 && singles == 0)
+        try primaryClick(view, count: 3, time: 1 + SidebarClickGate.interval * 0.75)
+        #expect(singles == 0) // The inventory ignores clicks while its action is busy.
+        busy = false
+        try primaryClick(view, count: 4, time: 1 + SidebarClickGate.interval * 0.9)
+        #expect(singles == 1 && maximises == 1)
+    }
+
+    @MainActor @Test func secondClickAfter230MillisecondsRunsAsASingleClick() throws {
+        let view = SidebarPointerRegion.PointerView(frame: CGRect(x: 0, y: 0, width: 86, height: 86))
+        var singles = 0, maximises = 0
+        view.doubleClickTarget = SidebarWindowID(pid: 42, windowID: 1)
+        view.onMouseClick = { _ in singles += 1 }
+        view.onDoubleClick = { maximises += 1 }
+        try primaryClick(view, count: 1, time: 1)
+        try primaryClick(view, count: 2, time: 1 + SidebarClickGate.interval + 0.05)
+        #expect(singles == 2 && maximises == 0)
+    }
+
+    @MainActor @Test func singleClickFallbackAndModifierClicksKeepTheirMappedAction() throws {
+        let view = SidebarPointerRegion.PointerView(frame: CGRect(x: 0, y: 0, width: 86, height: 86))
+        var singles = 0, maximises = 0
+        view.doubleClickTarget = SidebarWindowID(pid: 42, windowID: 1)
+        view.onMouseClick = { _ in singles += 1 }
+        view.onDoubleClick = { maximises += 1 }
+        try primaryClick(view, count: 1, time: 1)
+        view.commitPendingClick()
+        #expect(singles == 1)
+        try primaryClick(view, count: 1, time: 2, modifiers: .shift)
+        #expect(singles == 2 && maximises == 0)
+        try primaryClick(view, count: 1, time: 3)
+        view.doubleClickTarget = SidebarWindowID(pid: 42, windowID: 2)
+        view.commitPendingClick()
+        #expect(singles == 2 && maximises == 0)
+    }
+
+    @MainActor @Test func draggingAndEscapeCancelDeferredClickActions() throws {
+        let view = SidebarPointerRegion.PointerView(frame: CGRect(x: 0, y: 0, width: 86, height: 86))
+        var singles = 0, maximises = 0, drags = 0
+        view.doubleClickTarget = SidebarWindowID(pid: 42, windowID: 1)
+        view.onClick = { singles += 1 }
+        view.onDoubleClick = { maximises += 1 }
+        view.onDrag = { _, _ in drags += 1 }
+        try primaryClick(view, count: 1, time: 1)
+        let down = try #require(NSEvent.mouseEvent(with: .leftMouseDown, location: CGPoint(x: 10, y: 10),
+            modifierFlags: [], timestamp: 1 + SidebarClickGate.interval / 2, windowNumber: 0,
+            context: nil, eventNumber: 2, clickCount: 2, pressure: 1))
+        let drag = try #require(NSEvent.mouseEvent(with: .leftMouseDragged, location: CGPoint(x: 30, y: 10),
+            modifierFlags: [], timestamp: down.timestamp + 0.01, windowNumber: 0,
+            context: nil, eventNumber: 2, clickCount: 2, pressure: 1))
+        view.mouseDown(with: down)
+        view.mouseDragged(with: drag)
+        view.commitPendingClick()
+        #expect(drags == 1 && singles == 0 && maximises == 0)
+        try primaryClick(view, count: 1, time: 3)
+        view.cancelOperation(nil)
+        view.commitPendingClick()
+        #expect(singles == 0 && maximises == 0)
+    }
+
+    @MainActor @Test func aDoubleClickRequiresAnInBoundsClickRelease() throws {
+        for (point, releaseCount) in [(CGPoint(x: 100, y: 10), 2), (CGPoint(x: 10, y: 10), 0)] {
+            let view = SidebarPointerRegion.PointerView(frame: CGRect(x: 0, y: 0, width: 86, height: 86))
+            var actions = 0
+            view.doubleClickTarget = SidebarWindowID(pid: 42, windowID: 1)
+            view.onClick = { actions += 1 }
+            view.onDoubleClick = { actions += 1 }
+            try primaryClick(view, count: 1, time: 1)
+            let down = try #require(NSEvent.mouseEvent(with: .leftMouseDown, location: CGPoint(x: 10, y: 10),
+                modifierFlags: [], timestamp: 1 + SidebarClickGate.interval / 2,
+                windowNumber: 0, context: nil, eventNumber: 2, clickCount: 2, pressure: 1))
+            let up = try #require(NSEvent.mouseEvent(with: .leftMouseUp, location: point,
+                modifierFlags: [], timestamp: down.timestamp + 0.001, windowNumber: 0,
+                context: nil, eventNumber: 2, clickCount: releaseCount, pressure: 0))
+            view.mouseDown(with: down)
+            view.mouseUp(with: up)
+            view.commitPendingClick()
+            #expect(actions == 0)
+        }
+    }
+
     @MainActor @Test func menuStateRefreshesWindowControlsAndClearsThemForKeyboardMode() {
         let app = Application(NSRunningApplication.current)
         let window = Window(AXUIElementCreateApplication(getpid()), app, cachedTitle: "Example")
@@ -874,13 +1036,16 @@ struct SidebarTests {
         let initialSize = panel.frame.size
         for index in 0..<12 {
             let row = index % 2 == 0 ? first : second
-            // Alternate between the title and action-button region without waiting for a scan.
-            let x = index % 3 == 0 ? row.bounds.maxX - 15 : row.bounds.midX
+            // Alternate between the title, minimise/restore, and close regions without waiting for a scan.
+            let zone = index % 3
+            let x = zone == 0 ? row.bounds.midX : row.bounds.maxX - (zone == 1 ? 45 : 15)
             let point = panel.convertPoint(toScreen: row.convert(CGPoint(x: x, y: row.bounds.midY), to: nil))
             let target = CyclePanelController.sidebarPointerTarget(at: point, items: state.items,
                 anchors: anchors, hideAnchor: hideAnchor)
             let id = CyclePanelItem.ID.window(index % 2 == 0 ? 10 : 20)
-            #expect(target == (index % 3 == 0 ? .windowAction(id) : .row(id)))
+            let expected: SidebarPointerTarget = zone == 0 ? .row(id)
+                : zone == 1 ? .windowAction(id) : .windowClose(id)
+            #expect(target == expected)
             state.setSidebarPointerTarget(target)
             #expect(state.currentWindow?.cgWindowID == (index % 2 == 0 ? 10 : 20))
             #expect(state.sidebarPointerTarget == target)
@@ -903,7 +1068,7 @@ struct SidebarTests {
             eventNumber: 0, clickCount: 0, pressure: 0))
         first.mouseMoved(with: staleMove)
         #expect(state.currentWindow?.cgWindowID == 20)
-        #expect(state.sidebarPointerTarget == .row(.window(20)))
+        #expect(state.sidebarPointerTarget == .windowClose(.window(20)))
         let footer = try #require(hideAnchor)
         let footerPoint = panel.convertPoint(toScreen: footer.convert(
             CGPoint(x: footer.bounds.midX, y: footer.bounds.midY), to: nil))

@@ -13,6 +13,7 @@ struct CyclePanelView: View {
     var onActivate: (CyclePanelItem.ID) -> Void = { _ in }
     var onAnchor: (CyclePanelItem.ID, NSView?) -> Void = { _, _ in }
     var onWindowAction: (CyclePanelItem.ID) -> Void = { _ in }
+    var onWindowClose: (CyclePanelItem.ID) -> Void = { _ in }
     var onToggleAppVisibility: () -> Void = {}
     var onHideAnchor: (NSView?) -> Void = { _ in }
     var onQuitApp: () -> Void = {}
@@ -145,6 +146,19 @@ struct CyclePanelView: View {
                                      : "\(actionTitle) window")
                           : "This window cannot be minimised or restored")
                     .accessibilityLabel("\(actionTitle) \(item.title)")
+
+                    Button { onWindowClose(item.id) } label: {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 11, weight: .semibold))
+                            .frame(width: SidebarLayout.menuWindowActionWidth, height: SidebarLayout.menuRowHeight)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(SidebarActionButtonStyle(
+                        isHovered: state.sidebarPointerTarget == .windowClose(item.id)))
+                    .focusEffectDisabled()
+                    .disabled(!status.canClose)
+                    .help(status.canClose ? "Close window" : "This window cannot be closed")
+                    .accessibilityLabel("Close \(item.title)")
                 }
             }
             .background(RoundedRectangle(cornerRadius: 6)
@@ -216,7 +230,7 @@ struct CyclePanelRow: View {
     var showsSelectionBackground = true
     
     var body: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: isCompact ? 0 : 12) {
             if !isCompact {
                 Circle()
                     .fill(isSelected ? Color.accentColor : Color.clear)
@@ -228,9 +242,10 @@ struct CyclePanelRow: View {
                 .foregroundStyle(isCompact ? Color.primary : (isSelected ? .white : .primary))
                 .lineLimit(1)
             
-            Spacer()
+            Spacer(minLength: isCompact ? 0 : 8)
         }
-        .padding(.horizontal, isCompact ? 10 : 16)
+        .padding(.leading, isCompact ? 10 : 16)
+        .padding(.trailing, isCompact ? 4 : 16)
         .frame(height: isCompact ? SidebarLayout.menuRowHeight : 44)
         .contentShape(Rectangle())
         .help(title)

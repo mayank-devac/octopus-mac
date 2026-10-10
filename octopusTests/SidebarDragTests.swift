@@ -6,6 +6,80 @@ struct SidebarDragTests {
     private let screen = CGRect(x: -1440, y: 120, width: 1440, height: 900)
     private let area = CGRect(x: -1440, y: 160, width: 1440, height: 830)
 
+    @Test func stationaryCornerPreviewChangesWithModifierPressAndRelease() throws {
+        let chord = SidebarCornerSnapShortcut.defaultModifiers
+        let points: [(CGPoint, SidebarSnapTarget)] = [
+            (CGPoint(x: screen.minX + 10, y: screen.maxY - 10), .topLeft),
+            (CGPoint(x: screen.maxX - 10, y: screen.maxY - 10), .topRight),
+            (CGPoint(x: screen.minX + 10, y: screen.minY + 10), .bottomLeft),
+            (CGPoint(x: screen.maxX - 10, y: screen.minY + 10), .bottomRight)
+        ]
+        for (point, corner) in points {
+            func resolve(_ flags: NSEvent.ModifierFlags) -> SidebarPlacementGeometry.Decision? {
+                SidebarPlacementGeometry.resolve(at: point, screen: screen, workArea: area,
+                    originalSize: CGSize(width: 500, height: 300), sourceDisplay: screen, canResize: true,
+                    distance: 120,
+                    cornersEnabled: SidebarCornerSnapShortcut.matches(flags, required: chord),
+                    moveSize: .fullScreen)
+            }
+            let free = try #require(resolve([]))
+            let preview = try #require(resolve(chord))
+            #expect(preview.snap == corner && preview.resize)
+            #expect(preview.frame == SidebarPlacementGeometry.frame(for: corner, in: area))
+            #expect(resolve(chord) == preview) // Drop uses the same resolver and geometry.
+            #expect(resolve([]) == free && free.snap == nil && !free.resize)
+        }
+    }
+
+    @Test func visibleDisplayFreeMovesUsePreferenceWhileExplicitSnapsTakePrecedence() throws {
+        let original = CGSize(width: 500, height: 300)
+        let other = CGRect(x: 0, y: 0, width: 1920, height: 1080)
+        func resolve(_ point: CGPoint, source: CGRect?, preference: VisibleDisplayMoveSize,
+                     canResize: Bool = true) throws -> SidebarPlacementGeometry.Decision {
+            try #require(SidebarPlacementGeometry.resolve(at: point, screen: screen, workArea: area,
+                originalSize: original, sourceDisplay: source, canResize: canResize, distance: 120,
+                cornersEnabled: false, moveSize: preference))
+        }
+        let middle = CGPoint(x: screen.midX, y: screen.midY)
+        let full = try resolve(middle, source: other, preference: .fullScreen)
+        #expect(full.frame == area && full.resize && full.snap == nil)
+        let originalMove = try resolve(middle, source: other, preference: .original)
+        #expect(originalMove.frame.size == original && originalMove.resize && originalMove.snap == nil)
+        for (source, preference, resizable) in [(Optional(screen), VisibleDisplayMoveSize.fullScreen, true), (nil, .fullScreen, true),
+                                               (Optional(other), .fullScreen, false)] {
+            let move = try resolve(middle, source: source, preference: preference, canResize: resizable)
+            #expect(move.frame.size == original && !move.resize)
+        }
+        let half = try resolve(CGPoint(x: screen.minX + 10, y: screen.midY), source: other, preference: .fullScreen)
+        #expect(half.snap == .left && half.frame == SidebarPlacementGeometry.frame(for: .left, in: area))
+        #expect(SidebarPlacementGeometry.sourceDisplay(for: CGRect(x: 100, y: 100, width: 600, height: 400),
+            displays: [screen, other]) == other)
+    }
+
+    @Test func visibleDisplayMovePreferenceDefaultsToFullScreenAndPersists() throws {
+        let name = "SidebarDragTests.moveSize.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: name))
+        defer { defaults.removePersistentDomain(forName: name) }
+        #expect(WindowLayoutSettings.moveSize(in: defaults) == .fullScreen)
+        defaults.set(VisibleDisplayMoveSize.original.rawValue, forKey: WindowLayoutSettings.moveSizeKey)
+        #expect(WindowLayoutSettings.moveSize(in: try #require(UserDefaults(suiteName: name))) == .original)
+        defaults.set("invalid", forKey: WindowLayoutSettings.moveSizeKey)
+        #expect(WindowLayoutSettings.moveSize(in: defaults) == .fullScreen)
+    }
+
+    @Test(arguments: [SidebarSnapTarget.topLeft, .topRight, .bottomLeft, .bottomRight])
+    func cornerWriterKeepsAppClampsAnchored(_ corner: SidebarSnapTarget) {
+        let workArea = CGRect(x: -1400, y: -400, width: 1400, height: 900)
+        let quarter = SidebarPlacementGeometry.cornerFrame(corner, size: CGSize(width: 700, height: 450), inAX: workArea)
+        let request = SidebarPlacementRequest(frame: quarter, workArea: workArea, resize: true, desktopGeneration: 0, snap: corner)
+        var actual = workArea
+        let result = SidebarPlacementWriter.apply(request, canContinue: { true }, readFrame: { actual },
+            writePosition: { actual.origin = $0; return true },
+            writeSize: { actual.size = CGSize(width: max(800, $0.width), height: max(550, $0.height)); return true }, wait: {})
+        #expect(result == .placed(actual, adjusted: true))
+        #expect(actual == SidebarPlacementGeometry.cornerFrame(corner, size: CGSize(width: 800, height: 550), inAX: workArea))
+    }
+
     @Test func foregroundActivationYieldsBeforeRequestingAndHonoursRejection() {
         #expect(SidebarFocusActivation.canRequestAfterRaise(.cannotComplete))
         #expect(!SidebarFocusActivation.canRequestAfterRaise(.invalidUIElement))
@@ -55,17 +129,17 @@ struct SidebarDragTests {
     }
 
     @Test func screenEdgesAndCornersChooseTheExpectedLayouts() {
-        #expect(SidebarPlacementGeometry.snap(at: CGPoint(x: -1430, y: 1010), screen: screen) == .topLeft)
-        #expect(SidebarPlacementGeometry.snap(at: CGPoint(x: -10, y: 1010), screen: screen) == .topRight)
-        #expect(SidebarPlacementGeometry.snap(at: CGPoint(x: -1430, y: 130), screen: screen) == .bottomLeft)
-        #expect(SidebarPlacementGeometry.snap(at: CGPoint(x: -10, y: 130), screen: screen) == .bottomRight)
+        #expect(SidebarPlacementGeometry.snap(at: CGPoint(x: -1430, y: 1010), screen: screen) == nil)
+        #expect(SidebarPlacementGeometry.snap(at: CGPoint(x: -10, y: 1010), screen: screen) == nil)
+        #expect(SidebarPlacementGeometry.snap(at: CGPoint(x: -1430, y: 130), screen: screen) == nil)
+        #expect(SidebarPlacementGeometry.snap(at: CGPoint(x: -10, y: 130), screen: screen) == nil)
         #expect(SidebarPlacementGeometry.snap(at: CGPoint(x: -1420, y: 600), screen: screen) == .left)
         #expect(SidebarPlacementGeometry.snap(at: CGPoint(x: -20, y: 600), screen: screen) == .right)
-        #expect(SidebarPlacementGeometry.snap(at: CGPoint(x: -700, y: 1000), screen: screen) == .maximize)
+        #expect(SidebarPlacementGeometry.snap(at: CGPoint(x: -700, y: 1000), screen: screen) == .top)
         #expect(SidebarPlacementGeometry.snap(at: CGPoint(x: -700, y: 140), screen: screen) == .bottom)
         #expect(SidebarPlacementGeometry.snap(at: CGPoint(x: -700, y: 600), screen: screen) == nil)
         #expect(SidebarPlacementGeometry.snap(at: CGPoint(x: 5, y: 600), screen: screen) == nil)
-        #expect(SidebarPlacementGeometry.snap(at: CGPoint(x: -1400, y: 980), screen: screen) == .topLeft)
+        #expect(SidebarPlacementGeometry.snap(at: CGPoint(x: -1400, y: 980), screen: screen) == nil)
     }
 
     @Test func layoutsReserveTheDockAndMenuBar() {
@@ -77,20 +151,17 @@ struct SidebarDragTests {
         for target in SidebarSnapTarget.allCases {
             #expect(area.contains(SidebarPlacementGeometry.frame(for: target, in: area)))
         }
-        #expect(SidebarPlacementGeometry.frame(for: .topLeft, in: area).maxY == area.maxY)
-        #expect(SidebarPlacementGeometry.frame(for: .bottomRight, in: area).minY == area.minY)
+        #expect(SidebarPlacementGeometry.frame(for: .top, in: area).maxY == area.maxY)
+        #expect(SidebarPlacementGeometry.frame(for: .bottom, in: area).minY == area.minY)
     }
 
     @Test func snappingStartsBeforeThePointerReachesTheBorderAndClearsWhenLeaving() {
         let points: [(CGPoint, SidebarSnapTarget)] = [
             (CGPoint(x: screen.minX + 120, y: screen.midY), .left),
             (CGPoint(x: screen.maxX - 120, y: screen.midY), .right),
-            (CGPoint(x: screen.midX, y: screen.maxY - 120), .maximize),
-            (CGPoint(x: screen.midX, y: screen.minY + 120), .bottom),
-            (CGPoint(x: screen.minX + 100, y: screen.maxY - 100), .topLeft),
-            (CGPoint(x: screen.maxX - 100, y: screen.maxY - 100), .topRight),
-            (CGPoint(x: screen.minX + 100, y: screen.minY + 100), .bottomLeft),
-            (CGPoint(x: screen.maxX - 100, y: screen.minY + 100), .bottomRight)]
+            (CGPoint(x: screen.midX, y: screen.maxY - 120), .top),
+            (CGPoint(x: screen.midX, y: screen.minY + 120), .bottom)
+        ]
         for (point, target) in points {
             #expect(SidebarPlacementGeometry.snap(at: point, screen: screen, distance: 120) == target)
         }
@@ -150,6 +221,28 @@ struct SidebarDragTests {
         let large = SidebarPlacementGeometry.freeFrame(at: CGPoint(x: -700, y: 500), size: CGSize(width: 1800, height: 1200), in: area)
         #expect(large.width == 1800 && large.height == 1200)
         #expect(large.maxY == area.maxY && large.minX == area.minX)
+    }
+
+    @Test func maximizeActionOnlySkipsAVisibleWindowAlreadyFillingTheWorkArea() {
+        let workArea = CGRect(x: -1440, y: 160, width: 1440, height: 830)
+        func target(frame: CGRect, resizable: Bool = true, minimized: Bool = false, hidden: Bool = false) -> SidebarPlacementTarget {
+            SidebarPlacementTarget(id: SidebarWindowID(pid: 42, windowID: 1), frame: frame,
+                canResize: resizable, isMinimized: minimized, isHidden: hidden, desktopGeneration: 0)
+        }
+        #expect(SidebarMaximizePolicy.disposition(target: target(frame: workArea), workArea: workArea,
+            displayIsFullScreen: false) == .noOp)
+        #expect(SidebarMaximizePolicy.disposition(target: target(frame: workArea, minimized: true), workArea: workArea,
+            displayIsFullScreen: false) == .place)
+        #expect(SidebarMaximizePolicy.disposition(target: target(frame: workArea, hidden: true), workArea: workArea,
+            displayIsFullScreen: false) == .place)
+        #expect(SidebarMaximizePolicy.disposition(target: target(frame: workArea.insetBy(dx: 10, dy: 10)), workArea: workArea,
+            displayIsFullScreen: false) == .place)
+        #expect(SidebarMaximizePolicy.disposition(target: target(frame: workArea.insetBy(dx: 10, dy: 10), resizable: false),
+            workArea: workArea, displayIsFullScreen: false) == .focus)
+        #expect(SidebarMaximizePolicy.disposition(target: nil, workArea: workArea,
+            displayIsFullScreen: false) == .focus)
+        #expect(SidebarMaximizePolicy.disposition(target: target(frame: workArea), workArea: workArea,
+            displayIsFullScreen: true) == .focus)
     }
 
     @Test func desktopMetadataNeverTreatsFullscreenOrMissingDataAsAnOrdinaryDesktop() {
@@ -234,20 +327,46 @@ struct SidebarDragTests {
         #expect(clicks == 1)
     }
 
-    @Test func placementUsesSizePositionSizeAndReadsTheActualResult() {
+    @Test func sameDisplayPlacementSkipsDisplayProbeAndWritesSizeOnce() {
         let request = request()
         var operations: [String] = []
         let result = SidebarPlacementWriter.apply(request, canContinue: { true },
             readFrame: { operations.append("read"); return request.frame },
             writePosition: { _ in operations.append("position"); return true },
             writeSize: { _ in operations.append("size"); return true })
-        // The opening read decides whether the window is already on the target display.
+        #expect(operations == ["size", "position", "read"])
+        #expect(result == .placed(request.frame, adjusted: false))
+    }
+
+    @Test func sameDisplayMaximizeDoesNotRepeatTheSizeWrite() {
+        let base = request()
+        let placement = SidebarPlacementRequest(frame: base.frame, workArea: base.workArea,
+            resize: true, desktopGeneration: base.desktopGeneration, snap: .maximize)
+        var sizeWrites = 0
+        let result = SidebarPlacementWriter.apply(placement, canContinue: { true },
+            readFrame: { placement.frame }, writePosition: { _ in true },
+            writeSize: { _ in sizeWrites += 1; return true })
+        #expect(sizeWrites == 1)
+        #expect(result == .placed(placement.frame, adjusted: false))
+    }
+
+    @Test func crossDisplayPlacementRepeatsSizeAfterMove() {
+        let base = request()
+        let request = SidebarPlacementRequest(frame: base.frame, workArea: base.workArea, resize: true,
+            desktopGeneration: base.desktopGeneration, crossesDisplay: true)
+        var operations: [String] = []
+        let result = SidebarPlacementWriter.apply(request, canContinue: { true },
+            readFrame: { operations.append("read"); return request.frame },
+            writePosition: { _ in operations.append("position"); return true },
+            writeSize: { _ in operations.append("size"); return true })
         #expect(operations == ["read", "size", "position", "size", "read"])
         #expect(result == .placed(request.frame, adjusted: false))
     }
 
     @Test func aWindowOnAnotherDisplayLandsOnTheTargetDisplayBeforeBeingResized() {
-        let request = request()
+        let base = request()
+        let request = SidebarPlacementRequest(frame: base.frame, workArea: base.workArea, resize: base.resize,
+            desktopGeneration: base.desktopGeneration, crossesDisplay: true)
         var frame = CGRect(x: -1400, y: 20, width: 1000, height: 700)
         var operations: [String] = []
         let result = SidebarPlacementWriter.apply(request, canContinue: { true }, readFrame: { frame },
@@ -259,7 +378,9 @@ struct SidebarDragTests {
     }
 
     @Test func droppedSizeWritesAreReassertedInsteadOfShiftingTheWindowToTheLeft() {
-        let request = request()
+        let base = request()
+        let request = SidebarPlacementRequest(frame: base.frame, workArea: base.workArea, resize: base.resize,
+            desktopGeneration: base.desktopGeneration, crossesDisplay: true)
         // The app ignores the first two size writes (the window is still changing display).
         var frame = CGRect(x: 0, y: 20, width: 1000, height: 700)
         var dropped = 2
@@ -278,7 +399,8 @@ struct SidebarDragTests {
     @Test func aSmallWindowCanGrowToTheFullSizeOfALargerTargetDisplay() {
         // Display 1 is 600 wide at x -600...0; the target display is 1000 wide at x 0...1000.
         let maximise = SidebarPlacementRequest(frame: CGRect(x: 0, y: 20, width: 1000, height: 700),
-            workArea: CGRect(x: 0, y: 20, width: 1000, height: 700), resize: true, desktopGeneration: 1)
+            workArea: CGRect(x: 0, y: 20, width: 1000, height: 700), resize: true,
+            desktopGeneration: 1, crossesDisplay: true)
         var frame = CGRect(x: -600, y: 20, width: 300, height: 400)
         let result = SidebarPlacementWriter.apply(maximise, canContinue: { true }, readFrame: { frame },
             writePosition: { frame.origin = $0; return true },
@@ -307,13 +429,13 @@ struct SidebarDragTests {
         #expect(result == .placed(request.frame, adjusted: false))
     }
 
-    @Test func appMinimumSizeIsReportedAndTheResultIsKeptReachable() {
+    @Test func nativeSizeFailureIsNotReportedAsAnAppMinimum() {
         let request = request()
         var frame = CGRect(x: 700, y: 20, width: 600, height: 500)
         let result = SidebarPlacementWriter.apply(request, canContinue: { true }, readFrame: { frame },
             writePosition: { position in frame.origin = position; return true }, writeSize: { _ in false }, wait: {})
         #expect(frame.maxX <= request.workArea.maxX)
-        #expect(result == .placed(frame, adjusted: true))
+        guard case .failed = result else { Issue.record("A refused setter must remain a failure"); return }
         #expect(result.message != nil)
     }
 

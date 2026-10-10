@@ -49,7 +49,7 @@ final class CyclePanelController: NSObject {
     var isKeyboardSwitcherVisible: Bool { panel.isVisible && presentation == .keyboard }
 
     private let panelContentWidth: CGFloat = 400
-    private let sidebarContentWidth: CGFloat = 280
+    private let sidebarContentWidth: CGFloat = 260
     private let maxPanelFrameHeightCap: CGFloat = 520
 
     // Keep these aligned with CyclePanelView.
@@ -98,6 +98,14 @@ final class CyclePanelController: NSObject {
             let focusOrRestore = self.state.sidebarAppIsHidden || status.isMinimized || !status.isOnScreen
             guard status.canMinimize || (focusOrRestore && !status.isMinimized) else { return }
             self.onSidebarWindowAction?(focusOrRestore ? .focus(target) : .minimize(target, requireFocused: false))
+        }, onWindowClose: { [weak self] itemID in
+            guard let self, self.presentation == .sidebar, let pid = self.currentApplication?.pid,
+                  case .window(let id) = itemID,
+                  self.state.sidebarWindowStates[id]?.canClose == true else { return }
+            if let event = NSApp.currentEvent,
+               (event.type == .leftMouseDown || event.type == .leftMouseUp),
+               !self.sidebarActionClickGate.accepts(timestamp: event.timestamp, clickCount: event.clickCount) { return }
+            self.onSidebarWindowAction?(.close(SidebarWindowID(pid: pid, windowID: id)))
         }, onToggleAppVisibility: { [weak self] in
             guard let self, self.presentation == .sidebar,
                   let pid = self.currentApplication?.pid,
@@ -140,6 +148,7 @@ final class CyclePanelController: NSObject {
     func showSwitcher(for application: Application, startIndex: Int = 0) {
         if presentation == .sidebar { hideSwitcher() }
         presentation = .keyboard
+        panel.level = .floating
         panel.hidesOnDeactivate = true
         currentApplication = application
         state.setApplication(application)
@@ -188,6 +197,7 @@ final class CyclePanelController: NSObject {
 
     func showSidebar(for entry: SidebarEntry, icon: CGRect, screen: CGRect, side: SidebarSide) {
         guard !isKeyboardSwitcherVisible, !entry.windows.isEmpty else { return }
+        panel.level = SidebarWindowLevels.menu
         let isRefresh = sidebarEntryID == entry.id
         let selectedID = isRefresh ? state.currentWindow?.cgWindowID : nil
         presentation = .sidebar
@@ -233,8 +243,9 @@ final class CyclePanelController: NSObject {
             let rect = window.convertToScreen(view.convert(visibleBounds, to: nil))
             if rect.contains(point) {
                 let fullRect = window.convertToScreen(view.convert(view.bounds, to: nil))
-                return point.x >= fullRect.maxX - SidebarLayout.menuWindowActionWidth
-                    ? .windowAction(item.id) : .row(item.id)
+                let actionWidth = SidebarLayout.menuWindowActionWidth
+                if point.x >= fullRect.maxX - actionWidth { return .windowClose(item.id) }
+                return point.x >= fullRect.maxX - actionWidth * 2 ? .windowAction(item.id) : .row(item.id)
             }
         }
         if let view = hideAnchor, let window = view.window {

@@ -12,12 +12,25 @@ final class SidebarDragController: NSObject, NSDraggingSource {
     private var title = ""
     private var dropPanels: [NSPanel] = []
     private var previewPanel: NSPanel?
+    private var pairedPreviewPanel: NSPanel?
+    private var pairTarget: SidebarIconPairTarget?
+    private var pairDirection: PairDropDirection?
+    private var pairPreparation: WindowPairPreparation?
+    private var pairPreparationToken: WindowLayoutBatchToken?
+    private var pairPreparationGeneration = 0
+    private var allowPairing = false
     private var dragIconPanel: NSPanel?
     private var dragIcon: NSImage?
     private var feedbackPanel: NSPanel?
     private var feedbackWork: DispatchWorkItem?
     private var generation = 0
     private var snapDistance = SidebarSettings.defaultSnapDistance
+    private var cornerModifiers: NSEvent.ModifierFlags = []
+    private var moveSize = VisibleDisplayMoveSize.fullScreen
+    private var sourceDisplay: CGRect?
+    private var placementRequest: SidebarPlacementRequest?
+    private var modifierMonitor: Any?
+    private var globalModifierMonitor: Any?
     var snapDistanceProvider: () -> Double = { SidebarSettings.snapDistance() }
     var excludedFrames: () -> [CGRect] = { [] }
     var desktopDropTarget: (CGPoint, SidebarDesktop?) -> SidebarDesktopDropTarget? = { _, _ in nil }
@@ -25,6 +38,11 @@ final class SidebarDragController: NSObject, NSDraggingSource {
     var onSidebarDragUpdate: ((CGPoint) -> Void)?
     var onDesktopHover: ((UInt64?) -> Void)?
     var onInteractionChange: ((Bool) -> Void)?
+    var pairTargetsProvider: () -> [SidebarIconPairTarget] = { [] }
+    var sourceIsVisible: (SidebarWindowID) -> Bool = { _ in false }
+    var onPairHover: (SidebarIconPairTarget?, PairDropDirection?) -> Void = { _, _ in }
+    var preparePair: ((SidebarWindowID, SidebarWindowID, @escaping (WindowPairPreparation?) -> Void) -> WindowLayoutBatchToken?)?
+    var onPairDrop: ((WindowPairSnapRequest) -> Void)?
     var isActive: Bool { sessionID != nil }
 
     init(inventory: SidebarWindowInventory) {
@@ -32,19 +50,26 @@ final class SidebarDragController: NSObject, NSDraggingSource {
         super.init()
     }
 
-    func begin(id: SidebarWindowID, title: String, source: NSView, event: NSEvent, allowDesktopTransfer: Bool = false) {
+    func begin(id: SidebarWindowID, title: String, source: NSView, event: NSEvent,
+               allowDesktopTransfer: Bool = false, allowPairing: Bool = false) {
         guard !isActive, AXIsProcessTrusted() else { return }
         dismissFeedback()
         // Preview and drop must use the same distance throughout this drag.
         snapDistance = SidebarSettings.normalizedSnapDistance(snapDistanceProvider())
+        cornerModifiers = MouseShortcutStore.shared.cornerSnapModifiers
+        moveSize = WindowLayoutSettings.moveSize()
+        sourceDisplay = nil
         generation += 1
         let nonce = UUID()
         sessionID = nonce
+        watchModifiers()
         windowID = id
         self.title = title
         target = nil
         transferTarget = nil
         self.allowDesktopTransfer = allowDesktopTransfer
+        self.allowPairing = allowPairing
+        if allowPairing { NotificationCenter.default.post(name: WindowLayoutController.userActionNotification, object: ProcessInfo.processInfo.systemUptime) }
         dragIcon = NSRunningApplication(processIdentifier: id.pid)?.icon
             ?? NSImage(systemSymbolName: "app.fill", accessibilityDescription: nil)
         onInteractionChange?(true)
@@ -64,6 +89,10 @@ final class SidebarDragController: NSObject, NSDraggingSource {
                 return
             }
             self.target = placement
+            if let placement {
+                let original = SidebarPlacementGeometry.flip(placement.frame, primaryTop: NSScreen.screens.first?.frame.maxY ?? 0)
+                self.sourceDisplay = SidebarPlacementGeometry.sourceDisplay(for: original, displays: NSScreen.screens.map(\.frame))
+            }
             self.transferTarget = transfer
             _ = self.update(at: NSEvent.mouseLocation)
         }
@@ -89,22 +118,39 @@ final class SidebarDragController: NSObject, NSDraggingSource {
     }
 
     func place(_ id: SidebarWindowID, at snap: SidebarSnapTarget) {
-        guard !isActive else { return }
+        guard !isActive, !inventory.hasPendingAction(for: id.pid) else { return }
+        // A new explicit placement supersedes earlier preparation and any pending automatic layout.
+        generation += 1
         let requestGeneration = generation
+        NotificationCenter.default.post(name: WindowLayoutController.userActionNotification,
+            object: ProcessInfo.processInfo.systemUptime)
         inventory.preparePlacement(id) { [weak self] target in
             guard let self, !self.isActive, self.generation == requestGeneration else { return }
+            let primaryTop = NSScreen.screens.first?.frame.maxY ?? 0
+            let original = target.map { SidebarPlacementGeometry.flip($0.frame, primaryTop: primaryTop) }
+            let screen = original.flatMap { original in NSScreen.screens.max {
+                $0.frame.intersection(original).area < $1.frame.intersection(original).area
+            } }
+            let workArea = screen.map { SidebarPlacementGeometry.flip($0.visibleFrame, primaryTop: primaryTop) }
+            let displayIsFullScreen = screen.map {
+                self.inventory.fullScreenDisplays.contains(SidebarSettings.displayID($0) ?? 0)
+            } ?? false
+            if snap == .maximize {
+                switch SidebarMaximizePolicy.disposition(target: target, workArea: workArea,
+                    displayIsFullScreen: displayIsFullScreen) {
+                case .noOp: return
+                case .focus: self.inventory.perform(.focus(id)); return
+                case .place: break
+                }
+            }
             guard let target else { self.showFeedback("This window cannot be moved on the current desktop."); return }
             guard target.canResize else { self.showFeedback("This window has a fixed size. Drag it to move it."); return }
-            let primaryTop = NSScreen.screens.first?.frame.maxY ?? 0
-            let original = SidebarPlacementGeometry.flip(target.frame, primaryTop: primaryTop)
-            guard let screen = NSScreen.screens.max(by: {
-                $0.frame.intersection(original).area < $1.frame.intersection(original).area
-            }), !self.inventory.fullScreenDisplays.contains(SidebarSettings.displayID(screen) ?? 0) else { return }
+            guard let screen, !displayIsFullScreen, let workArea else { return }
             let frame = SidebarPlacementGeometry.frame(for: snap, in: screen.visibleFrame)
             self.inventory.perform(.place(id, SidebarPlacementRequest(
                 frame: SidebarPlacementGeometry.flip(frame, primaryTop: primaryTop),
-                workArea: SidebarPlacementGeometry.flip(screen.visibleFrame, primaryTop: primaryTop),
-                resize: true, desktopGeneration: target.desktopGeneration)))
+                workArea: workArea,
+                resize: true, desktopGeneration: target.desktopGeneration, snap: snap)))
         }
     }
 
@@ -143,6 +189,18 @@ final class SidebarDragController: NSObject, NSDraggingSource {
 
     func ignoreModifierKeys(for session: NSDraggingSession) -> Bool { true }
 
+    private func watchModifiers() {
+        // Native drag callbacks need not fire for a stationary pointer. These monitors live only
+        // for the session and pass events through, preserving Escape and native drag handling.
+        modifierMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
+            _ = self?.update(at: NSEvent.mouseLocation, scroll: false, modifiers: event.modifierFlags)
+            return event
+        }
+        globalModifierMonitor = NSEvent.addGlobalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
+            _ = self?.update(at: NSEvent.mouseLocation, scroll: false, modifiers: event.modifierFlags)
+        }
+    }
+
     func draggingSession(_ session: NSDraggingSession, movedTo screenPoint: NSPoint) {
         _ = update(at: screenPoint)
     }
@@ -170,10 +228,26 @@ final class SidebarDragController: NSObject, NSDraggingSource {
         return info.draggingPasteboard.string(forType: Self.pasteboardType) == nonce.uuidString
     }
 
-    fileprivate func update(at point: CGPoint, scroll: Bool = true) -> NSDragOperation {
+    fileprivate func update(at point: CGPoint, scroll: Bool = true, modifiers: NSEvent.ModifierFlags? = nil) -> NSDragOperation {
+        placementRequest = nil
         guard isActive else { return [] }
         guard AXIsProcessTrusted() else { cancel(); return [] }
         if scroll && allowDesktopTransfer { onSidebarDragUpdate?(point) }
+        // Resolve icon intent before the broad section callback can open a Desktop-transfer popup.
+        if allowPairing, let source = windowID {
+            switch SidebarIconPairDrop.resolve(at: point, source: source, sourceVisible: sourceIsVisible(source),
+                targets: pairTargetsProvider(), previousTarget: pairTarget?.window, previousDirection: pairDirection) {
+            case .pair(let candidate, let direction):
+                return updatePair(candidate, direction: direction, source: source, point: point)
+            case .blocked:
+                clearPair()
+                previewPanel?.orderOut(nil)
+                // Keep the custom drag image under the pointer when it passes over its own icon.
+                showDragIcon(at: point)
+                return []
+            case .other: clearPair()
+            }
+        }
         let destination = allowDesktopTransfer ? desktopDropTarget(point, transferTarget?.sourceDesktop) : nil
         if allowDesktopTransfer, sidebarDragContains(point) || destination != nil {
             previewPanel?.orderOut(nil)
@@ -196,19 +270,41 @@ final class SidebarDragController: NSObject, NSDraggingSource {
             previewPanel?.orderOut(nil)
             return []
         }
-        let snap = SidebarPlacementGeometry.snap(at: point, screen: screen.frame, distance: snapDistance)
-        guard snap == nil || target.canResize else {
+        let cornerSnapEnabled = SidebarCornerSnapShortcut.matches(
+            modifiers ?? NSEvent.modifierFlags, required: cornerModifiers)
+        guard let decision = SidebarPlacementGeometry.resolve(at: point, screen: screen.frame,
+            workArea: screen.visibleFrame, originalSize: target.frame.size, sourceDisplay: sourceDisplay,
+            canResize: target.canResize, distance: snapDistance, cornersEnabled: cornerSnapEnabled,
+            moveSize: moveSize) else {
             previewPanel?.orderOut(nil)
             return []
         }
-        let frame = snap.map { SidebarPlacementGeometry.frame(for: $0, in: screen.visibleFrame) }
-            ?? SidebarPlacementGeometry.freeFrame(at: point, size: target.frame.size, in: screen.visibleFrame)
-        showPreview(frame: frame, label: "\(title) · \(snap?.title ?? "Move window")", valid: true)
+        let primaryTop = NSScreen.screens.first?.frame.maxY ?? 0
+        placementRequest = SidebarPlacementRequest(frame: SidebarPlacementGeometry.flip(decision.frame, primaryTop: primaryTop),
+            workArea: SidebarPlacementGeometry.flip(screen.visibleFrame, primaryTop: primaryTop),
+            resize: decision.resize, desktopGeneration: target.desktopGeneration, snap: decision.snap,
+            crossesDisplay: sourceDisplay != screen.frame)
+        showPreview(frame: decision.frame,
+            label: "\(title) · \(decision.snap?.title ?? (decision.resize && moveSize == .fullScreen ? "Full screen" : "Move window"))", valid: true)
         return .private
     }
 
     fileprivate func drop(at point: CGPoint) -> Bool {
-        guard update(at: point, scroll: false) == .private else { return false }
+        guard update(at: point, scroll: false) == .private else {
+            if pairTarget != nil, pairDirection != nil {
+                showFeedback(pairPreparation == nil
+                    ? "These windows could not be verified for pairing. Try again once both are visible."
+                    : "These windows cannot fit in the requested halves. Their positions were kept.")
+            }
+            return false
+        }
+        if let pairTarget, let direction = pairDirection, pairPreparation != nil, let source = windowID, let onPairDrop {
+            let request = WindowPairSnapRequest(source: source, target: pairTarget.window, direction: direction,
+                startedAt: ProcessInfo.processInfo.systemUptime)
+            finish()
+            onPairDrop(request)
+            return true
+        }
         if allowDesktopTransfer, let destination = desktopDropTarget(point, transferTarget?.sourceDesktop), let transferTarget {
             let request = SidebarDesktopTransferRequest(sourceDesktop: transferTarget.sourceDesktop,
                 destinationDesktop: destination.desktop, desktopGeneration: transferTarget.desktopGeneration)
@@ -216,15 +312,9 @@ final class SidebarDragController: NSObject, NSDraggingSource {
             inventory.moveToDesktop(transferTarget.id, request: request)
             return true
         }
-        guard let target,
-              let screen = NSScreen.screens.first(where: { $0.frame.contains(point) }) else { return false }
-        let snap = SidebarPlacementGeometry.snap(at: point, screen: screen.frame, distance: snapDistance)
-        let frame = snap.map { SidebarPlacementGeometry.frame(for: $0, in: screen.visibleFrame) }
-            ?? SidebarPlacementGeometry.freeFrame(at: point, size: target.frame.size, in: screen.visibleFrame)
-        let primaryTop = NSScreen.screens.first?.frame.maxY ?? 0
-        let request = SidebarPlacementRequest(frame: SidebarPlacementGeometry.flip(frame, primaryTop: primaryTop),
-            workArea: SidebarPlacementGeometry.flip(screen.visibleFrame, primaryTop: primaryTop),
-            resize: snap != nil, desktopGeneration: target.desktopGeneration)
+        // Commit the exact decision just displayed. Inactive-Desktop transfers returned above
+        // and remain transfer-only: no frame writes or focus request use the move-size preference.
+        guard let target, let request = placementRequest else { return false }
         // Remove overlays before activating the target app.
         finish()
         inventory.perform(.place(target.id, request))
@@ -243,6 +333,62 @@ final class SidebarDragController: NSObject, NSDraggingSource {
         previewPanel = panel
     }
 
+    // A target change pays one bounded metadata read; pointer movement only updates pure geometry.
+    private func updatePair(_ candidate: SidebarIconPairTarget, direction: PairDropDirection?,
+                            source: SidebarWindowID, point: CGPoint) -> NSDragOperation {
+        onDesktopHover?(nil)
+        if pairTarget?.window != candidate.window || pairTarget?.ownerID != candidate.ownerID {
+            clearPair()
+            pairTarget = candidate
+            pairDirection = direction
+            let revision = pairPreparationGeneration
+            let session = sessionID
+            pairPreparationToken = preparePair?(source, candidate.window) { [weak self] prepared in
+                guard let self, self.isActive, self.sessionID == session, self.pairPreparationGeneration == revision,
+                      self.pairTarget?.window == candidate.window else { return }
+                self.pairPreparation = prepared
+                _ = self.update(at: NSEvent.mouseLocation, scroll: false)
+            }
+        }
+        pairTarget = candidate
+        pairDirection = direction
+        previewPanel?.orderOut(nil)
+        pairedPreviewPanel?.orderOut(nil)
+        showDragIcon(at: point)
+        dragIconPanel?.alphaValue = 0.55
+        guard let prepared = pairPreparation else { onPairHover(nil, nil); return [] }
+        onPairHover(candidate, direction)
+        guard let direction, let plan = WindowLayoutPlanner.pair(source: prepared.source, target: prepared.target,
+            direction: direction, display: prepared.display) else { return [] }
+        let top = NSScreen.screens.first?.frame.maxY ?? 0
+        showPreview(frame: SidebarPlacementGeometry.flip(plan.sourceFrame, primaryTop: top),
+            label: "\(title) · \(direction.snap.title)", valid: true)
+        let frame = SidebarPlacementGeometry.flip(plan.targetFrame, primaryTop: top)
+        let panel = pairedPreviewPanel ?? Self.panel(frame: frame, ignoresMouse: true)
+        let view = (panel.contentView as? PreviewView) ?? PreviewView(frame: .zero)
+        view.label = "\(candidate.title) · \(direction.opposite.snap.title)"
+        panel.contentView = view
+        panel.setFrame(frame, display: true)
+        view.needsDisplay = true
+        panel.orderFrontRegardless()
+        pairedPreviewPanel = panel
+        return .private
+    }
+
+    private func clearPair() {
+        guard pairTarget != nil || pairPreparation != nil else { return }
+        pairPreparationGeneration += 1
+        pairPreparationToken?.cancel()
+        pairPreparationToken = nil
+        pairTarget = nil
+        pairDirection = nil
+        pairPreparation = nil
+        pairedPreviewPanel?.close()
+        pairedPreviewPanel = nil
+        onPairHover(nil, nil)
+        dragIconPanel?.alphaValue = 0.85
+    }
+
     private func showDragIcon(at point: CGPoint) {
         guard let image = dragIcon else { return }
         let frame = CGRect(x: point.x - 20, y: point.y - 20, width: 40, height: 40)
@@ -253,7 +399,7 @@ final class SidebarDragController: NSObject, NSDraggingSource {
             view.imageScaling = .scaleProportionallyUpOrDown
             panel.contentView = view
             panel.alphaValue = 0.85
-            panel.level = NSWindow.Level(rawValue: NSWindow.Level.floating.rawValue + 2)
+            panel.level = SidebarWindowLevels.dragIcon
             dragIconPanel = panel
         }
         panel.setFrame(frame, display: true)
@@ -261,11 +407,19 @@ final class SidebarDragController: NSObject, NSDraggingSource {
     }
 
     private func finish() {
+        if let modifierMonitor { NSEvent.removeMonitor(modifierMonitor) }
+        if let globalModifierMonitor { NSEvent.removeMonitor(globalModifierMonitor) }
+        modifierMonitor = nil
+        globalModifierMonitor = nil
+        placementRequest = nil
+        sourceDisplay = nil
+        clearPair()
         generation += 1
         sessionID = nil
         target = nil
         transferTarget = nil
         allowDesktopTransfer = false
+        allowPairing = false
         onDesktopHover?(nil)
         windowID = nil
         previewPanel?.close()
@@ -293,7 +447,7 @@ final class SidebarDragController: NSObject, NSDraggingSource {
         panel.animationBehavior = .none
         panel.hidesOnDeactivate = false
         panel.ignoresMouseEvents = ignoresMouse
-        panel.level = NSWindow.Level(rawValue: NSWindow.Level.floating.rawValue + 1)
+        panel.level = SidebarWindowLevels.dragPreview
         panel.collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary]
         panel.isReleasedWhenClosed = false
         return panel

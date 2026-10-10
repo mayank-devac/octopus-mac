@@ -36,6 +36,7 @@ struct SidebarEntry: Identifiable {
 struct SidebarWindowState: Equatable {
     let isMinimized: Bool
     let canMinimize: Bool
+    var canClose = true
     var isOnScreen = true
     var desktops: [SidebarDesktop] = []
     var desktopLabel: String? = nil
@@ -46,20 +47,21 @@ enum SidebarWindowAction: Equatable {
     case activateApp(pid_t)
     case focus(SidebarWindowID)
     case minimize(SidebarWindowID, requireFocused: Bool)
+    case close(SidebarWindowID)
     case hide(SidebarWindowID)
     case place(SidebarWindowID, SidebarPlacementRequest)
 
     var target: SidebarWindowID? {
         switch self {
         case .activateApp: return nil
-        case .focus(let id), .minimize(let id, _), .hide(let id), .place(let id, _): return id
+        case .focus(let id), .minimize(let id, _), .close(let id), .hide(let id), .place(let id, _): return id
         }
     }
 
     var processIdentifier: pid_t {
         switch self {
         case .activateApp(let pid): return pid
-        case .focus(let id), .minimize(let id, _), .hide(let id), .place(let id, _): return id.pid
+        case .focus(let id), .minimize(let id, _), .close(let id), .hide(let id), .place(let id, _): return id.pid
         }
     }
 }
@@ -500,6 +502,8 @@ final class SidebarWindowInventory: ObservableObject {
         perform(.focus(id))
     }
 
+    func hasPendingAction(for pid: pid_t) -> Bool { pendingActions[pid] != nil }
+
     func preparePlacement(_ id: SidebarWindowID, completion: @escaping (SidebarPlacementTarget?) -> Void) {
         guard running, hasPermission, pendingActions[id.pid] == nil else { completion(nil); return }
         let desktop = desktopGeneration
@@ -544,6 +548,7 @@ final class SidebarWindowInventory: ObservableObject {
     }
 
     func moveToDesktop(_ id: SidebarWindowID, request: SidebarDesktopTransferRequest) {
+        NotificationCenter.default.post(name: WindowLayoutController.userActionNotification, object: ProcessInfo.processInfo.systemUptime)
         guard running, hasPermission, canTransferDesktops, pendingActions[id.pid] == nil,
               pendingDesktopTransfer == nil, request.desktopGeneration == desktopGeneration else {
             onDesktopTransferResult?("Desktop transfer is unavailable or busy."); return
@@ -596,9 +601,16 @@ final class SidebarWindowInventory: ObservableObject {
     }
 
     func perform(_ action: SidebarWindowAction, frontmostPID: pid_t? = NSWorkspace.shared.frontmostApplication?.processIdentifier) {
+        let startedAt = ProcessInfo.processInfo.systemUptime
+        NotificationCenter.default.post(name: WindowLayoutController.userActionNotification, object: startedAt)
         let pid = action.processIdentifier
-        guard running, hasPermission, pendingActions[pid] == nil else {
-            if case .place = action { onPlacementResult?(.failed("Window control is unavailable or busy.")) }
+        guard running, hasPermission else {
+            if case .place = action { onPlacementResult?(.failed("Window control is unavailable.")) }
+            return
+        }
+        // Ignore a second action during the first action. The active token stays locked until
+        // the resulting window state has been read and published to the sidebar.
+        guard pendingActions[pid] == nil else {
             return
         }
         let token = SidebarPendingAction(frontmostPID: frontmostPID)
@@ -621,7 +633,19 @@ final class SidebarWindowInventory: ObservableObject {
                     }
                 case .placement(let result, let application):
                     self.onPlacementResult?(result)
-                    if case .placed = result, let application, token.canFinishFocus(on: pid), !application.isTerminated {
+                    if case .placed(let achieved, let adjusted) = result,
+                       case .place(let id, let request) = action, let snap = request.snap,
+                       !adjusted || (snap.isCorner && SidebarPlacementGeometry.matches(achieved,
+                        SidebarPlacementGeometry.cornerFrame(snap, size: achieved.size, inAX: request.workArea))) {
+                        NotificationCenter.default.post(name: WindowLayoutController.completedSnapNotification,
+                            object: WindowLayoutCompletedSnap(window: id, request: request, startedAt: startedAt, achievedFrame: achieved))
+                    }
+                    let shouldFocus: Bool
+                    if case .placed = result { shouldFocus = true }
+                    else if case .failed = result, case .place(_, let request) = action,
+                            request.snap == .maximize { shouldFocus = true }
+                    else { shouldFocus = false }
+                    if shouldFocus, let application, token.canFinishFocus(on: pid), !application.isTerminated {
                         self.requestForeground(application, target: action.target, token: token)
                         return
                     }
@@ -722,9 +746,10 @@ final class SidebarWindowInventory: ObservableObject {
 
 // AX calls can block on another application. Mutable state is confined to queue;
 // the run-loop callback only invokes the immutable, Sendable onChange closure.
-private final class SidebarWindowReader: @unchecked Sendable {
+final class SidebarWindowReader: @unchecked Sendable {
     let queue = DispatchQueue(label: "app.octopus.sidebar.windows", qos: .userInitiated)
     private let onChange: @Sendable () -> Void
+    private let tracksFrontmostFocus: Bool
     private var observers: [pid_t: AXObserver] = [:]
     private var observedWindows: [pid_t: [AXUIElement]] = [:]
     private var recency: [SidebarWindowID: UInt64] = [:]
@@ -741,9 +766,16 @@ private final class SidebarWindowReader: @unchecked Sendable {
     private var fullScreenWindows: Set<SidebarWindowID> = []
     private let spaceReader = SidebarSpaceReader()
     private let windowDiscovery = SidebarWindowDiscovery()
+    private var layoutSequence: UInt64 = 0
+    private var layoutGenerations: [SidebarWindowID: UInt64] = [:]
+    private var layoutLaunchDates: [pid_t: Date] = [:]
+    lazy var windowControlAccess = WindowControlAccess(queue: queue, spaces: spaceReader) { [weak self] id, budget in
+        self?.resolveControlHandle(id, budget: budget) ?? .failed("Window control is unavailable.")
+    }
 
-    init(onChange: @escaping @Sendable () -> Void) {
+    init(onChange: @escaping @Sendable () -> Void, tracksFrontmostFocus: Bool = false) {
         self.onChange = onChange
+        self.tracksFrontmostFocus = tracksFrontmostFocus
     }
 
     struct Snapshot {
@@ -971,10 +1003,15 @@ private final class SidebarWindowReader: @unchecked Sendable {
                    let display = displayContaining(info.bounds) {
                     snapshot.fullScreenDisplays.insert(display)
                 }
+                if tracksFrontmostFocus, let old = knownWindows[sidebarID], !CFEqual(old.element, axWindow) {
+                    layoutGenerations.removeValue(forKey: sidebarID)
+                    recency.removeValue(forKey: sidebarID)
+                }
                 knownWindows[sidebarID] = KnownWindow(element: axWindow, application: running)
                 states[id] = SidebarWindowState(isMinimized: minimized,
                     canMinimize: !fullScreen && !geometryFullScreen
                         && isMinimizedSettable(axWindow),
+                    canClose: closeButton(for: axWindow) != nil,
                     isOnScreen: match?.1.onScreen == true, desktops: desktops[id] ?? [],
                     desktopLabel: desktops[id]?.first?.windowPrefix,
                     displayIdentifier: SidebarWindowPolicy.displayIdentifier(desktops: desktops[id] ?? [],
@@ -997,7 +1034,7 @@ private final class SidebarWindowReader: @unchecked Sendable {
             }
             // AX retains an app's focused window after another app becomes active.
             // Reading every app also catches a quick window switch followed by an app switch.
-            if let focusedID, ids.contains(focusedID), focusedID != lastFocused[running.processIdentifier] {
+            if !tracksFrontmostFocus, let focusedID, ids.contains(focusedID), focusedID != lastFocused[running.processIdentifier] {
                 recordFocus(focusedID)
             }
             if let preferred = SidebarWindowPolicy.preferredID(ids, recency: recency, focused: focusedID,
@@ -1008,6 +1045,7 @@ private final class SidebarWindowReader: @unchecked Sendable {
             }
         }
         knownWindows = knownWindows.filter { survivingIDs.contains($0.key) }
+        layoutGenerations = layoutGenerations.filter { survivingIDs.contains($0.key) }
         // Bound history without losing recency for windows temporarily on another desktop.
         recency = recency.filter { pids.contains($0.key.pid) }
         lastFocused = lastFocused.filter { pids.contains($0.key) }
@@ -1027,6 +1065,143 @@ private final class SidebarWindowReader: @unchecked Sendable {
         return knownWindows.first {
             $0.key.pid == pid && !$0.value.application.isTerminated && CFEqual($0.value.element, element)
         }?.key.windowID
+    }
+
+    // Layout uses this reader's existing discovery and validation, with independent focus history.
+    func trackLayoutFocus(_ applications: [NSRunningApplication]) {
+        dispatchPrecondition(condition: .onQueue(queue))
+        let pids = Set(applications.map(\.processIdentifier))
+        for pid in Array(observers.keys) where !pids.contains(pid) { removeObserver(pid) }
+        for app in applications where !app.isTerminated {
+            guard let element = Application(app).element else { continue }
+            AXUIElementSetMessagingTimeout(element, 0.2)
+            observe(app: element, pid: app.processIdentifier, windows: [])
+        }
+        recency = recency.filter { pids.contains($0.key.pid) }
+    }
+
+    func recordFrontmostWindow(pid: pid_t) {
+        dispatchPrecondition(condition: .onQueue(queue))
+        guard tracksFrontmostFocus, let app = NSRunningApplication(processIdentifier: pid), !app.isTerminated,
+              let element = Application(app).element else { return }
+        AXUIElementSetMessagingTimeout(element, 0.2)
+        guard let focused: AXUIElement = element.getAttributeValue(.focusedWindow) else { return }
+        recordFrontmostWindow(element: focused, requireFrontmost: false)
+    }
+
+    private func recordFrontmostWindow(element: AXUIElement, requireFrontmost: Bool = true) {
+        guard tracksFrontmostFocus else { return }
+        var pid: pid_t = 0
+        guard AXUIElementGetPid(element, &pid) == .success,
+              !requireFrontmost || NSWorkspace.shared.frontmostApplication?.processIdentifier == pid else { return }
+        // App-level focus notifications may deliver the app element rather than its focused window.
+        let directID = element.getWindowID()
+        let focused: AXUIElement? = directID != nil && directID != kCGNullWindowID ? element : element.getAttributeValue(.focusedWindow)
+        guard let focused, let windowID = focused.getWindowID(), windowID != kCGNullWindowID else { return }
+        let id = SidebarWindowID(pid: pid, windowID: windowID)
+        if let app = NSRunningApplication(processIdentifier: pid), !app.isTerminated {
+            if let old = knownWindows[id], !CFEqual(old.element, focused) { layoutGenerations.removeValue(forKey: id) }
+            knownWindows[id] = KnownWindow(element: focused, application: app)
+        }
+        recordFocus(id)
+    }
+
+    // CG/Space data narrows candidates; only selected normal AX windows pay for metadata reads.
+    // Known non-normal surfaces are skipped, while an unknown provider failure keeps the snapshot incomplete.
+    func layoutSnapshot(displays: [WindowLayoutDisplay], desktop: Int, snap: WindowLayoutCompletedSnap,
+                        selection: WindowLayoutSelection, budget: WindowControlBudget) -> WindowLayoutSnapshot {
+        dispatchPrecondition(condition: .onQueue(queue))
+        func unavailable(_ reason: String) -> WindowLayoutSnapshot {
+            WindowLayoutSnapshot(windows: [], displays: displays, complete: false, desktopGeneration: desktop, failureReason: reason)
+        }
+        guard budget.isCurrent else { return unavailable("Window preparation was cancelled or timed out.") }
+        guard let info = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else {
+            return unavailable("The visible window list could not be read.")
+        }
+        guard let anchor = windowControlAccess.read(snap.window, displays: displays, budget: budget,
+            recency: recency[snap.window] ?? 0).window else {
+            return unavailable("The snapped window's state or Desktop could not be read.")
+        }
+        guard SidebarPlacementGeometry.matches(anchor.frame, snap.verifiedFrame) else {
+            return unavailable("The snapped window is still changing size or position.")
+        }
+        guard let destination = displays.first(where: { $0.id == anchor.scope.displayID }),
+              SidebarPlacementGeometry.matches(destination.workArea, snap.request.workArea) else {
+            return unavailable("The snapped window's destination display changed.")
+        }
+        let catalog = spaceReader.allDesktops()
+        var visible: [(SidebarWindowID, Int)] = []
+        for (order, record) in info.enumerated() {
+            guard budget.isCurrent else { return unavailable("Window preparation took too long.") }
+            guard let number = record[kCGWindowNumber as String] as? NSNumber,
+                  let owner = record[kCGWindowOwnerPID as String] as? NSNumber,
+                  (record[kCGWindowLayer as String] as? NSNumber)?.intValue == 0,
+                  let app = NSRunningApplication(processIdentifier: owner.int32Value),
+                  app.activationPolicy == .regular, !app.isHidden, !app.isTerminated,
+                  let bounds = record[kCGWindowBounds as String] as? [String: Any],
+                  let frame = CGRect(dictionaryRepresentation: bounds as CFDictionary),
+                  SidebarPlacementGeometry.isValid(frame) else { continue }
+            let overlaps = displays.map { display -> (String, CGFloat) in
+                let intersection = display.frame.intersection(frame)
+                return (display.id, intersection.isNull ? 0 : intersection.width * intersection.height)
+            }
+            guard overlaps.max(by: { $0.1 < $1.1 })?.0 == anchor.scope.displayID else { continue }
+            let id = SidebarWindowID(pid: app.processIdentifier, windowID: number.uint32Value)
+            guard id != snap.window else { continue }
+            visible.append((id, order))
+        }
+        guard budget.isCurrent else { return unavailable("Window preparation took too long.") }
+        let membership = spaceReader.read(windowIDs: Set(visible.map { $0.0.windowID }), catalog: catalog)
+        guard budget.isCurrent else { return unavailable("Window preparation took too long.") }
+        let candidates = visible.compactMap { id, order -> WindowLayoutCandidate? in
+            guard let spaces = membership[id.windowID], spaces.count == 1, spaces[0].id == anchor.scope.spaceID else { return nil }
+            return WindowLayoutCandidate(window: id, recency: recency[id] ?? 0, stackOrder: order)
+        }
+        return WindowLayoutPlanner.snapshot(anchor: anchor, candidates: candidates, displays: displays,
+            desktop: desktop, selection: selection, read: { candidate in
+                switch self.windowControlAccess.read(candidate.window, displays: displays, budget: budget,
+                    recency: candidate.recency, stackOrder: candidate.stackOrder) {
+                case .window(let window): return .window(window)
+                case .excluded: return .excluded
+                case .failed: return .unavailable
+                }
+            })
+    }
+
+    // Resolve inside the owning app under the shared budget. Handle replacement/launch changes mint a new generation.
+    private func resolveControlHandle(_ id: SidebarWindowID, budget: WindowControlBudget) -> WindowControlResolution {
+        dispatchPrecondition(condition: .onQueue(queue))
+        guard budget.isCurrent, id.pid != ProcessInfo.processInfo.processIdentifier,
+              let app = NSRunningApplication(processIdentifier: id.pid), !app.isTerminated else {
+            return .failed("This window is no longer available.")
+        }
+        var known = knownWindows[id]
+        if let cached = known { AXUIElementSetMessagingTimeout(cached.element, 0.2) }
+        if known?.application.launchDate != app.launchDate || known?.element.getWindowID() != id.windowID {
+            guard budget.isCurrent, let element = Application(app).element else { return .failed("The app could not be read.") }
+            AXUIElementSetMessagingTimeout(element, 0.2)
+            guard let windows: [AXUIElement] = element.getAttributeValue(.windows) else {
+                return .failed("The app did not report its windows.")
+            }
+            var found: AXUIElement?
+            for window in windows {
+                guard budget.isCurrent else { return .failed("Window preparation took too long.") }
+                AXUIElementSetMessagingTimeout(window, 0.2)
+                if window.getWindowID() == id.windowID { found = window; break }
+            }
+            guard let found else { return .excluded } // Positive enumeration excludes orphan CG surfaces.
+            if let previous = known, !CFEqual(previous.element, found) { layoutGenerations.removeValue(forKey: id) }
+            known = KnownWindow(element: found, application: app)
+            knownWindows[id] = known
+        }
+        guard budget.isCurrent, let known else { return .failed("Window preparation took too long.") }
+        if let date = app.launchDate, layoutLaunchDates[id.pid] != date {
+            layoutGenerations = layoutGenerations.filter { $0.key.pid != id.pid }
+            layoutLaunchDates[id.pid] = date
+        }
+        if layoutGenerations[id] == nil { layoutSequence += 1; layoutGenerations[id] = layoutSequence }
+        return .resolved(WindowControlHandle(id: WindowLayoutIdentity(window: id, generation: layoutGenerations[id]!),
+            element: known.element, application: app, isFullScreen: fullScreenWindows.contains(id)))
     }
 
     enum ActionResult {
@@ -1051,7 +1226,8 @@ private final class SidebarWindowReader: @unchecked Sendable {
             modal: modal, hasSheets: !sheets.isEmpty, canMove: isSettable(element, attribute: .position),
             windowDesktops: memberships, visibleDesktops: spaceReader.visibleDesktopIDs()) else { return nil }
         return SidebarPlacementTarget(id: id, frame: frame, canResize: isSettable(element, attribute: .size),
-                                      isMinimized: minimized, desktopGeneration: desktop)
+                                      isMinimized: minimized, isHidden: known.application.isHidden,
+                                      desktopGeneration: desktop)
     }
 
     func desktopTransferTarget(_ id: SidebarWindowID, desktop: Int) -> SidebarDesktopTransferTarget? {
@@ -1135,10 +1311,22 @@ private final class SidebarWindowReader: @unchecked Sendable {
         switch action {
         case .activateApp: return .rejected // Handled above, without requiring an AX window.
         case .place(_, let request):
-            guard request.desktopGeneration == desktop,
-                  let target = placementTarget(id, desktop: desktop),
-                  !request.resize || target.canResize else {
-                return .placement(.failed("This window cannot be placed on the current desktop."), nil)
+            func focusFallback(_ failure: SidebarPlacementResult) -> ActionResult {
+                guard request.snap == .maximize,
+                      case .activate(let focusedApplication) = perform(.focus(id), desktop: desktop, token: token,
+                        systemFullScreenPID: systemFullScreenPID, application: application) else {
+                    return .placement(failure, nil)
+                }
+                return .placement(failure, focusedApplication)
+            }
+            guard request.desktopGeneration == desktop else {
+                return .placement(.failed("This window belongs to an earlier desktop state."), nil)
+            }
+            guard let target = placementTarget(id, desktop: desktop) else {
+                return focusFallback(.failed("This window cannot be resized on the current desktop."))
+            }
+            guard !request.resize || target.canResize else {
+                return focusFallback(.failed("This window has a fixed size."))
             }
             if target.isMinimized {
                 guard canChangeMinimized(element, fullScreen: false), token.isCurrent,
@@ -1150,7 +1338,7 @@ private final class SidebarWindowReader: @unchecked Sendable {
             if running.isHidden, !running.unhide() { return .placement(.failed("This app could not be shown."), nil) }
             // Enough for the writer's confirmation passes; still bounded for unresponsive apps.
             let deadline = ProcessInfo.processInfo.systemUptime + 2
-            let result = Self.withoutEnhancedUserInterface(pid: id.pid) {
+            let result = WindowControlAccess.withoutEnhancedUserInterface(pid: id.pid) {
                 SidebarPlacementWriter.apply(request,
                     canContinue: { token.canFinishFocus(on: id.pid) && !running.isTerminated && ProcessInfo.processInfo.systemUptime < deadline },
                     readFrame: { element.getWindowFrame() },
@@ -1162,22 +1350,26 @@ private final class SidebarWindowReader: @unchecked Sendable {
                         var size = size
                         guard let value = AXValueCreate(.cgSize, &size) else { return false }
                         return AXUIElementSetAttributeValue(element, kAXSizeAttribute as CFString, value) == .success
-                    })
+                    }, acceptStableMismatch: request.snap?.isCorner != true)
             }
             if result == .cancelled, !token.isCancelled, ProcessInfo.processInfo.systemUptime >= deadline {
                 return .placement(.failed("This app took too long to finish placement; the window may have moved."), nil)
             }
-            guard case .placed = result else { return .placement(result, nil) }
+            guard case .placed = result else { return focusFallback(result) }
             guard token.canFinishFocus(on: id.pid), validatedWindow(id) != nil, token.beginFocus() else {
                 return .placement(.failed("Window placement finished, but the app could not bring it forward."), nil)
             }
-            guard prepareWindowForActivation(element) else {
-                return .placement(.failed("This window is no longer available to bring forward."), nil)
-            }
+            // Match the proven focus path: request this exact window before its follow-up raise.
+            // An early AXMain/AXRaise can surface it before the cross-display focus has settled.
             return .placement(result, running)
         case .hide:
             guard !running.isHidden, token.isCurrent else { return .rejected }
             return running.hide() ? .completed : .rejected
+        case .close:
+            // Use the app's normal close control so document windows can still ask to save.
+            guard let button = closeButton(for: element), token.isCurrent else { return .rejected }
+            return AXUIElementPerformAction(button, kAXPressAction as CFString) == .success
+                ? .completed : .rejected
         case .minimize(_, let requireFocused):
             // A cached visible window may have moved to another Desktop before this
             // queued action runs. Navigate to the exact window instead of minimising it.
@@ -1217,30 +1409,6 @@ private final class SidebarWindowReader: @unchecked Sendable {
             // requestForeground owns activation and the follow-up raise.
             return .activate(running)
         }
-    }
-
-    // With AXEnhancedUserInterface on, apps animate AX frame writes, so the size/position
-    // writes overlap and some are dropped. Rectangle suspends it for the same reason
-    // (clone/Rectangle/AccessibilityElement.swift `performWindowAdjustment`).
-    private static func withoutEnhancedUserInterface<T>(pid: pid_t, _ body: () -> T) -> T {
-        let attribute = "AXEnhancedUserInterface" as CFString
-        let application = AXUIElementCreateApplication(pid)
-        AXUIElementSetMessagingTimeout(application, 0.2)
-        var value: CFTypeRef?
-        let wasEnabled = AXUIElementCopyAttributeValue(application, attribute, &value) == .success
-            && (value as? Bool) == true
-        if wasEnabled { _ = AXUIElementSetAttributeValue(application, attribute, kCFBooleanFalse) }
-        defer { if wasEnabled { _ = AXUIElementSetAttributeValue(application, attribute, kCFBooleanTrue) } }
-        return body()
-    }
-
-    private func prepareWindowForActivation(_ element: AXUIElement) -> Bool {
-        if isSettable(element, attribute: .main) {
-            _ = AXUIElementSetAttributeValue(element, kAXMainAttribute as CFString, kCFBooleanTrue)
-        }
-        // A restore animation may reject this early raise. Still request app activation.
-        let result = AXUIElementPerformAction(element, kAXRaiseAction as CFString)
-        return SidebarFocusActivation.canRequestAfterRaise(result)
     }
 
     func raiseForegroundWindow(_ id: SidebarWindowID, token: SidebarPendingAction, expiresAt: TimeInterval) {
@@ -1290,6 +1458,22 @@ private final class SidebarWindowReader: @unchecked Sendable {
         var settable = DarwinBoolean(false)
         return AXUIElementIsAttributeSettable(element, kAXMinimizedAttribute as CFString, &settable) == .success
             && settable.boolValue
+    }
+
+    private func closeButton(for element: AXUIElement) -> AXUIElement? {
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, kAXCloseButtonAttribute as CFString, &value) == .success,
+              let value, CFGetTypeID(value) == AXUIElementGetTypeID() else { return nil }
+        let button = value as! AXUIElement
+        let enabled: Bool = button.getAttributeValue(
+            NSAccessibility.Attribute(rawValue: kAXEnabledAttribute as String)) ?? true
+        guard enabled else { return nil }
+        let owner: AXUIElement? = button.getAttributeValue(
+            NSAccessibility.Attribute(rawValue: kAXWindowAttribute as String))
+        if let windowID = element.getWindowID(), let ownerID = owner?.getWindowID(), ownerID != windowID {
+            return nil
+        }
+        return button
     }
 
     private func isBrowserHelper(_ element: AXUIElement, applicationTitle: String, title: String?,
@@ -1364,9 +1548,13 @@ private final class SidebarWindowReader: @unchecked Sendable {
     private func observe(app: AXUIElement, pid: pid_t, windows: [AXUIElement]) {
         if observers[pid] == nil {
             var observer: AXObserver?
-            let callback: AXObserverCallback = { _, _, _, context in
+            let callback: AXObserverCallback = { _, element, notification, context in
                 guard let context else { return }
-                Unmanaged<SidebarWindowReader>.fromOpaque(context).takeUnretainedValue().onChange()
+                let reader = Unmanaged<SidebarWindowReader>.fromOpaque(context).takeUnretainedValue()
+                reader.onChange()
+                if reader.tracksFrontmostFocus, notification as String == kAXFocusedWindowChangedNotification {
+                    reader.queue.async { reader.recordFrontmostWindow(element: element) }
+                }
             }
             guard AXObserverCreate(pid, callback, &observer) == .success, let observer else { return }
             observers[pid] = observer
@@ -1403,6 +1591,9 @@ private final class SidebarWindowReader: @unchecked Sendable {
         dispatchPrecondition(condition: .onQueue(queue))
         for pid in Array(observers.keys) { removeObserver(pid) }
         knownWindows.removeAll()
+        layoutGenerations.removeAll()
+        layoutLaunchDates.removeAll()
+        if tracksFrontmostFocus { recency.removeAll(); lastFocused.removeAll() }
         previousEntries.removeAll()
         fullScreenWindows.removeAll()
         windowDiscovery.reset()
