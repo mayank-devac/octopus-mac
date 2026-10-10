@@ -10,6 +10,92 @@ import Testing
 @testable import octopus
 
 struct SidebarTests {
+    @Test func compactVisibilitySurvivesSingleAndDisplayPreferenceReloads() throws {
+        let suite = "SidebarCompact-\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        var configuration = SidebarConfiguration.factoryDefaults
+        configuration.idleBehavior = .compact
+        configuration.side = .left
+        configuration.saveSingleSidebar(in: defaults)
+        #expect(SidebarConfiguration(defaults: defaults) == configuration)
+        SidebarSettings.rememberDisplay(id: "A", name: "Display A", in: defaults)
+        #expect(SidebarSettings.configuration(for: "A", in: defaults) == configuration)
+        var other = configuration
+        other.idleBehavior = .hide
+        SidebarSettings.save(other, for: "B", name: "Display B", in: defaults)
+        let restarted = try #require(UserDefaults(suiteName: suite))
+        #expect(SidebarSettings.configuration(for: "A", in: restarted) == configuration)
+        #expect(SidebarSettings.configuration(for: "B", in: restarted) == other)
+        #expect(SidebarIdleBehavior.saved("compact") == .compact)
+        #expect(SidebarConfiguration.factoryDefaults.idleBehavior == .fade)
+    }
+
+    @Test func compactStripStaysAtEitherEdgeWithTheSameHeightWhenExpanded() {
+        let screen = CGRect(x: -1440, y: 120, width: 1440, height: 900)
+        for side in SidebarSide.allCases {
+            for count in [1, 6, 100] {
+                let frame = SidebarLayout.sidebarFrame(in: screen, count: count, side: side, position: 0.25)
+                let closed = SidebarLayout.compactFrames(beside: frame, side: side, expanded: false)
+                let open = SidebarLayout.compactFrames(beside: frame, side: side, expanded: true)
+                #expect(closed.compact == open.compact)
+                #expect(closed.main == open.main)
+                #expect(closed.panel == closed.compact)
+                #expect(open.panel.contains(open.compact) && open.panel.contains(open.main))
+                #expect(open.compact.height == frame.height && open.panel.height == frame.height)
+                #expect(open.compact.minY == frame.minY)
+                #expect(open.compact.width < open.main.width)
+                if side == .left {
+                    #expect(open.compact.minX == screen.minX)
+                    #expect(open.main.minX == open.compact.maxX)
+                } else {
+                    #expect(open.compact.maxX == screen.maxX)
+                    #expect(open.main.maxX == open.compact.minX)
+                }
+            }
+        }
+    }
+
+    @Test func collapsedCompactHeightContainsOnlyNumberRows() {
+        #expect(SidebarLayout.compactContentHeight(count: 0, appSpacing: 4) == SidebarLayout.rowHeight)
+        #expect(SidebarLayout.compactContentHeight(count: 1, appSpacing: 4)
+            == SidebarLayout.iconSlotHeight + SidebarLayout.verticalPadding * 2)
+        #expect(SidebarLayout.compactContentHeight(count: 2, appSpacing: 4)
+            == SidebarLayout.iconSlotHeight * 2 + SidebarLayout.labelHeight + 4
+                + SidebarLayout.verticalPadding * 2)
+
+        let count = 3
+        let height = SidebarLayout.compactContentHeight(count: count, appSpacing: 4)
+        let firstCentre = SidebarLayout.verticalPadding + SidebarLayout.iconSlotHeight / 2
+        let lastCentre = firstCentre + CGFloat(count - 1) * (SidebarLayout.rowHeight + 4)
+        #expect(firstCentre == height - lastCentre)
+
+        let frame = SidebarLayout.sidebarFrame(in: CGRect(x: 0, y: 0, width: 1000, height: 800),
+            count: count, side: .left, position: 0.5, appSpacing: 4,
+            contentHeight: height, minimumHeight: 0)
+        #expect(frame.height == height)
+    }
+
+    @MainActor @Test func compactNumbersDimHiddenMinimisedAndWindowlessApps() {
+        let running = NSRunningApplication.current
+        let app = Application(running)
+        let window = Window(AXUIElementCreateApplication(running.processIdentifier), app, cachedTitle: "Window")
+        window.cgWindowID = 10
+        var entry = SidebarEntry(pid: running.processIdentifier, application: app, windows: [window],
+            preferredID: nil, windowStates: [10: SidebarWindowState(isMinimized: false, canMinimize: true)])
+        #expect(entry.hasOpenWindows)
+        // A window on another desktop remains open even though it is not on screen.
+        entry.windowStates[10]?.isOnScreen = false
+        #expect(entry.hasOpenWindows)
+        entry.isHidden = true
+        #expect(!entry.hasOpenWindows)
+        entry.isHidden = false
+        entry.windowStates[10] = SidebarWindowState(isMinimized: true, canMinimize: true)
+        #expect(!entry.hasOpenWindows)
+        let windowless = SidebarEntry(pid: running.processIdentifier, application: app, windows: [], preferredID: nil)
+        #expect(!windowless.hasOpenWindows)
+    }
+
     @Test func sidebarLevelsStayAboveAppPalettesAndBelowModalDialogs() {
         #expect(NSWindow.Level.floating.rawValue < SidebarWindowLevels.sidebar.rawValue)
         #expect(SidebarWindowLevels.sidebar.rawValue < SidebarWindowLevels.menu.rawValue)

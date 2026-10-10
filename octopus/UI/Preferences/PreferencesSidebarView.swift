@@ -150,7 +150,7 @@ struct PreferencesSidebarView: View {
                      + (configuration.displayScope == .currentDisplay
                         ? "Current display lists windows belonging to this sidebar’s display; apps without windows are omitted. "
                         : "Apps without windows appear last. ")
-                     + "In full screen, the sidebar stays at the screen edge; Auto-hide applies across all desktops.")
+                     + "In full screen, the sidebar stays at the screen edge. Compact keeps its number strip visible; Auto-hide applies across all desktops.")
 
             }
             .disabled(!enabled)
@@ -162,7 +162,7 @@ struct PreferencesSidebarView: View {
                     }
                 }
                 .disabled(!editingEnabled)
-                .help("Fade makes the idle sidebar more transparent so you can see through the icons. Auto-Hide shows it only when the pointer reaches the screen edge. Always visible keeps it fully opaque.")
+                .help("Fade makes the idle sidebar more transparent. Auto-Hide shows it at the screen edge. Always visible keeps it fully opaque. Compact keeps a narrow number strip visible and opens the app sidebar on hover. Numbers fade for hidden apps or apps without open windows.")
                 HStack {
                     Text("Snap distance")
                     Slider(value: Binding(

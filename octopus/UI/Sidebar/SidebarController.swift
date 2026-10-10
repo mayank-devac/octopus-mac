@@ -103,6 +103,7 @@ private final class SidebarDisplayController {
     private var screen: NSScreen?
     private var edgeFrame = CGRect.zero
     private var sidebarFrame = CGRect.zero
+    private var compactFrame = CGRect.zero
     private var wasFullScreen = false
     private var needsSpacePresentation = false
     private var pointerWasInSidebar = false
@@ -140,6 +141,11 @@ private final class SidebarDisplayController {
     }
 
     private var ownsMenu: Bool { cycleController.sidebarOwnerID == menuOwnerID }
+    private var isCompact: Bool { settings?.idleBehavior == .compact }
+    private var showsMainSidebar: Bool { !isCompact || viewState.isExpanded }
+    private var pointerFrame: CGRect {
+        isCompact ? (showsMainSidebar ? sidebarFrame.union(compactFrame) : compactFrame) : sidebarFrame
+    }
     private var sidebarEntryID: SidebarEntryID? { ownsMenu ? cycleController.sidebarEntryID : nil }
     var interactionFrames: [CGRect] {
         (panel.isVisible ? [panel.frame] : []) + desktopMenu.interactionFrames
@@ -205,7 +211,8 @@ private final class SidebarDisplayController {
             },
             onDesktopAnchor: { [weak self] id, view in self?.desktopAnchors[id] = view },
             onDesktopTransfer: { [weak self] id, desktop in self?.inventory.moveToDesktop(id, to: desktop) },
-            onMonitorAnchor: { [weak self] id, view in self?.monitorAnchors[id] = view }
+            onMonitorAnchor: { [weak self] id, view in self?.monitorAnchors[id] = view },
+            onReveal: { [weak self] in self?.revealCompactSidebar() }
         ))
         hostingView.sizingOptions = []
         panel.contentView = hostingView
@@ -309,7 +316,7 @@ private final class SidebarDisplayController {
     }
 
     var pairTargets: [SidebarIconPairTarget] {
-        guard panel.isVisible, inventory.hasPermission else { return [] }
+        guard panel.isVisible, showsMainSidebar, inventory.hasPermission else { return [] }
         let entries = viewState.dragSections?.flatMap(\.entries) ?? inventory.entries
         return entries.compactMap { entry in
             guard let id = entry.preferredID, let view = iconAnchors[entry.id],
@@ -361,6 +368,7 @@ private final class SidebarDisplayController {
             $0.matchesExceptPosition(next) && $0.position != next.position
         } ?? false
         let wasEnabled = settings?.enabled ?? false
+        if settings?.idleBehavior != next.idleBehavior { viewState.isExpanded = false }
         settings = next
         viewState.configuration = next.configuration
         updateInventoryScope(next)
@@ -386,6 +394,7 @@ private final class SidebarDisplayController {
         dragController.stop()
         inventory.stop()
         panel.orderOut(nil)
+        viewState.isExpanded = false
         if let monitor = localMouseMonitor { NSEvent.removeMonitor(monitor) }
         if let monitor = globalMouseMonitor { NSEvent.removeMonitor(monitor) }
         localMouseMonitor = nil
@@ -426,7 +435,17 @@ private final class SidebarDisplayController {
         return inventory.fullScreenDisplays.contains(id)
     }
 
-    private var shouldAutoHide: Bool { settings?.idleBehavior == .hide || isFullScreen }
+    private var shouldAutoHide: Bool { !isCompact && (settings?.idleBehavior == .hide || isFullScreen) }
+
+    private func revealCompactSidebar() {
+        guard isCompact, settings?.enabled == true, !viewState.isExpanded,
+              !dragController.isActive, !otherDragActive(), !cycleController.isKeyboardSwitcherVisible else { return }
+        hideWork?.cancel()
+        hideWork = nil
+        viewState.isExpanded = true
+        layout()
+        bringSidebarForward(keepingMenuAbove: ownsMenu && cycleController.panel.isVisible)
+    }
 
     // Fade mode dims the idle sidebar so content behind the icons stays visible.
     private func updateIdleOpacity(inUse: Bool) {
@@ -462,22 +481,41 @@ private final class SidebarDisplayController {
             desktops: inventory.desktops, scope: inventory.desktopScope)
         let groups = SidebarMonitorGroup.make(sections: sections, desktops: inventory.desktops,
             monitors: monitors, scope: inventory.desktopScope)
+        let displayedEntryCount = groups.flatMap(\.sections).reduce(0) { $0 + $1.entries.count }
+        let contentHeight: CGFloat?
+        if isCompact && !viewState.isExpanded {
+            contentHeight = SidebarLayout.compactContentHeight(
+                count: displayedEntryCount, appSpacing: CGFloat(settings.appSpacing))
+        } else if inventory.desktopScope == .allDesktops {
+            contentHeight = SidebarMonitorGroup.contentHeight(groups, spacing: CGFloat(settings.appSpacing))
+        } else {
+            contentHeight = nil
+        }
         let frame = SidebarLayout.sidebarFrame(in: usable, count: inventory.entries.count,
                                               side: settings.side, position: settings.position,
                                               appSpacing: CGFloat(settings.appSpacing),
-                                              contentHeight: inventory.desktopScope == .allDesktops
-                                                ? SidebarMonitorGroup.contentHeight(groups, spacing: CGFloat(settings.appSpacing)) : nil)
-        sidebarFrame = frame
+                                              contentHeight: contentHeight,
+                                              minimumHeight: isCompact && !viewState.isExpanded ? 0 : SidebarLayout.rowHeight)
         if viewState.side != settings.side { viewState.side = settings.side }
         // Grow only toward the desktop so icons and click targets stay at the edge.
-        let drawingFrame = CGRect(
+        var drawingFrame = CGRect(
             x: settings.side == .right ? frame.minX - SidebarLayout.drawingPadding : frame.minX,
             y: frame.minY, width: frame.width + SidebarLayout.drawingPadding, height: frame.height
-        ).intersection(usable)
+        )
+        if isCompact {
+            let frames = SidebarLayout.compactFrames(beside: frame, side: settings.side, expanded: viewState.isExpanded)
+            sidebarFrame = frames.main
+            compactFrame = frames.compact
+            drawingFrame = frames.panel
+        } else {
+            sidebarFrame = frame
+            compactFrame = .zero
+        }
+        drawingFrame = drawingFrame.intersection(usable)
         if panel.frame != drawingFrame { panel.setFrame(drawingFrame, display: true) }
         let menuFrame = sidebarEntryID == nil ? nil : cycleController.panel.frame
         panel.ignoresMouseEvents = !SidebarLayout.acceptsSidebarPointer(
-            at: NSEvent.mouseLocation, sidebar: sidebarFrame, menu: menuFrame)
+            at: NSEvent.mouseLocation, sidebar: pointerFrame, menu: menuFrame)
         edgeFrame = CGRect(x: settings.side == .left ? target.frame.minX : target.frame.maxX - 3,
                            y: frame.minY, width: 3, height: frame.height)
     }
@@ -701,7 +739,7 @@ private final class SidebarDisplayController {
               event.scrollingDeltaY.isFinite, event.scrollingDeltaY != 0,
               screen != nil else { return false }
         let point = panel.convertToScreen(CGRect(origin: event.locationInWindow, size: .zero)).origin
-        guard SidebarLayout.acceptsSidebarPointer(at: point, sidebar: sidebarFrame,
+        guard SidebarLayout.acceptsSidebarPointer(at: point, sidebar: pointerFrame,
             menu: sidebarEntryID == nil ? nil : cycleController.panel.frame) else { return false }
         // Modifier scrolling must not move the sidebar through trackpad inertia.
         guard event.momentumPhase.isEmpty else { return true }
@@ -752,13 +790,13 @@ private final class SidebarDisplayController {
             }
         }
         if [.leftMouseDown, .rightMouseDown, .otherMouseDown].contains(event.type),
-           !sidebarFrame.contains(point),
+           !pointerFrame.contains(point),
            !(sidebarEntryID != nil && cycleController.panel.frame.contains(point)) {
             cancelPendingHover()
             hoveredEntryID = nil
             dismissSidebar()
         }
-        if event.type == .scrollWheel, panel.isVisible, sidebarFrame.contains(point) {
+        if event.type == .scrollWheel, panel.isVisible, pointerFrame.contains(point) {
             // A scrolling icon is no longer a stable menu anchor.
             cancelPendingHover()
             hoveredEntryID = nil
@@ -771,12 +809,14 @@ private final class SidebarDisplayController {
         guard settings?.enabled == true, !dragController.isActive, !otherDragActive() else { return }
         restoreSidebarIfNeeded()
         let point = NSEvent.mouseLocation
-        let inSidebar = panel.isVisible && panel.isOnActiveSpace && sidebarFrame.contains(point)
+        let inCompact = isCompact && panel.isVisible && panel.isOnActiveSpace && compactFrame.contains(point)
+        if inCompact { revealCompactSidebar() }
+        let inSidebar = showsMainSidebar && panel.isVisible && panel.isOnActiveSpace && sidebarFrame.contains(point)
         let inMenu = sidebarEntryID != nil && cycleController.panel.isVisible
             && cycleController.panel.isOnActiveSpace && cycleController.panel.frame.contains(point)
         // The popup can overlap the sidebar's wide icon hit area. Give it all input there.
         panel.ignoresMouseEvents = !panel.isVisible || !SidebarLayout.acceptsSidebarPointer(
-            at: point, sidebar: sidebarFrame,
+            at: point, sidebar: pointerFrame,
             menu: sidebarEntryID == nil ? nil : cycleController.panel.frame)
         let inEdge = edgeFrame.contains(point)
 
@@ -833,17 +873,25 @@ private final class SidebarDisplayController {
         }
 
         // Hide the sidebar only after its window menu has closed.
-        if shouldAutoHide, panel.isVisible, !positionScrollCapture.isActive, !inSidebar, !inMenu, !inEdge,
+        if (shouldAutoHide || (isCompact && viewState.isExpanded)), panel.isVisible,
+           !positionScrollCapture.isActive, !inSidebar, !inCompact, !inMenu, !inEdge,
            sidebarEntryID == nil {
             if hideWork == nil {
                 let work = DispatchWorkItem { [weak self] in
                     guard let self else { return }
                     self.hideWork = nil
                     let point = NSEvent.mouseLocation
-                    guard self.shouldAutoHide, self.sidebarEntryID == nil,
+                    guard self.shouldAutoHide || (self.isCompact && self.viewState.isExpanded),
+                          self.sidebarEntryID == nil,
                           !self.positionScrollCapture.isActive,
-                          !self.sidebarFrame.contains(point), !self.edgeFrame.contains(point) else { return }
-                    self.panel.orderOut(nil)
+                          !self.dragController.isActive, !self.otherDragActive(),
+                          !self.pointerFrame.contains(point), !self.edgeFrame.contains(point) else { return }
+                    if self.isCompact {
+                        self.viewState.isExpanded = false
+                        self.layout()
+                    } else {
+                        self.panel.orderOut(nil)
+                    }
                     self.dismissSidebar()
                     self.hoveredEntryID = nil
                     self.viewState.highlightedEntryID = nil
@@ -856,7 +904,7 @@ private final class SidebarDisplayController {
             hideWork = nil
         }
 
-        updateIdleOpacity(inUse: inSidebar || inMenu || sidebarEntryID != nil || positionScrollCapture.isActive)
+        updateIdleOpacity(inUse: inSidebar || inCompact || inMenu || sidebarEntryID != nil || positionScrollCapture.isActive)
     }
 
     private func cancelInteraction(preservingHoveredEntry: Bool = false) {

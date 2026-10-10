@@ -61,7 +61,7 @@ enum SidebarActiveAppClickAction: String, CaseIterable {
 }
 
 enum SidebarIdleBehavior: String, CaseIterable, Codable {
-    case fade, hide, stayVisible
+    case fade, hide, stayVisible, compact
 
     static func saved(_ value: String?) -> Self {
         value.flatMap(Self.init(rawValue:)) ?? .fade
@@ -72,6 +72,7 @@ enum SidebarIdleBehavior: String, CaseIterable, Codable {
         case .fade: return "Fade"
         case .hide: return "Auto-Hide"
         case .stayVisible: return "Alway visible"
+        case .compact: return "Compact"
         }
     }
 }
@@ -332,6 +333,7 @@ enum SidebarLayout {
 
     // Keep the icon close to the display edge while leaving room for its label.
     static let width: CGFloat = 86
+    static let compactWidth: CGFloat = 20
     // Extra canvas toward the desktop for the magnified frost's soft edges.
     static let drawingPadding: CGFloat = 36
     static let menuGap: CGFloat = 2
@@ -355,16 +357,24 @@ enum SidebarLayout {
 
     static func sidebarFrame(in visibleFrame: CGRect, count: Int, side: SidebarSide, position: Double,
                              appSpacing: CGFloat = SidebarLayout.appSpacing, separatorCount: Int = 0,
-                             contentHeight: CGFloat? = nil) -> CGRect {
+                             contentHeight: CGFloat? = nil, minimumHeight: CGFloat = rowHeight) -> CGRect {
         let gaps = CGFloat(max(0, count - 1)) * appSpacing
         let separators = CGFloat(max(0, separatorCount)) * (desktopSeparatorHeight + appSpacing)
-        let height = min(max(rowHeight, contentHeight ?? (CGFloat(count) * rowHeight + gaps + separators + 16)), visibleFrame.height)
+        let height = min(max(minimumHeight,
+            contentHeight ?? (CGFloat(count) * rowHeight + gaps + separators + 16)), visibleFrame.height)
         let width = min(Self.width, visibleFrame.width)
         return CGRect(
             x: side == .left ? visibleFrame.minX : visibleFrame.maxX - width,
             y: visibleFrame.minY + (visibleFrame.height - height) * (1 - min(1, max(0, position))),
             width: width, height: height
         )
+    }
+
+    static func compactContentHeight(count: Int, appSpacing: CGFloat) -> CGFloat {
+        guard count > 0 else { return rowHeight }
+        let numberSlots = CGFloat(count) * iconSlotHeight
+        let gaps = CGFloat(count - 1) * (labelHeight + appSpacing)
+        return numberSlots + gaps + verticalPadding * 2
     }
 
     static func menuFrame(size: CGSize, icon: CGRect, screen: CGRect, side: SidebarSide) -> CGRect {
@@ -377,6 +387,17 @@ enum SidebarLayout {
             y: min(max(y, screen.minY), screen.maxY - height),
             width: width, height: height
         )
+    }
+
+    // The number strip stays at the display edge; the app column opens toward the desktop.
+    static func compactFrames(beside frame: CGRect, side: SidebarSide,
+                              expanded: Bool) -> (main: CGRect, compact: CGRect, panel: CGRect) {
+        let compact = CGRect(x: side == .left ? frame.minX : frame.maxX - compactWidth,
+                             y: frame.minY, width: compactWidth, height: frame.height)
+        let main = frame.offsetBy(dx: side == .left ? compactWidth : -compactWidth, dy: 0)
+        let drawing = CGRect(x: side == .left ? main.minX : main.minX - drawingPadding,
+                             y: main.minY, width: main.width + drawingPadding, height: main.height)
+        return (main, compact, expanded ? drawing.union(compact) : compact)
     }
 
     static func acceptsSidebarPointer(at point: CGPoint, sidebar: CGRect, menu: CGRect?) -> Bool {
