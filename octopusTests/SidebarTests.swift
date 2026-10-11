@@ -247,7 +247,7 @@ struct SidebarTests {
                                   20: SidebarWindowState(isMinimized: true, canMinimize: true)])
         var anchors: [CyclePanelItem.ID: NSView] = [:]
         let bar = CGRect(x: 100, y: 700, width: 600, height: 94)
-        let frame = SidebarLayout.notchMenuFrame(size: CGSize(width: 280, height: 120),
+        let frame = SidebarLayout.notchMenuFrame(size: CGSize(width: SidebarLayout.notchWindowMenuWidth, height: 120),
             icon: CGRect(x: 250, y: 740, width: 40, height: 40), bar: bar,
             screen: CGRect(x: 0, y: 0, width: 1000, height: 900), belowIcon: true)
         let panel = CyclePanel(contentRect: frame)

@@ -288,7 +288,12 @@ final class CyclePanelController: NSObject {
 
         let minimumContentHeight = headerHeight + (listVerticalPadding * 2) + rowHeight + actionHeight
         let clampedContentHeight = max(minimumContentHeight, min(desiredContentHeight, maxContentHeightByScreen))
-        let contentWidth = sidebarAnchor == nil ? panelContentWidth : sidebarContentWidth
+        let contentWidth: CGFloat
+        if let anchor = sidebarAnchor {
+            contentWidth = anchor.bar == nil ? sidebarContentWidth : SidebarLayout.notchWindowMenuWidth
+        } else {
+            contentWidth = panelContentWidth
+        }
         let targetContentRect = NSRect(x: 0, y: 0, width: contentWidth, height: clampedContentHeight)
         let targetFrameSize = panel.frameRect(forContentRect: targetContentRect).size
 

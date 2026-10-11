@@ -357,7 +357,8 @@ enum SidebarLayout {
     static let notchBarPadding: CGFloat = 4
     static let notchMonitorWidth: CGFloat = 40
     static let notchCloseDelay: TimeInterval = 0.25
-    static let notchWindowMenuOffset: CGFloat = 12
+    static let notchWindowMenuOffset: CGFloat = 40
+    static let notchWindowMenuWidth: CGFloat = 220
     static let notchEmptyWidth: CGFloat = 40
     static let notchSeparatorWidth: CGFloat = 12
     // Extra canvas toward the desktop for the magnified frost's soft edges.
