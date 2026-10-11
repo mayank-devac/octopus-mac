@@ -348,10 +348,10 @@ struct SidebarView: View {
             }
             .frame(width: SidebarLayout.iconSize, height: SidebarLayout.iconSize)
             .opacity(hasNoWindows ? 0.65 : 1)
-            .overlay {
+            .background {
                 if hasNoWindows {
                     RoundedRectangle(cornerRadius: SidebarLayout.iconSize * 0.22)
-                        .stroke(Color(white: 0.55), lineWidth: 1.5)
+                        .fill(Color(white: colorScheme == .dark ? 0.16 : 0.88))
                         .allowsHitTesting(false)
                 }
             }
