@@ -5,11 +5,148 @@ import struct SwiftUI.Form
 import struct SwiftUI.Section
 import struct SwiftUI.ForEach
 import struct SwiftUI.Text
+import struct SwiftUI.Group
+import struct SwiftUI.ScrollView
+import struct SwiftUI.HStack
+import struct SwiftUI.VStack
+import struct SwiftUI.ObservedObject
 import protocol SwiftUI.View
 import Testing
 @testable import octopus
 
 struct SidebarTests {
+    @Test func presentationPreservesVisibilityAndFullScreenRules() {
+        let cases: [(SidebarIdleBehavior, Bool, Bool, SidebarPresentation.Mode, Bool)] = [
+            (.fade, false, false, .edge, false), (.fade, false, true, .edge, true),
+            (.hide, false, false, .edge, true), (.stayVisible, false, false, .edge, false),
+            (.stayVisible, false, true, .edge, true), (.compact, false, false, .compact, false),
+            (.compact, false, true, .compact, false), (.notch, true, false, .notch, false),
+            (.notch, true, true, .notch, false), (.notch, false, false, .edge, true)
+        ]
+        for (behavior, trigger, fullScreen, mode, autoHides) in cases {
+            let policy = SidebarPresentation(behavior: behavior, hasNotchTrigger: trigger, fullScreen: fullScreen)
+            #expect(policy.mode == mode && policy.autoHides == autoHides)
+            #expect(policy.restoresMainSidebar(expanded: true, menuVisible: true))
+            #expect(policy.restoresMainSidebar(expanded: false, menuVisible: false) == (!autoHides && mode != .notch))
+            #expect(policy.closesWhenOutside(expanded: true) == (autoHides || mode != .edge))
+            #expect(policy.closeDelay == (mode == .notch ? SidebarLayout.notchCloseDelay : 0))
+        }
+    }
+
+    @MainActor @Test func presentationKeepsDrawingPaddingOutsideNotchHitTargets() {
+        let screen = CGRect(x: -1440, y: 0, width: 1440, height: 900)
+        let notch = CGRect(x: -820, y: 870, width: 200, height: 30)
+        var config = SidebarConfiguration.factoryDefaults
+        config.idleBehavior = .notch
+        let policy = SidebarPresentation(behavior: .notch, hasNotchTrigger: true, fullScreen: false)
+        let frames = policy.layout(configuration: config, notch: notch, available: screen,
+            screen: screen, groups: [], entryCount: 0, expanded: true)
+        #expect(frames.sidebar.maxY == notch.minY)
+        #expect(frames.drawing.maxY == frames.sidebar.maxY)
+        #expect(frames.sidebar.minY - frames.drawing.minY == SidebarLayout.drawingPadding)
+        let shadowPoint = CGPoint(x: frames.sidebar.midX, y: frames.sidebar.minY - 1)
+        #expect(frames.drawing.contains(shadowPoint))
+        #expect(!policy.pointerFrame(sidebar: frames.sidebar, compact: frames.compact, expanded: true).contains(shadowPoint))
+        #expect(frames.edgeTrigger.isEmpty)
+        #expect(screen.contains(frames.drawing))
+        for side in SidebarSide.allCases {
+            config.side = side
+            for behavior in [SidebarIdleBehavior.stayVisible, .compact] {
+                config.idleBehavior = behavior
+                let edgePolicy = SidebarPresentation(behavior: behavior, hasNotchTrigger: false, fullScreen: false)
+                let edge = edgePolicy.layout(configuration: config, notch: .zero, available: screen,
+                    screen: screen, groups: [], entryCount: 0, expanded: true)
+                #expect(edge.topContentWidth == nil)
+                #expect(edge.drawing.minY == edge.sidebar.minY)
+                #expect(!edge.edgeTrigger.isEmpty)
+                #expect(edgePolicy.pointerFrame(sidebar: edge.sidebar, compact: edge.compact, expanded: false)
+                    == (behavior == .compact ? edge.compact : edge.sidebar))
+            }
+        }
+    }
+
+    @MainActor @Test func visibilitySwitchesKeepTheReplacementNativeAnchors() async throws {
+        let mode = AnchorSwitchMode()
+        let registry = AnchorSwitchRegistry()
+        let host = NSHostingView(rootView: AnchorSwitchView(mode: mode, registry: registry))
+        host.sizingOptions = []
+        let panel = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 400, height: 300),
+            styleMask: [.borderless], backing: .buffered, defer: false)
+        panel.isReleasedWhenClosed = false
+        panel.contentView = host
+        defer { panel.close() }
+        panel.orderFront(nil)
+        for next in [SidebarIdleBehavior.stayVisible, .notch, .stayVisible, .compact, .notch, .compact, .stayVisible] {
+            mode.behavior = next
+            host.layoutSubtreeIfNeeded()
+            try await Task.sleep(for: .milliseconds(100))
+            host.layoutSubtreeIfNeeded()
+            if next == .compact {
+                #expect(registry.rows.isEmpty && registry.geometry.isEmpty)
+            } else {
+                #expect(registry.rows.count == 3 && registry.geometry.count == 3,
+                    "\(next.rawValue): rows \(registry.rows.count), geometry \(registry.geometry.count), events \(registry.events)")
+                for id in 1...3 {
+                    let row = try #require(registry.rows[id])
+                    let geometry = try #require(registry.geometry[id])
+                    #expect(row.window === panel && geometry.window === panel)
+                    let frame = panel.convertToScreen(row.convert(row.bounds, to: nil))
+                    let hit = SidebarDesktopDropTarget.visibleFrame(of: row, within: panel.frame)
+                    #expect(hit?.contains(CGPoint(x: frame.midX, y: frame.midY)) == true)
+                }
+            }
+        }
+    }
+
+    @Test func emptyNotchBarKeepsNoWindowAndPermissionControlsReachable() {
+        for count in [0, 1] {
+            let size = SidebarLayout.notchBarSize(count: count, appSpacing: 4,
+                availableFrame: CGRect(x: 0, y: 0, width: 1200, height: 800), groupedWidth: 0)
+            #expect(size.width == SidebarLayout.width + SidebarLayout.notchBarPadding * 2)
+            #expect(size.height >= 76)
+        }
+    }
+
+    @MainActor @Test func notchTriggerExposesAWorkingAccessibilityPress() async throws {
+        // Ask only this test application to materialise its accessibility tree, as VoiceOver does.
+        // This does not enable VoiceOver or change the user's system accessibility settings.
+        let enhancedUI = NSAccessibility.Attribute(rawValue: "AXEnhancedUserInterface")
+        let previous = NSApp.accessibilityAttributeValue(enhancedUI) ?? false
+        NSApp.accessibilitySetValue(true, forAttribute: enhancedUI)
+        defer { NSApp.accessibilitySetValue(previous, forAttribute: enhancedUI) }
+        var opened = false
+        let host = NSHostingView(rootView: SidebarNotchTriggerView(onReveal: { opened = true }))
+        host.sizingOptions = []
+        let panel = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 200, height: 32),
+            styleMask: [.borderless], backing: .buffered, defer: false)
+        panel.isReleasedWhenClosed = false
+        panel.contentView = host
+        defer { panel.close() }
+        panel.orderFront(nil)
+        host.layoutSubtreeIfNeeded()
+        try await Task.sleep(for: .milliseconds(50))
+        var tree: [String] = []
+        func findTrigger(_ object: Any) -> AnyObject? {
+            // SwiftUI's accessibility nodes implement the ObjC selectors without formally
+            // conforming to NSAccessibilityProtocol, so use optional selector dispatch.
+            let element = object as AnyObject
+            let label: String? = element.accessibilityLabel?() ?? nil
+            let children: [Any] = element.accessibilityChildren?() ?? []
+            tree.append("\(type(of: object)): \(label ?? "nil"), children \(children.count)")
+            if label == "Open app bar" { return element }
+            for child in children {
+                if let found = findTrigger(child) { return found }
+            }
+            return nil
+        }
+        let found = findTrigger(host)
+        let trigger = try #require(found, "AX tree: \(tree)")
+        #expect(trigger.accessibilityRole?() == .button)
+        #expect(trigger.accessibilityPerformPress?() == true)
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(opened)
+    }
+
     @Test func virtualNotchWidthPersistsPerDisplayAndOlderProfilesKeepTheirDefaults() throws {
         let suite = "NotchWidth-\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: suite))
@@ -40,13 +177,13 @@ struct SidebarTests {
         #expect(hardware.width == 200)
     }
 
-    @Test func notchPopupsStartAtIconCentreBelowTheBarAndStayOnScreen() {
+    @Test func notchPopupsStayCentredBelowIconsAndWithinScreen() {
         let screen = CGRect(x: -1440, y: 0, width: 1440, height: 900)
         let bar = CGRect(x: -1000, y: 760, width: 600, height: 94)
         let icon = CGRect(x: -900, y: 790, width: 40, height: 40)
         let menu = SidebarLayout.notchMenuFrame(size: CGSize(width: 280, height: 300),
             icon: icon, bar: bar, screen: screen)
-        #expect(menu.minX == icon.midX)
+        #expect(menu.midX == icon.midX)
         #expect(menu.maxY == bar.minY)
         #expect(menu.intersection(bar).isEmpty)
         #expect(screen.contains(menu))
@@ -60,6 +197,16 @@ struct SidebarTests {
         #expect(clamped.maxX == screen.maxX)
         #expect(clamped.minY == screen.minY)
         #expect(clamped.maxY == bar.minY)
+        let windowMenu = SidebarLayout.notchMenuFrame(size: CGSize(width: 280, height: 300),
+            icon: icon, bar: bar, screen: screen, belowIcon: true)
+        #expect(windowMenu.midX == icon.midX + SidebarLayout.notchWindowMenuOffset)
+        #expect(windowMenu.maxY == icon.minY)
+        #expect(windowMenu.intersection(icon).isEmpty)
+        #expect(screen.contains(windowMenu))
+        let shiftedAtEdge = SidebarLayout.notchMenuFrame(size: CGSize(width: 280, height: 300),
+            icon: rightIcon, bar: bar, screen: screen, belowIcon: true)
+        #expect(shiftedAtEdge.maxX == screen.maxX)
+        #expect(shiftedAtEdge.maxY == rightIcon.minY)
     }
 
     @Test func notchDragScrollingUsesHorizontalEdgesAndLeavesTheMiddleStill() {
@@ -74,7 +221,20 @@ struct SidebarTests {
             horizontal: true, flipped: true) == .zero)
     }
 
-    @MainActor @Test func notchPopupNativeRowsStayInOneColumnBelowTheAppBar() async throws {
+    @MainActor @Test func windowPopupBackdropHasTransparentRoundedCorners() throws {
+        let panel = CyclePanel(contentRect: CGRect(x: 0, y: 0, width: 280, height: 120))
+        defer { panel.close() }
+        let effect = try #require(panel.contentView as? NSVisualEffectView)
+        let mask = try #require(effect.maskImage)
+        let pixels = try #require(mask.tiffRepresentation.flatMap(NSBitmapImageRep.init(data:)))
+        #expect(try #require(pixels.colorAt(x: 0, y: 0)).alphaComponent == 0)
+        #expect(try #require(pixels.colorAt(x: pixels.pixelsWide / 2, y: pixels.pixelsHigh / 2)).alphaComponent == 1)
+        #expect(mask.resizingMode == .stretch)
+        #expect(mask.capInsets.top == 12 && mask.capInsets.right == 12)
+        #expect(!panel.isOpaque && panel.backgroundColor == .clear)
+    }
+
+    @MainActor @Test func notchPopupNativeRowsStayInOneColumnBelowTheIcon() async throws {
         let app = Application(NSRunningApplication.current)
         let windows = [10, 20].map { id -> Window in
             let window = Window(AXUIElementCreateApplication(getpid()), app, cachedTitle: "Window \(id)")
@@ -89,7 +249,7 @@ struct SidebarTests {
         let bar = CGRect(x: 100, y: 700, width: 600, height: 94)
         let frame = SidebarLayout.notchMenuFrame(size: CGSize(width: 280, height: 120),
             icon: CGRect(x: 250, y: 740, width: 40, height: 40), bar: bar,
-            screen: CGRect(x: 0, y: 0, width: 1000, height: 900))
+            screen: CGRect(x: 0, y: 0, width: 1000, height: 900), belowIcon: true)
         let panel = CyclePanel(contentRect: frame)
         panel.isReleasedWhenClosed = false
         defer { panel.close() }
@@ -112,7 +272,8 @@ struct SidebarTests {
         let firstFrame = panel.convertToScreen(first.convert(first.bounds, to: nil))
         let secondFrame = panel.convertToScreen(second.convert(second.bounds, to: nil))
         #expect(firstFrame.minX == secondFrame.minX && firstFrame.width == secondFrame.width)
-        #expect(firstFrame.maxY <= bar.minY && secondFrame.maxY <= bar.minY)
+        #expect(panel.frame.maxY == 740) // The icon bottom, above the app label.
+        #expect(firstFrame.maxY <= 740 && secondFrame.maxY <= 740)
         #expect(firstFrame.minY > secondFrame.minY)
         let point = CGPoint(x: secondFrame.midX, y: secondFrame.midY)
         #expect(CyclePanelController.sidebarPointerTarget(at: point, items: state.items,
@@ -181,12 +342,15 @@ struct SidebarTests {
         #expect(sidebar.content.maxY == virtual.minY)
         #expect(sidebar.panel.midX == sidebar.content.midX)
         #expect(sidebar.panel.width == twoApps.width + SidebarLayout.drawingPadding * 2)
+        #expect(sidebar.panel.maxY == sidebar.content.maxY)
+        #expect(sidebar.panel.minY == sidebar.content.minY - SidebarLayout.drawingPadding)
 
         let clipped = SidebarLayout.notchSidebarFrames(
             contentSize: CGSize(width: SidebarLayout.width, height: 2000), below: virtual,
             availableFrame: screen)
         #expect(clipped.content.minY == screen.minY)
         #expect(clipped.content.maxY == virtual.minY)
+        #expect(clipped.panel.minY == screen.minY)
     }
 
     @Test func notchVisibilitySurvivesSingleAndDisplayPreferenceReloads() throws {
@@ -1383,5 +1547,56 @@ struct SidebarTests {
         state.setWindows([], applicationTitle: "Example", selectedID: 10)
         #expect(state.currentItem == nil)
         #expect(!state.showsHeader)
+    }
+}
+
+@MainActor private final class AnchorSwitchMode: ObservableObject {
+    @Published var behavior: SidebarIdleBehavior = .stayVisible
+}
+
+@MainActor private final class AnchorSwitchRegistry {
+    var rows: [Int: NSView] = [:]
+    var geometry: [Int: NSView] = [:]
+    var events: [String] = []
+
+    func record(_ change: SidebarAnchorChange, id: Int, geometry: Bool) {
+        switch change {
+        case .registered(let view): events.append("register \(geometry) \(id) \(ObjectIdentifier(view))")
+        case .removed(let view): events.append("remove \(geometry) \(id) \(ObjectIdentifier(view))")
+        }
+        if geometry { change.apply(to: &self.geometry, id: id) }
+        else { change.apply(to: &rows, id: id) }
+    }
+}
+
+private struct AnchorSwitchView: View {
+    @ObservedObject var mode: AnchorSwitchMode
+    let registry: AnchorSwitchRegistry
+
+    var body: some View {
+        Group {
+            if mode.behavior == .notch {
+                ScrollView(.horizontal) { HStack { ForEach(1...3, id: \.self) { row($0) } } }
+            } else if mode.behavior == .compact {
+                Text("Compact")
+            } else {
+                ScrollView(.vertical) { VStack { ForEach(1...3, id: \.self) { row($0) } } }
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private func row(_ id: Int) -> some View {
+        Text("App \(id)").frame(width: 86, height: 86)
+            .background {
+                SidebarGeometryAnchor(id: id, onAnchor: { id, change in
+                    registry.record(change, id: id, geometry: true)
+                })
+            }
+            .overlay {
+                SidebarPointerRegion(onClick: {}, onAnchor: { change in
+                    registry.record(change, id: id, geometry: false)
+                })
+            }
     }
 }

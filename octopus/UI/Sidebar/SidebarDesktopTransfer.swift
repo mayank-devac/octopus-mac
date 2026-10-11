@@ -64,9 +64,14 @@ struct SidebarMonitor: Identifiable, Equatable {
     let isPrimary: Bool
     // A lone display needs no identifying name; its heading stays as the desktop drop target.
     var isOnlyDisplay = false
+    // Screen discovery supplies the global number before any display filtering.
+    var number: Int?
+    var numberedTitle: String {
+        "\(number ?? 1) · \(name.isEmpty ? "Monitor" : name)"
+    }
     var title: String {
         guard !isOnlyDisplay else { return "Desktops" }
-        return "\(isPrimary ? "1" : "2")" + (name.isEmpty ? "" : " · \(name)")
+        return name.isEmpty ? "\(number ?? 1)" : numberedTitle
     }
     static let headerHeight: CGFloat = 40
     static let emptyHeight: CGFloat = 24
@@ -90,11 +95,14 @@ struct SidebarMonitorGroup: Identifiable {
             let rhs = right == "Main" ? 0 : (monitors.firstIndex(where: { $0.id == right }) ?? Int.max)
             return lhs < rhs
         }
-        var groups = displayIDs.map { id in
+        var groups = displayIDs.enumerated().map { index, id in
             let screen = monitors.first(where: { $0.id == id })
                 ?? (id == "Main" ? monitors.first(where: \.isPrimary) : nil)
             let monitor = SidebarMonitor(id: id, name: screen?.name ?? "", isPrimary: screen?.isPrimary ?? false,
-                                         isOnlyDisplay: monitors.count == 1)
+                                         isOnlyDisplay: monitors.count == 1,
+                                         number: screen?.number ?? screen.flatMap { resolved in
+                                             monitors.firstIndex { $0.id == resolved.id }.map { $0 + 1 }
+                                         } ?? index + 1)
             return Self(monitor: monitor, desktops: desktops.filter { $0.displayIdentifier == id },
                 sections: sections.filter { $0.desktop?.displayIdentifier == id })
         }

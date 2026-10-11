@@ -15,6 +15,7 @@ final class SidebarViewState: ObservableObject {
     @Published var isExpanded = false
     @Published var isTopCentered = false
     @Published var topContentWidth: CGFloat?
+    @Published var topDrawingBottomPadding: CGFloat = 0
     var dragDesktops: [SidebarDesktop]?
 }
 
@@ -27,16 +28,16 @@ struct SidebarView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.colorScheme) private var colorScheme
     var onClick: (SidebarEntryID) -> Void
-    var onAnchor: (SidebarEntryID, NSView?) -> Void
-    var onIconAnchor: (SidebarEntryID, NSView?) -> Void = { _, _ in }
+    var onAnchor: (SidebarEntryID, SidebarAnchorChange) -> Void
+    var onIconAnchor: (SidebarEntryID, SidebarAnchorChange) -> Void = { _, _ in }
     var pairTargetsProvider: () -> [SidebarIconPairTarget] = { [] }
     var onPairCommand: (SidebarWindowID, SidebarWindowID, PairDropDirection) -> Void = { _, _, _ in }
     var onDrag: (SidebarEntryID, SidebarWindowID?, String, NSView, NSEvent) -> Void = { _, _, _, _, _ in }
     var onPlacement: (SidebarWindowID, SidebarSnapTarget) -> Void = { _, _ in }
     var onMouseAction: (SidebarEntryID, MouseShortcutAction, SidebarWindowID?) -> Void = { _, _, _ in }
-    var onDesktopAnchor: (UInt64, NSView?) -> Void = { _, _ in }
+    var onDesktopAnchor: (UInt64, SidebarAnchorChange) -> Void = { _, _ in }
     var onDesktopTransfer: (SidebarWindowID, SidebarDesktop) -> Void = { _, _ in }
-    var onMonitorAnchor: (String, NSView?) -> Void = { _, _ in }
+    var onMonitorAnchor: (String, SidebarAnchorChange) -> Void = { _, _ in }
     var onReveal: () -> Void = {}
 
     private var isCompact: Bool { state.configuration.idleBehavior == .compact }
@@ -151,7 +152,7 @@ struct SidebarView: View {
         }
         .foregroundStyle(colorScheme == .dark ? Color.white : Color.black)
         .frame(width: contentWidth)
-        .frame(maxHeight: .infinity)
+        .frame(maxHeight: .infinity, alignment: state.isTopCentered ? .top : .center)
         .background(alignment: sidebarAlignment) {
             if isCompact {
                 UnevenRoundedRectangle(
@@ -166,6 +167,7 @@ struct SidebarView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: sidebarAlignment)
+        .padding(.bottom, state.isTopCentered ? state.topDrawingBottomPadding : 0)
         .accessibilityAction(named: Text("Expand sidebar"), onReveal)
     }
 
@@ -240,11 +242,8 @@ struct SidebarView: View {
             }
             ForEach(Array(group.sections.enumerated()), id: \.element.id) { index, section in
                 if index > 0 {
-                    Rectangle().fill(Color.primary.opacity(0.45))
-                        .frame(width: 1, height: SidebarLayout.rowHeight - 8)
-                        .frame(width: SidebarLayout.notchSeparatorWidth)
+                    notchDesktopSeparator(title: section.desktop?.title ?? "Other apps")
                         .padding(.horizontal, CGFloat(appSpacing) / 2)
-                        .accessibilityLabel(section.desktop?.title ?? "Other apps")
                 }
                 notchSection(section, indices: indices)
             }
@@ -252,12 +251,15 @@ struct SidebarView: View {
     }
 
     private func notchMonitorLabel(_ monitor: SidebarMonitor) -> some View {
-        let number = (state.monitors.firstIndex { $0.id == monitor.id } ?? (monitor.isPrimary ? 0 : 1)) + 1
-        let title = "\(number) · \(monitor.name.isEmpty ? "Monitor" : monitor.name)"
+        let title = monitor.numberedTitle
         return Text(title)
-            .font(.system(size: CGFloat(labelFontSize), weight: .medium))
-            .foregroundStyle(.secondary)
-            .lineLimit(1).minimumScaleFactor(0.65)
+            .font(.system(size: CGFloat(max(labelFontSize - 1, 8)), weight: .medium))
+            .foregroundStyle(colorScheme == .dark ? Color.white : Color.black)
+            .multilineTextAlignment(.center)
+            .lineLimit(3).minimumScaleFactor(0.65)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background { SidebarFrostBackground(shadowOpacity: state.configuration.shadowOpacity) }
             .frame(width: SidebarLayout.rowHeight - 8, height: SidebarLayout.notchMonitorWidth)
             .rotationEffect(.degrees(-90))
             .frame(width: SidebarLayout.notchMonitorWidth, height: SidebarLayout.rowHeight)
@@ -266,6 +268,20 @@ struct SidebarView: View {
                 SidebarGeometryAnchor(id: monitor.id, onAnchor: onMonitorAnchor).allowsHitTesting(false)
             }
             .help(title).accessibilityLabel(title)
+    }
+
+    private func notchDesktopSeparator(title: String) -> some View {
+        let lineColor: Color = colorScheme == .dark ? .white : .black
+        return LinearGradient(stops: [
+            .init(color: .clear, location: 0), .init(color: lineColor.opacity(0.65), location: 0.2),
+            .init(color: lineColor.opacity(0.65), location: 0.8), .init(color: .clear, location: 1)
+        ], startPoint: .top, endPoint: .bottom)
+        .frame(width: 1, height: SidebarLayout.rowHeight - 8)
+        .frame(width: SidebarLayout.notchSeparatorWidth)
+        .background { SidebarFrostBackground(shadowOpacity: state.configuration.shadowOpacity).opacity(0.55) }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(title)
+        .allowsHitTesting(false)
     }
 
     private func notchSection(_ section: SidebarDesktopSection, indices: [SidebarEntryID: Int]) -> some View {
@@ -434,10 +450,16 @@ struct SidebarView: View {
 }
 
 struct SidebarNotchTriggerView: View {
+    var onReveal: () -> Void = {}
+
     var body: some View {
-        SidebarNotchShape()
-            .fill(Color.black.opacity(0.94))
-            .accessibilityHidden(true)
+        Button(action: onReveal) {
+            SidebarNotchShape().fill(Color.black.opacity(0.94))
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Open app bar")
     }
 }
 
@@ -514,23 +536,41 @@ private struct SidebarDesktopSeparator: View {
     }
 }
 
-private struct SidebarGeometryAnchor<ID: Hashable>: NSViewRepresentable {
+// Register only at creation: SwiftUI can update retiring views after replacements are made.
+// Teardown must identify its view so it cannot clear the replacement's registration.
+enum SidebarAnchorChange {
+    case registered(NSView)
+    case removed(NSView)
+
+    func apply<ID: Hashable>(to anchors: inout [ID: NSView], id: ID) {
+        switch self {
+        case .registered(let view):
+            anchors[id] = view
+        case .removed(let view):
+            if anchors[id] === view { anchors.removeValue(forKey: id) }
+        }
+    }
+}
+
+struct SidebarGeometryAnchor<ID: Hashable>: NSViewRepresentable {
     let id: ID
-    let onAnchor: (ID, NSView?) -> Void
+    let onAnchor: (ID, SidebarAnchorChange) -> Void
 
     final class AnchorView: NSView {
-        var onRemoval: (() -> Void)?
+        var onRemoval: ((NSView) -> Void)?
         override func hitTest(_ point: NSPoint) -> NSView? { nil }
     }
 
     func makeNSView(context: Context) -> AnchorView {
         let view = AnchorView()
-        view.onRemoval = { onAnchor(id, nil) }
-        onAnchor(id, view)
+        updateNSView(view, context: context)
+        onAnchor(id, .registered(view))
         return view
     }
-    func updateNSView(_ view: AnchorView, context: Context) {}
-    static func dismantleNSView(_ view: AnchorView, coordinator: ()) { view.onRemoval?() }
+    func updateNSView(_ view: AnchorView, context: Context) {
+        view.onRemoval = { onAnchor(id, .removed($0)) }
+    }
+    static func dismantleNSView(_ view: AnchorView, coordinator: ()) { view.onRemoval?(view) }
 }
 
 private struct SidebarFrostBackground: View {
@@ -600,7 +640,7 @@ private struct SidebarLabelBackground: NSViewRepresentable {
 // Keep the click area fixed while the controller tracks the pointer independently.
 struct SidebarPointerRegion: NSViewRepresentable {
     var onClick: () -> Void
-    var onAnchor: (NSView?) -> Void
+    var onAnchor: (SidebarAnchorChange) -> Void
     var onDrag: ((NSView, NSEvent) -> Void)? = nil
     var dragShortcut: MouseShortcut? = .left
     var onMouseClick: ((MouseShortcut) -> Void)? = nil
@@ -610,7 +650,7 @@ struct SidebarPointerRegion: NSViewRepresentable {
     func makeNSView(context: Context) -> PointerView {
         let view = PointerView()
         updateNSView(view, context: context)
-        onAnchor(view)
+        onAnchor(.registered(view))
         return view
     }
 
@@ -626,12 +666,12 @@ struct SidebarPointerRegion: NSViewRepresentable {
 
     static func dismantleNSView(_ view: PointerView, coordinator: ()) {
         view.cancelOperation(nil)
-        view.onAnchor?(nil)
+        view.onAnchor?(.removed(view))
     }
 
     final class PointerView: NSView {
         var onClick: (() -> Void)?
-        var onAnchor: ((NSView?) -> Void)?
+        var onAnchor: ((SidebarAnchorChange) -> Void)?
         var onDrag: ((NSView, NSEvent) -> Void)?
         var dragShortcut: MouseShortcut? = .left
         var cornerModifiersProvider: () -> NSEvent.ModifierFlags = { MouseShortcutStore.shared.cornerSnapModifiers }

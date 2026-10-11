@@ -143,13 +143,12 @@ private final class SidebarDisplayController {
     }
 
     private var ownsMenu: Bool { cycleController.sidebarOwnerID == menuOwnerID }
-    private var isCompact: Bool { settings?.idleBehavior == .compact }
-    private var isNotchMode: Bool { settings?.idleBehavior == .notch }
-    private var hasNotchTrigger: Bool { isNotchMode && !notchFrame.isEmpty }
-    private var usesPersistentTrigger: Bool { isCompact || hasNotchTrigger }
-    private var showsMainSidebar: Bool { !usesPersistentTrigger || viewState.isExpanded }
+    private var presentation: SidebarPresentation {
+        SidebarPresentation(behavior: settings?.idleBehavior ?? .fade,
+                            hasNotchTrigger: !notchFrame.isEmpty, fullScreen: isFullScreen)
+    }
     private var pointerFrame: CGRect {
-        isCompact ? (showsMainSidebar ? sidebarFrame.union(compactFrame) : compactFrame) : sidebarFrame
+        presentation.pointerFrame(sidebar: sidebarFrame, compact: compactFrame, expanded: viewState.isExpanded)
     }
     private var sidebarEntryID: SidebarEntryID? { ownsMenu ? cycleController.sidebarEntryID : nil }
     var interactionFrames: [CGRect] {
@@ -202,15 +201,22 @@ private final class SidebarDisplayController {
             window.isReleasedWhenClosed = false
             window.acceptsMouseMovedEvents = true
         }
-        let notchHostingView = NSHostingView(rootView: SidebarNotchTriggerView())
+        let notchHostingView = NSHostingView(rootView: SidebarNotchTriggerView(
+            onReveal: { [weak self] in self?.revealSidebarFromPersistentTrigger() }))
         notchHostingView.sizingOptions = []
         notchPanel.contentView = notchHostingView
         notchPanel.level = SidebarWindowLevels.notch
         let hostingView = NSHostingView(rootView: SidebarView(
             inventory: inventory, state: viewState,
             onClick: { [weak self] entryID in self?.activate(entryID) },
-            onAnchor: { [weak self] entryID, view in self?.anchors[entryID] = view },
-            onIconAnchor: { [weak self] entryID, view in self?.iconAnchors[entryID] = view },
+            onAnchor: { [weak self] entryID, change in
+                guard let self else { return }
+                change.apply(to: &self.anchors, id: entryID)
+            },
+            onIconAnchor: { [weak self] entryID, change in
+                guard let self else { return }
+                change.apply(to: &self.iconAnchors, id: entryID)
+            },
             pairTargetsProvider: { [weak self] in self?.pairTargetsProvider() ?? [] },
             onPairCommand: { source, target, direction in
                 AppDelegate.instance?.windowLayoutController.snapPair(WindowPairSnapRequest(source: source,
@@ -223,9 +229,15 @@ private final class SidebarDisplayController {
             onMouseAction: { [weak self] entryID, action, target in
                 self?.performMouseAction(action, entryID: entryID, target: target)
             },
-            onDesktopAnchor: { [weak self] id, view in self?.desktopAnchors[id] = view },
+            onDesktopAnchor: { [weak self] id, change in
+                guard let self else { return }
+                change.apply(to: &self.desktopAnchors, id: id)
+            },
             onDesktopTransfer: { [weak self] id, desktop in self?.inventory.moveToDesktop(id, to: desktop) },
-            onMonitorAnchor: { [weak self] id, view in self?.monitorAnchors[id] = view },
+            onMonitorAnchor: { [weak self] id, change in
+                guard let self else { return }
+                change.apply(to: &self.monitorAnchors, id: id)
+            },
             onReveal: { [weak self] in self?.revealSidebarFromPersistentTrigger() }
         ))
         hostingView.sizingOptions = []
@@ -330,7 +342,7 @@ private final class SidebarDisplayController {
     }
 
     var pairTargets: [SidebarIconPairTarget] {
-        guard panel.isVisible, showsMainSidebar, inventory.hasPermission else { return [] }
+        guard panel.isVisible, presentation.showsMainSidebar(expanded: viewState.isExpanded), inventory.hasPermission else { return [] }
         let entries = viewState.dragSections?.flatMap(\.entries) ?? inventory.entries
         return entries.compactMap { entry in
             guard let id = entry.preferredID, let view = iconAnchors[entry.id],
@@ -400,9 +412,11 @@ private final class SidebarDisplayController {
             updatePointer()
             return
         }
-        if hasNotchTrigger && !viewState.isExpanded { panel.orderOut(nil) }
-        else if shouldAutoHide { panel.orderOut(nil) }
-        else { restoreSidebarIfNeeded() }
+        if presentation.restoresMainSidebar(expanded: viewState.isExpanded, menuVisible: false) {
+            restoreSidebarIfNeeded()
+        } else {
+            panel.orderOut(nil)
+        }
         updateIdleOpacity(inUse: false)
         updatePointer()
     }
@@ -435,8 +449,7 @@ private final class SidebarDisplayController {
         let menuVisible = ownsMenu && cycleController.panel.isVisible && cycleController.panel.isOnActiveSpace
         // Auto-hide applies when idle, not while this sidebar's window list is open.
         guard settings?.enabled == true, screen != nil,
-              !hasNotchTrigger || viewState.isExpanded || menuVisible,
-              !shouldAutoHide || menuVisible,
+              presentation.restoresMainSidebar(expanded: viewState.isExpanded, menuVisible: menuVisible),
               needsSpacePresentation || !panel.isVisible || !panel.isOnActiveSpace else { return }
         // Ordering below an existing popup does not explicitly bring the sidebar
         // forward. Establish both windows' order, even while another app is active.
@@ -457,12 +470,8 @@ private final class SidebarDisplayController {
         return inventory.fullScreenDisplays.contains(id)
     }
 
-    private var shouldAutoHide: Bool {
-        !isCompact && !hasNotchTrigger && (settings?.idleBehavior == .hide || isNotchMode || isFullScreen)
-    }
-
     private func revealSidebarFromPersistentTrigger() {
-        guard usesPersistentTrigger, settings?.enabled == true, !viewState.isExpanded,
+        guard presentation.usesPersistentTrigger, settings?.enabled == true, !viewState.isExpanded,
               !dragController.isActive, !otherDragActive(), !cycleController.isKeyboardSwitcherVisible else { return }
         hideWork?.cancel()
         hideWork = nil
@@ -473,7 +482,7 @@ private final class SidebarDisplayController {
 
     // Fade mode dims the idle sidebar so content behind the icons stays visible.
     private func updateIdleOpacity(inUse: Bool) {
-        let target = settings?.idleBehavior == .fade && !inUse ? SidebarSettings.idleSidebarOpacity : 1
+        let target = presentation.fadesWhenIdle && !inUse ? SidebarSettings.idleSidebarOpacity : 1
         guard idleOpacityTarget != target else { return }
         idleOpacityTarget = target
         let duration = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? 0 : 0.15
@@ -500,14 +509,14 @@ private final class SidebarDisplayController {
             return
         }
         screen = target
-        notchFrame = isNotchMode ? SidebarLayout.notchTriggerFrame(
+        notchFrame = settings.idleBehavior == .notch ? SidebarLayout.notchTriggerFrame(
             screenFrame: target.frame, safeTopInset: target.safeAreaInsets.top,
             leftArea: target.auxiliaryTopLeftArea, rightArea: target.auxiliaryTopRightArea,
             virtualWidth: CGFloat(settings.configuration.virtualNotchWidth)) ?? .zero : .zero
         updateInventoryScope(settings)
         let monitors = NSScreen.screens.enumerated().compactMap { index, screen -> SidebarMonitor? in
             guard let id = SidebarSettings.monitorID(screen) else { return nil }
-            return SidebarMonitor(id: id, name: screen.localizedName, isPrimary: index == 0)
+            return SidebarMonitor(id: id, name: screen.localizedName, isPrimary: index == 0, number: index + 1)
         }.filter { settings.configuration.displayScope == .allDisplays || $0.id == SidebarSettings.monitorID(target) }
         if viewState.monitors != monitors { viewState.monitors = monitors }
         let usable = isFullScreen ? target.frame : target.visibleFrame
@@ -515,52 +524,20 @@ private final class SidebarDisplayController {
             desktops: inventory.desktops, scope: inventory.desktopScope)
         let groups = SidebarMonitorGroup.make(sections: sections, desktops: inventory.desktops,
             monitors: monitors, scope: inventory.desktopScope)
-        let displayedEntryCount = groups.flatMap(\.sections).reduce(0) { $0 + $1.entries.count }
-        let contentHeight: CGFloat?
-        if isCompact && !viewState.isExpanded {
-            contentHeight = SidebarLayout.compactContentHeight(
-                count: displayedEntryCount, appSpacing: CGFloat(settings.appSpacing))
-        } else if inventory.desktopScope == .allDesktops {
-            contentHeight = SidebarMonitorGroup.contentHeight(groups, spacing: CGFloat(settings.appSpacing))
-        } else {
-            contentHeight = nil
-        }
-        let frame = SidebarLayout.sidebarFrame(in: usable, count: inventory.entries.count,
-                                              side: settings.side, position: settings.position,
-                                              appSpacing: CGFloat(settings.appSpacing),
-                                              contentHeight: contentHeight,
-                                              minimumHeight: isCompact && !viewState.isExpanded ? 0 : SidebarLayout.rowHeight)
+        let policy = presentation
+        let frames = policy.layout(configuration: settings.configuration, notch: notchFrame,
+            available: usable, screen: target.frame, groups: groups,
+            entryCount: inventory.entries.count, expanded: viewState.isExpanded)
         if viewState.side != settings.side { viewState.side = settings.side }
-        if viewState.isTopCentered != hasNotchTrigger { viewState.isTopCentered = hasNotchTrigger }
-        // Edge modes reserve drawing space toward the desktop; notch mode centres it below the trigger.
-        var drawingFrame = CGRect(
-            x: settings.side == .right ? frame.minX - SidebarLayout.drawingPadding : frame.minX,
-            y: frame.minY, width: frame.width + SidebarLayout.drawingPadding, height: frame.height
-        )
-        if isCompact {
-            if viewState.topContentWidth != nil { viewState.topContentWidth = nil }
-            let frames = SidebarLayout.compactFrames(beside: frame, side: settings.side, expanded: viewState.isExpanded)
-            sidebarFrame = frames.main
-            compactFrame = frames.compact
-            drawingFrame = frames.panel
-        } else if hasNotchTrigger {
-            let barSize = SidebarLayout.notchBarSize(
-                count: displayedEntryCount, appSpacing: CGFloat(settings.appSpacing), availableFrame: usable,
-                groupedWidth: SidebarMonitorGroup.notchContentWidth(groups, spacing: CGFloat(settings.appSpacing)))
-            if viewState.topContentWidth != barSize.width { viewState.topContentWidth = barSize.width }
-            let frames = SidebarLayout.notchSidebarFrames(
-                contentSize: barSize, below: notchFrame, availableFrame: usable)
-            sidebarFrame = frames.content
-            compactFrame = .zero
-            drawingFrame = frames.panel
-        } else {
-            if viewState.topContentWidth != nil { viewState.topContentWidth = nil }
-            sidebarFrame = frame
-            compactFrame = .zero
-        }
-        drawingFrame = drawingFrame.intersection(usable)
-        if panel.frame != drawingFrame { panel.setFrame(drawingFrame, display: true) }
-        if hasNotchTrigger {
+        if viewState.isTopCentered != policy.hasTopTrigger { viewState.isTopCentered = policy.hasTopTrigger }
+        sidebarFrame = frames.sidebar
+        compactFrame = frames.compact
+        edgeFrame = frames.edgeTrigger
+        if viewState.topContentWidth != frames.topContentWidth { viewState.topContentWidth = frames.topContentWidth }
+        let bottomPadding = policy.hasTopTrigger ? sidebarFrame.minY - frames.drawing.minY : 0
+        if viewState.topDrawingBottomPadding != bottomPadding { viewState.topDrawingBottomPadding = bottomPadding }
+        if panel.frame != frames.drawing { panel.setFrame(frames.drawing, display: true) }
+        if presentation.hasTopTrigger {
             if notchPanel.frame != notchFrame { notchPanel.setFrame(notchFrame, display: true) }
             notchPanel.orderFrontRegardless()
             if !viewState.isExpanded { panel.orderOut(nil) }
@@ -570,9 +547,7 @@ private final class SidebarDisplayController {
         let menuFrame = sidebarEntryID == nil ? nil : cycleController.panel.frame
         panel.ignoresMouseEvents = !SidebarLayout.acceptsSidebarPointer(
             at: NSEvent.mouseLocation, sidebar: pointerFrame, menu: menuFrame)
-        edgeFrame = hasNotchTrigger ? .zero : CGRect(
-            x: settings.side == .left ? target.frame.minX : target.frame.maxX - 3,
-            y: frame.minY, width: 3, height: frame.height)
+
     }
 
     private func updateInventoryScope(_ settings: Settings) {
@@ -630,7 +605,7 @@ private final class SidebarDisplayController {
             dismissSidebar()
             desktopMenu.show(desktops: group.desktops, sourceID: source.id, anchor: anchor,
                 side: viewState.side, screen: screen.visibleFrame,
-                belowBar: hasNotchTrigger ? sidebarFrame : nil)
+                belowBar: presentation.hasTopTrigger ? sidebarFrame : nil)
         } else if hoveredMonitor != nil || !desktopMenu.contains(point) {
             desktopMenu.hide()
         }
@@ -647,7 +622,7 @@ private final class SidebarDisplayController {
 
     func scrollSidebarDuringDrag(at point: CGPoint) {
         // A drag from another sidebar must be able to reveal this display's notch destinations.
-        if hasNotchTrigger, notchFrame.contains(point), !viewState.isExpanded {
+        if presentation.hasTopTrigger, notchFrame.contains(point), !viewState.isExpanded {
             viewState.isExpanded = true
             layout()
             bringSidebarForward(keepingMenuAbove: false)
@@ -659,7 +634,7 @@ private final class SidebarDisplayController {
                 .compactMap({ $0.enclosingScrollView }).first,
               let document = scroll.documentView else { return }
         let delta = SidebarLayout.dragScrollDelta(at: point, frame: sidebarFrame,
-            horizontal: hasNotchTrigger, flipped: document.isFlipped)
+            horizontal: presentation.hasTopTrigger, flipped: document.isFlipped)
         guard delta != .zero else { return }
         lastDragScroll = ProcessInfo.processInfo.systemUptime
         let clip = scroll.contentView
@@ -689,7 +664,7 @@ private final class SidebarDisplayController {
     }
 
     private func isInNotchMenuBridge(_ point: CGPoint) -> Bool {
-        guard hasNotchTrigger, panel.isVisible, let id = sidebarEntryID,
+        guard presentation.hasTopTrigger, panel.isVisible, let id = sidebarEntryID,
               cycleController.panel.isVisible, let view = anchors[id],
               let row = SidebarDesktopDropTarget.visibleFrame(of: view, within: sidebarFrame) else { return false }
         return SidebarLayout.notchMenuBridge(menu: cycleController.panel.frame, anchor: row).contains(point)
@@ -747,7 +722,7 @@ private final class SidebarDisplayController {
         claimMenu()
         cycleController.showSidebar(for: entry, icon: icon,
                                     screen: isFullScreen ? screen.frame : screen.visibleFrame,
-                                    side: settings.side, belowBar: hasNotchTrigger ? sidebarFrame : nil)
+                                    side: settings.side, belowBar: presentation.hasTopTrigger ? sidebarFrame : nil)
     }
 
     private func activate(_ entryID: SidebarEntryID) {
@@ -798,7 +773,7 @@ private final class SidebarDisplayController {
     private func scrollPosition(_ event: NSEvent) -> Bool {
         guard event.type == .scrollWheel, event.window === panel, panel.isVisible,
               !positionScrollCapture.isActive,
-              !hasNotchTrigger,
+              !presentation.hasTopTrigger,
               settings?.enabled == true, !dragController.isActive, !otherDragActive(),
               !cycleController.isKeyboardSwitcherVisible,
               SidebarPositionScrollShortcut.matches(event.modifierFlags,
@@ -877,10 +852,10 @@ private final class SidebarDisplayController {
         guard settings?.enabled == true, !dragController.isActive, !otherDragActive() else { return }
         restoreSidebarIfNeeded()
         let point = NSEvent.mouseLocation
-        let inCompact = isCompact && panel.isVisible && panel.isOnActiveSpace && compactFrame.contains(point)
-        let inNotch = hasNotchTrigger && notchPanel.isVisible && notchFrame.contains(point)
+        let inCompact = presentation.usesCompactStrip && panel.isVisible && panel.isOnActiveSpace && compactFrame.contains(point)
+        let inNotch = presentation.hasTopTrigger && notchPanel.isVisible && notchFrame.contains(point)
         if inCompact || inNotch { revealSidebarFromPersistentTrigger() }
-        let inSidebar = showsMainSidebar && panel.isVisible && panel.isOnActiveSpace && sidebarFrame.contains(point)
+        let inSidebar = presentation.showsMainSidebar(expanded: viewState.isExpanded) && panel.isVisible && panel.isOnActiveSpace && sidebarFrame.contains(point)
         let inMenu = sidebarEntryID != nil && cycleController.panel.isVisible
             && cycleController.panel.isOnActiveSpace
             && (cycleController.panel.frame.contains(point) || isInNotchMenuBridge(point))
@@ -943,7 +918,7 @@ private final class SidebarDisplayController {
         }
 
         // Hide the sidebar only after its window menu has closed.
-        if (shouldAutoHide || (usesPersistentTrigger && viewState.isExpanded)), panel.isVisible,
+        if presentation.closesWhenOutside(expanded: viewState.isExpanded), panel.isVisible,
            !positionScrollCapture.isActive, !inSidebar, !inCompact, !inNotch, !inMenu, !inEdge,
            sidebarEntryID == nil {
             if hideWork == nil {
@@ -951,28 +926,26 @@ private final class SidebarDisplayController {
                     guard let self else { return }
                     self.hideWork = nil
                     let point = NSEvent.mouseLocation
-                    let inNotch = self.hasNotchTrigger && self.notchFrame.contains(point)
-                    guard self.shouldAutoHide || (self.usesPersistentTrigger && self.viewState.isExpanded),
+                    let inNotch = self.presentation.hasTopTrigger && self.notchFrame.contains(point)
+                    guard self.presentation.closesWhenOutside(expanded: self.viewState.isExpanded),
                           self.sidebarEntryID == nil,
                           !self.positionScrollCapture.isActive,
                           !self.dragController.isActive, !self.otherDragActive(),
                           !self.pointerFrame.contains(point), !inNotch,
                           !self.edgeFrame.contains(point) else { return }
-                    if self.isCompact {
-                        self.viewState.isExpanded = false
-                        self.layout()
-                    } else if self.hasNotchTrigger {
-                        self.viewState.isExpanded = false
-                        self.panel.orderOut(nil)
-                    } else {
-                        self.panel.orderOut(nil)
-                    }
+                    if self.presentation.usesPersistentTrigger { self.viewState.isExpanded = false }
+                    if self.presentation.usesCompactStrip { self.layout() }
+                    else { self.panel.orderOut(nil) }
                     self.dismissSidebar()
                     self.hoveredEntryID = nil
                     self.viewState.highlightedEntryID = nil
                 }
                 hideWork = work
-                DispatchQueue.main.async(execute: work)
+                if presentation.closeDelay > 0 {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + presentation.closeDelay, execute: work)
+                } else {
+                    DispatchQueue.main.async(execute: work)
+                }
             }
         } else {
             hideWork?.cancel()

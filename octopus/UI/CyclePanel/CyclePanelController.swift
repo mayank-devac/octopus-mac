@@ -302,7 +302,7 @@ final class CyclePanelController: NSObject {
         if let anchor = sidebarAnchor {
             if let bar = anchor.bar {
                 newFrame = SidebarLayout.notchMenuFrame(size: targetFrameSize, icon: anchor.icon,
-                                                       bar: bar, screen: anchor.screen)
+                                                       bar: bar, screen: anchor.screen, belowIcon: true)
             } else {
                 newFrame = SidebarLayout.menuFrame(size: targetFrameSize, icon: anchor.icon,
                                                    screen: anchor.screen, side: anchor.side)

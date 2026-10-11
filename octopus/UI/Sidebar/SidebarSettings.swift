@@ -355,7 +355,9 @@ enum SidebarLayout {
     static let virtualNotchHeightRange: ClosedRange<CGFloat> = 24...36
     static let notchBarMaximumScreenFraction: CGFloat = 0.72
     static let notchBarPadding: CGFloat = 4
-    static let notchMonitorWidth: CGFloat = 28
+    static let notchMonitorWidth: CGFloat = 40
+    static let notchCloseDelay: TimeInterval = 0.25
+    static let notchWindowMenuOffset: CGFloat = 12
     static let notchEmptyWidth: CGFloat = 40
     static let notchSeparatorWidth: CGFloat = 12
     // Extra canvas toward the desktop for the magnified frost's soft edges.
@@ -463,13 +465,17 @@ enum SidebarLayout {
         let panelWidth = min(width + drawingPadding * 2, availableFrame.width)
         let panelX = min(max(content.midX - panelWidth / 2, availableFrame.minX),
                          availableFrame.maxX - panelWidth)
-        return (content, CGRect(x: panelX, y: content.minY, width: panelWidth, height: height))
+        // The enlarged title and its frost can draw below the row. Keep this canvas
+        // separate from the content rectangle used for hover and drop targets.
+        let bottomPadding = min(drawingPadding, max(0, content.minY - availableFrame.minY))
+        return (content, CGRect(x: panelX, y: content.minY - bottomPadding,
+                                width: panelWidth, height: height + bottomPadding))
     }
 
     static func notchBarSize(count: Int, appSpacing: CGFloat,
                              availableFrame: CGRect, groupedWidth: CGFloat? = nil) -> CGSize {
         let itemCount = max(1, count)
-        let idealWidth = (groupedWidth ?? (CGFloat(itemCount) * width
+        let idealWidth = max(width, groupedWidth ?? (CGFloat(itemCount) * width
             + CGFloat(max(0, itemCount - 1)) * appSpacing)) + notchBarPadding * 2
         let maximumWidth = min(availableFrame.width,
             max(width + notchBarPadding * 2, availableFrame.width * notchBarMaximumScreenFraction))
@@ -481,12 +487,15 @@ enum SidebarLayout {
         sidebar.contains(point) && !(menu?.contains(point) ?? false)
     }
 
-    // Below the bar, beginning at the icon's centre and extending to its right when space permits.
-    static func notchMenuFrame(size: CGSize, icon: CGRect, bar: CGRect, screen: CGRect) -> CGRect {
+    // Window lists sit immediately under the icon; desktop menus stay below the bar.
+    static func notchMenuFrame(size: CGSize, icon: CGRect, bar: CGRect, screen: CGRect,
+                               belowIcon: Bool = false) -> CGRect {
         let width = min(size.width, screen.width)
-        let height = min(size.height, max(0, bar.minY - screen.minY))
-        return CGRect(x: min(max(icon.midX, screen.minX), screen.maxX - width),
-                      y: bar.minY - height, width: width, height: height)
+        let top = min(belowIcon ? icon.minY : bar.minY, screen.maxY)
+        let height = min(size.height, max(0, top - screen.minY))
+        let offset = belowIcon ? notchWindowMenuOffset : 0
+        return CGRect(x: min(max(icon.midX - width / 2 + offset, screen.minX), screen.maxX - width),
+                      y: top - height, width: width, height: height)
     }
 
     static func notchMenuBridge(menu: CGRect, anchor: CGRect) -> CGRect {

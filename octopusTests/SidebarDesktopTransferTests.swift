@@ -115,6 +115,23 @@ struct SidebarDesktopTransferTests {
         #expect(SidebarMonitorGroup.contentHeight(groups, spacing: 6) == (SidebarMonitor.headerHeight + SidebarMonitor.emptyHeight) * 2 + 6 + SidebarLayout.verticalPadding * 2)
     }
 
+    @Test func threeMonitorsUseDistinctNumbersAndFilteredDisplaysKeepTheirNumber() {
+        let monitors = [SidebarMonitor(id: "monitor-a", name: "A", isPrimary: true, number: 1),
+                        SidebarMonitor(id: "monitor-b", name: "B", isPrimary: false, number: 2),
+                        SidebarMonitor(id: "monitor-c", name: "C", isPrimary: false, number: 3)]
+        let desktops = [desktop(30, display: "monitor-c"), desktop(10), desktop(20, display: "monitor-b")]
+        let groups = SidebarMonitorGroup.make(sections: [], desktops: desktops,
+            monitors: monitors, scope: .allDesktops)
+        #expect(groups.compactMap { $0.monitor?.title } == ["1 · A", "2 · B", "3 · C"])
+        let filtered = SidebarMonitorGroup.make(sections: [], desktops: [desktops[0]],
+            monitors: [monitors[2]], scope: .allDesktops)
+        #expect(filtered[0].monitor?.numberedTitle == "3 · C")
+        #expect(filtered[0].monitor?.title == "Desktops")
+        let primaryAlias = SidebarMonitorGroup.make(sections: [], desktops: [desktop(10, display: "Main")],
+            monitors: monitors, scope: .allDesktops)
+        #expect(primaryAlias[0].monitor?.numberedTitle == "1 · A")
+    }
+
     @Test func displayNamesAppearOnlyWhenSeveralDisplaysAreConnected() {
         let desktops = [desktop(10, display: "monitor-a")]
         let single = [SidebarMonitor(id: "monitor-a", name: "Studio Display", isPrimary: true)]
