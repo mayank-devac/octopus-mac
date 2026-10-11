@@ -197,8 +197,10 @@ struct PreferencesSidebarView: View {
                         .foregroundStyle(.secondary)
                         .frame(width: 46, alignment: .trailing)
                 }
-                .disabled(!editingEnabled)
-                .help("Larger distances show snap previews sooner. On smaller displays the distance is limited so the centre stays available for moving windows.")
+                .disabled(!editingEnabled || configuration.idleBehavior == .notch)
+                .help(configuration.idleBehavior == .notch
+                    ? "Snap distance is unavailable in Mac Notch mode. Your saved distance is kept for other sidebar modes."
+                    : "Larger distances show snap previews sooner. On smaller displays the distance is limited so the centre stays available for moving windows.")
                 Picker("Side", selection: setting(\.side)) {
                     Text("Left").tag(SidebarSide.left)
                     Text("Right").tag(SidebarSide.right)

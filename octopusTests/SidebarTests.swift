@@ -332,7 +332,12 @@ struct SidebarTests {
         #expect(oneApp == CGSize(width: SidebarLayout.width + SidebarLayout.notchBarPadding * 2,
                                 height: SidebarLayout.rowHeight + SidebarLayout.notchBarPadding * 2))
         let twoApps = SidebarLayout.notchBarSize(count: 2, appSpacing: 4, availableFrame: available)
-        #expect(twoApps.width == SidebarLayout.width * 2 + 4 + SidebarLayout.notchBarPadding * 2)
+        #expect(twoApps.width == SidebarLayout.notchItemWidth * 2 + 4 + SidebarLayout.notchBarPadding * 2)
+        let noGap = SidebarLayout.notchBarSize(count: 2, appSpacing: 0, availableFrame: available)
+        let widestGap = SidebarLayout.notchBarSize(count: 2,
+            appSpacing: CGFloat(SidebarSettings.maximumAppSpacing), availableFrame: available)
+        #expect(widestGap.width - noGap.width == CGFloat(SidebarSettings.maximumAppSpacing))
+        #expect(SidebarLayout.notchItemWidth >= SidebarLayout.iconSize * (1 + SidebarLayout.magnificationGrowth))
         let manyApps = SidebarLayout.notchBarSize(count: 100, appSpacing: 4, availableFrame: available)
         #expect(manyApps.width == available.width * SidebarLayout.notchBarMaximumScreenFraction)
 

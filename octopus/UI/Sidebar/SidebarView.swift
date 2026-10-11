@@ -287,7 +287,7 @@ struct SidebarView: View {
     private func notchSection(_ section: SidebarDesktopSection, indices: [SidebarEntryID: Int]) -> some View {
         HStack(spacing: CGFloat(appSpacing)) {
             ForEach(section.entries) { entry in
-                item(entry, index: indices[entry.id] ?? 0).frame(width: SidebarLayout.width)
+                item(entry, index: indices[entry.id] ?? 0).frame(width: SidebarLayout.notchItemWidth)
             }
         }
         .background {
@@ -336,7 +336,8 @@ struct SidebarView: View {
         let maximumLabelScale: CGFloat = reduceMotion ? 1 : 1 + SidebarLayout.magnificationGrowth
         // Reserve width for the largest zoom so labels keep the same wrapping during hover.
         let labelPadding: CGFloat = 4
-        let labelWidth = (SidebarLayout.width - 6) / maximumLabelScale - labelPadding * 2
+        let itemWidth = state.isTopCentered ? SidebarLayout.notchItemWidth : SidebarLayout.width
+        let labelWidth = (itemWidth - 6) / maximumLabelScale - labelPadding * 2
         return VStack(alignment: .center, spacing: 0) {
             Group {
                 if let icon = entry.application.runningApplication?.icon {

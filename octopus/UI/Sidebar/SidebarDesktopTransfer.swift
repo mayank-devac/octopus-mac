@@ -128,7 +128,7 @@ struct SidebarMonitorGroup: Identifiable {
     static func notchContentWidth(_ groups: [Self], spacing: CGFloat) -> CGFloat {
         groups.reduce(CGFloat(max(0, groups.count - 1)) * spacing) { total, group in
             let entriesWidth = group.sections.reduce(CGFloat.zero) { width, section in
-                width + CGFloat(section.entries.count) * SidebarLayout.width
+                width + CGFloat(section.entries.count) * SidebarLayout.notchItemWidth
                     + CGFloat(max(0, section.entries.count - 1)) * spacing
             }
             let separators = CGFloat(max(0, group.sections.count - 1))

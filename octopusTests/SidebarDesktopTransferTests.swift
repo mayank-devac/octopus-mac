@@ -13,7 +13,7 @@ struct SidebarDesktopTransferTests {
         let groups = SidebarMonitorGroup.make(sections: sections, desktops: [first, second, third],
             monitors: [SidebarMonitor(id: "monitor-a", name: "A", isPrimary: true),
                        SidebarMonitor(id: "monitor-b", name: "B", isPrimary: false)], scope: .allDesktops)
-        let expected = SidebarLayout.width * 2 + SidebarLayout.notchSeparatorWidth
+        let expected = SidebarLayout.notchItemWidth * 2 + SidebarLayout.notchSeparatorWidth
             + SidebarLayout.notchMonitorWidth * 2 + SidebarLayout.notchEmptyWidth + 4 * 4
         #expect(SidebarMonitorGroup.notchContentWidth(groups, spacing: 4) == expected)
         #expect(groups[1].desktops == [third]) // Empty display still exposes destinations through its header.

@@ -347,6 +347,8 @@ enum SidebarLayout {
 
     // Keep the icon close to the display edge while leaving room for its label.
     static let width: CGFloat = 86
+    // Horizontal slots need less label space, while retaining the enlarged icon's width.
+    static let notchItemWidth: CGFloat = 64
     static let compactWidth: CGFloat = 22
     static let notchTriggerHeight: CGFloat = 10
     static let virtualNotchWidthRatio: CGFloat = 0.13
@@ -476,7 +478,7 @@ enum SidebarLayout {
     static func notchBarSize(count: Int, appSpacing: CGFloat,
                              availableFrame: CGRect, groupedWidth: CGFloat? = nil) -> CGSize {
         let itemCount = max(1, count)
-        let idealWidth = max(width, groupedWidth ?? (CGFloat(itemCount) * width
+        let idealWidth = max(width, groupedWidth ?? (CGFloat(itemCount) * notchItemWidth
             + CGFloat(max(0, itemCount - 1)) * appSpacing)) + notchBarPadding * 2
         let maximumWidth = min(availableFrame.width,
             max(width + notchBarPadding * 2, availableFrame.width * notchBarMaximumScreenFraction))
