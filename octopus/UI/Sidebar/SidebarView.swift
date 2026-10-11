@@ -184,7 +184,13 @@ struct SidebarView: View {
                 .padding(.horizontal, labelPadding)
                 .padding(.vertical, 2)
                 .background {
-                    SidebarFrostBackground(shadowOpacity: state.configuration.shadowOpacity)
+                    if hasNoWindows {
+                        RoundedRectangle(cornerRadius: 5)
+                            .fill(Color(white: colorScheme == .dark ? 0.16 : 0.88))
+                            .allowsHitTesting(false)
+                    } else {
+                        SidebarFrostBackground(shadowOpacity: state.configuration.shadowOpacity)
+                    }
                 }
                 .scaleEffect(scale(for: index), anchor: .top)
                 .frame(width: labelWidth + labelPadding * 2)
