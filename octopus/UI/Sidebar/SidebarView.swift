@@ -335,7 +335,7 @@ struct SidebarView: View {
         let mouseBindings = mouseShortcuts.bindings
         let maximumLabelScale: CGFloat = reduceMotion ? 1 : 1 + SidebarLayout.magnificationGrowth
         // Reserve width for the largest zoom so labels keep the same wrapping during hover.
-        let labelPadding: CGFloat = 4
+        let labelPadding: CGFloat = hasNoWindows ? 2 : 4
         let itemWidth = state.isTopCentered ? SidebarLayout.notchItemWidth : SidebarLayout.width
         let labelWidth = (itemWidth - 6) / maximumLabelScale - labelPadding * 2
         return VStack(alignment: .center, spacing: 0) {
@@ -376,7 +376,7 @@ struct SidebarView: View {
                 .multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)
                 .padding(.horizontal, labelPadding)
-                .padding(.vertical, 2)
+                .padding(.vertical, hasNoWindows ? 1 : 2)
                 .background {
                     if hasNoWindows {
                         RoundedRectangle(cornerRadius: 5)
