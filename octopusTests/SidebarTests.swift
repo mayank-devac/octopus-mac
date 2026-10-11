@@ -10,6 +10,115 @@ import Testing
 @testable import octopus
 
 struct SidebarTests {
+    @Test func virtualNotchWidthPersistsPerDisplayAndOlderProfilesKeepTheirDefaults() throws {
+        let suite = "NotchWidth-\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        var configuration = SidebarConfiguration.factoryDefaults
+        configuration.virtualNotchWidth = 320
+        configuration.saveSingleSidebar(in: defaults)
+        #expect(SidebarConfiguration(defaults: defaults).virtualNotchWidth == 320)
+        SidebarSettings.save(configuration, for: "A", name: "A", in: defaults)
+        configuration.virtualNotchWidth = 150
+        SidebarSettings.save(configuration, for: "B", name: "B", in: defaults)
+        #expect(SidebarSettings.configuration(for: "A", in: defaults).virtualNotchWidth == 320)
+        #expect(SidebarSettings.configuration(for: "B", in: defaults).virtualNotchWidth == 150)
+        let oldProfile = Data("{\"idleBehavior\":\"notch\",\"appSpacing\":8}".utf8)
+        let restored = try JSONDecoder().decode(SidebarConfiguration.self, from: oldProfile)
+        #expect(restored.virtualNotchWidth == SidebarSettings.defaultVirtualNotchWidth)
+        #expect(restored.appSpacing == 8)
+        configuration.virtualNotchWidth = .nan
+        configuration.normalize()
+        #expect(configuration.virtualNotchWidth == SidebarSettings.defaultVirtualNotchWidth)
+        let screen = CGRect(x: 0, y: 0, width: 1512, height: 982)
+        let resized = try #require(SidebarLayout.notchTriggerFrame(screenFrame: screen,
+            safeTopInset: 0, leftArea: nil, rightArea: nil, virtualWidth: 320))
+        #expect(resized.width == 320 && resized.midX == screen.midX)
+        let hardware = try #require(SidebarLayout.notchTriggerFrame(screenFrame: screen, safeTopInset: 32,
+            leftArea: CGRect(x: 0, y: 950, width: 656, height: 32),
+            rightArea: CGRect(x: 856, y: 950, width: 656, height: 32), virtualWidth: 320))
+        #expect(hardware.width == 200)
+    }
+
+    @Test func notchPopupsStartAtIconCentreBelowTheBarAndStayOnScreen() {
+        let screen = CGRect(x: -1440, y: 0, width: 1440, height: 900)
+        let bar = CGRect(x: -1000, y: 760, width: 600, height: 94)
+        let icon = CGRect(x: -900, y: 790, width: 40, height: 40)
+        let menu = SidebarLayout.notchMenuFrame(size: CGSize(width: 280, height: 300),
+            icon: icon, bar: bar, screen: screen)
+        #expect(menu.minX == icon.midX)
+        #expect(menu.maxY == bar.minY)
+        #expect(menu.intersection(bar).isEmpty)
+        #expect(screen.contains(menu))
+        let row = CGRect(x: icon.midX - 43, y: bar.minY + 4, width: 86, height: 86)
+        let bridge = SidebarLayout.notchMenuBridge(menu: menu, anchor: row)
+        #expect(bridge.contains(CGPoint(x: icon.midX + 4, y: bar.minY + 2)))
+        #expect(!bridge.contains(CGPoint(x: row.maxX + 4, y: bar.minY + 2)))
+        let rightIcon = CGRect(x: -60, y: 790, width: 40, height: 40)
+        let clamped = SidebarLayout.notchMenuFrame(size: CGSize(width: 280, height: 2000),
+            icon: rightIcon, bar: bar, screen: screen)
+        #expect(clamped.maxX == screen.maxX)
+        #expect(clamped.minY == screen.minY)
+        #expect(clamped.maxY == bar.minY)
+    }
+
+    @Test func notchDragScrollingUsesHorizontalEdgesAndLeavesTheMiddleStill() {
+        let bar = CGRect(x: 100, y: 600, width: 500, height: 94)
+        #expect(SidebarLayout.dragScrollDelta(at: CGPoint(x: 105, y: 650), frame: bar,
+            horizontal: true, flipped: true) == CGPoint(x: -10, y: 0))
+        #expect(SidebarLayout.dragScrollDelta(at: CGPoint(x: 595, y: 650), frame: bar,
+            horizontal: true, flipped: true) == CGPoint(x: 10, y: 0))
+        #expect(SidebarLayout.dragScrollDelta(at: CGPoint(x: 350, y: 605), frame: bar,
+            horizontal: true, flipped: true) == .zero)
+        #expect(SidebarLayout.dragScrollDelta(at: CGPoint(x: 90, y: 650), frame: bar,
+            horizontal: true, flipped: true) == .zero)
+    }
+
+    @MainActor @Test func notchPopupNativeRowsStayInOneColumnBelowTheAppBar() async throws {
+        let app = Application(NSRunningApplication.current)
+        let windows = [10, 20].map { id -> Window in
+            let window = Window(AXUIElementCreateApplication(getpid()), app, cachedTitle: "Window \(id)")
+            window.cgWindowID = CGWindowID(id)
+            return window
+        }
+        let state = CyclePanelState()
+        state.setWindows(windows, applicationTitle: "Example", selectedID: 10,
+            sidebarWindowStates: [10: SidebarWindowState(isMinimized: false, canMinimize: true),
+                                  20: SidebarWindowState(isMinimized: true, canMinimize: true)])
+        var anchors: [CyclePanelItem.ID: NSView] = [:]
+        let bar = CGRect(x: 100, y: 700, width: 600, height: 94)
+        let frame = SidebarLayout.notchMenuFrame(size: CGSize(width: 280, height: 120),
+            icon: CGRect(x: 250, y: 740, width: 40, height: 40), bar: bar,
+            screen: CGRect(x: 0, y: 0, width: 1000, height: 900))
+        let panel = CyclePanel(contentRect: frame)
+        panel.isReleasedWhenClosed = false
+        defer { panel.close() }
+        let host = NSHostingView(rootView: CyclePanelView(state: state, onAnchor: { anchors[$0] = $1 }))
+        host.sizingOptions = []
+        host.translatesAutoresizingMaskIntoConstraints = false
+        let container = try #require(panel.contentView)
+        container.addSubview(host)
+        NSLayoutConstraint.activate([
+            host.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            host.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            host.topAnchor.constraint(equalTo: container.topAnchor),
+            host.bottomAnchor.constraint(equalTo: container.bottomAnchor)
+        ])
+        container.layoutSubtreeIfNeeded()
+        try await Task.sleep(for: .milliseconds(50))
+        container.layoutSubtreeIfNeeded()
+        let first = try #require(anchors[.window(10)])
+        let second = try #require(anchors[.window(20)])
+        let firstFrame = panel.convertToScreen(first.convert(first.bounds, to: nil))
+        let secondFrame = panel.convertToScreen(second.convert(second.bounds, to: nil))
+        #expect(firstFrame.minX == secondFrame.minX && firstFrame.width == secondFrame.width)
+        #expect(firstFrame.maxY <= bar.minY && secondFrame.maxY <= bar.minY)
+        #expect(firstFrame.minY > secondFrame.minY)
+        let point = CGPoint(x: secondFrame.midX, y: secondFrame.midY)
+        #expect(CyclePanelController.sidebarPointerTarget(at: point, items: state.items,
+            anchors: anchors, hideAnchor: nil) == .row(.window(20)))
+    }
+
     @Test func compactVisibilitySurvivesSingleAndDisplayPreferenceReloads() throws {
         let suite = "SidebarCompact-\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: suite))
@@ -28,7 +137,69 @@ struct SidebarTests {
         #expect(SidebarSettings.configuration(for: "A", in: restarted) == configuration)
         #expect(SidebarSettings.configuration(for: "B", in: restarted) == other)
         #expect(SidebarIdleBehavior.saved("compact") == .compact)
+        #expect(SidebarIdleBehavior.saved("notch") == .notch)
         #expect(SidebarConfiguration.factoryDefaults.idleBehavior == .fade)
+    }
+
+    @Test func notchTriggerUsesHardwareGeometryOrProportionalVirtualNotch() throws {
+        let screen = CGRect(x: 0, y: 0, width: 1512, height: 982)
+        let left = CGRect(x: 0, y: 950, width: 656, height: 32)
+        let right = CGRect(x: 856, y: 950, width: 656, height: 32)
+        let frame = try #require(SidebarLayout.notchTriggerFrame(
+            screenFrame: screen, safeTopInset: 32, leftArea: left, rightArea: right))
+        #expect(frame == CGRect(x: 656, y: 940, width: 200, height: SidebarLayout.notchTriggerHeight))
+        let virtual = try #require(SidebarLayout.notchTriggerFrame(
+            screenFrame: screen, safeTopInset: 0, leftArea: nil, rightArea: nil))
+        #expect(virtual.midX == screen.midX && virtual.maxY == screen.maxY)
+        #expect(SidebarLayout.virtualNotchWidthRange.contains(virtual.width))
+        #expect(SidebarLayout.virtualNotchHeightRange.contains(virtual.height))
+        #expect(abs(virtual.width - screen.width * SidebarLayout.virtualNotchWidthRatio) < 0.001)
+        #expect(abs(virtual.height - screen.height * SidebarLayout.virtualNotchHeightRatio) < 0.001)
+        let invalidHardware = try #require(SidebarLayout.notchTriggerFrame(
+            screenFrame: screen, safeTopInset: 32, leftArea: right, rightArea: left))
+        #expect(invalidHardware == virtual)
+        let large = try #require(SidebarLayout.notchTriggerFrame(
+            screenFrame: CGRect(x: 0, y: 0, width: 4000, height: 2000),
+            safeTopInset: 0, leftArea: nil, rightArea: nil))
+        #expect(large.width == SidebarLayout.virtualNotchWidthRange.upperBound)
+        #expect(large.height == SidebarLayout.virtualNotchHeightRange.upperBound)
+        #expect(SidebarLayout.notchTriggerFrame(
+            screenFrame: .zero, safeTopInset: 0, leftArea: nil, rightArea: nil) == nil)
+
+        let available = CGRect(x: 0, y: 0, width: screen.width, height: screen.height - 24)
+        let oneApp = SidebarLayout.notchBarSize(count: 1, appSpacing: 4, availableFrame: available)
+        #expect(oneApp == CGSize(width: SidebarLayout.width + SidebarLayout.notchBarPadding * 2,
+                                height: SidebarLayout.rowHeight + SidebarLayout.notchBarPadding * 2))
+        let twoApps = SidebarLayout.notchBarSize(count: 2, appSpacing: 4, availableFrame: available)
+        #expect(twoApps.width == SidebarLayout.width * 2 + 4 + SidebarLayout.notchBarPadding * 2)
+        let manyApps = SidebarLayout.notchBarSize(count: 100, appSpacing: 4, availableFrame: available)
+        #expect(manyApps.width == available.width * SidebarLayout.notchBarMaximumScreenFraction)
+
+        let sidebar = SidebarLayout.notchSidebarFrames(
+            contentSize: twoApps, below: virtual, availableFrame: available)
+        #expect(sidebar.content.midX == virtual.midX)
+        #expect(sidebar.content.maxY == virtual.minY)
+        #expect(sidebar.panel.midX == sidebar.content.midX)
+        #expect(sidebar.panel.width == twoApps.width + SidebarLayout.drawingPadding * 2)
+
+        let clipped = SidebarLayout.notchSidebarFrames(
+            contentSize: CGSize(width: SidebarLayout.width, height: 2000), below: virtual,
+            availableFrame: screen)
+        #expect(clipped.content.minY == screen.minY)
+        #expect(clipped.content.maxY == virtual.minY)
+    }
+
+    @Test func notchVisibilitySurvivesSingleAndDisplayPreferenceReloads() throws {
+        let suite = "SidebarNotch-\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        var configuration = SidebarConfiguration.factoryDefaults
+        configuration.idleBehavior = .notch
+        configuration.saveSingleSidebar(in: defaults)
+        #expect(SidebarConfiguration(defaults: defaults).idleBehavior == .notch)
+        SidebarSettings.save(configuration, for: "Notched", name: "Built-in Display", in: defaults)
+        let restarted = try #require(UserDefaults(suiteName: suite))
+        #expect(SidebarSettings.configuration(for: "Notched", in: restarted).idleBehavior == .notch)
     }
 
     @Test func compactStripStaysAtEitherEdgeWithTheSameHeightWhenExpanded() {
@@ -102,6 +273,8 @@ struct SidebarTests {
         #expect(SidebarWindowLevels.menu.rawValue < SidebarWindowLevels.dragPreview.rawValue)
         #expect(SidebarWindowLevels.dragPreview.rawValue < SidebarWindowLevels.dragIcon.rawValue)
         #expect(SidebarWindowLevels.dragIcon.rawValue < NSWindow.Level.modalPanel.rawValue)
+        #expect(SidebarWindowLevels.notch == NSWindow.Level.statusBar)
+        #expect(SidebarWindowLevels.notch.rawValue < NSWindow.Level.popUpMenu.rawValue)
     }
 
     @Test func wheelPositionRespectsPhysicalDirectionUnitsAndScreenEdges() {

@@ -3,6 +3,31 @@ import Testing
 @testable import octopus
 
 struct SidebarDesktopTransferTests {
+    @MainActor @Test func notchWidthIncludesMonitorHeadersDesktopSeparatorsAndEmptyDisplays() {
+        let app = Application(NSRunningApplication.current)
+        let first = desktop(10), second = desktop(20)
+        let third = desktop(30, display: "monitor-b")
+        let entries = [SidebarEntry(pid: 1, application: app, windows: [], preferredID: nil, desktop: first),
+                       SidebarEntry(pid: 2, application: app, windows: [], preferredID: nil, desktop: second)]
+        let sections = SidebarDesktopSection.make(entries: entries, desktops: [first, second, third], scope: .allDesktops)
+        let groups = SidebarMonitorGroup.make(sections: sections, desktops: [first, second, third],
+            monitors: [SidebarMonitor(id: "monitor-a", name: "A", isPrimary: true),
+                       SidebarMonitor(id: "monitor-b", name: "B", isPrimary: false)], scope: .allDesktops)
+        let expected = SidebarLayout.width * 2 + SidebarLayout.notchSeparatorWidth
+            + SidebarLayout.notchMonitorWidth * 2 + SidebarLayout.notchEmptyWidth + 4 * 4
+        #expect(SidebarMonitorGroup.notchContentWidth(groups, spacing: 4) == expected)
+        #expect(groups[1].desktops == [third]) // Empty display still exposes destinations through its header.
+    }
+
+    @Test func notchDesktopPopupBridgeConnectsHeadingWithoutCapturingNeighbouringApps() {
+        let anchor = CGRect(x: 500, y: 704, width: 28, height: 86)
+        let menu = CGRect(x: 514, y: 400, width: 280, height: 300)
+        let regions = SidebarDesktopMenuGeometry.interactionFrames(menu: menu, anchor: anchor)
+        #expect(regions.contains { $0.contains(CGPoint(x: 520, y: 702)) })
+        #expect(!regions.contains { $0.contains(CGPoint(x: 560, y: 720)) })
+        #expect(regions.contains { $0.contains(CGPoint(x: 600, y: 550)) })
+    }
+
     private func desktop(_ id: UInt64, display: String? = "monitor-a", number: Int? = 1) -> SidebarDesktop {
         SidebarDesktop(id: id, order: Int(id), number: number, displayIdentifier: display)
     }

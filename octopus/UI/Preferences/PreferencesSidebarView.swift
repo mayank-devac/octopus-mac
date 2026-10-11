@@ -33,6 +33,16 @@ struct PreferencesSidebarView: View {
         enabled && (!multiDisplay || (!selectedDisplayID.isEmpty && configuration.enabled))
     }
 
+    private var usesVirtualNotch: Bool {
+        guard configuration.idleBehavior == .notch else { return false }
+        let screen = multiDisplay
+            ? screens.first { SidebarSettings.monitorID($0) == selectedDisplayID }
+            : SidebarSettings.selectedScreen()
+        guard let screen else { return false }
+        return SidebarLayout.hardwareNotchFrame(screenFrame: screen.frame, safeTopInset: screen.safeAreaInsets.top,
+            leftArea: screen.auxiliaryTopLeftArea, rightArea: screen.auxiliaryTopRightArea) == nil
+    }
+
     private var showWindows: Binding<String> {
         Binding(get: {
             multiDisplay && !configuration.enabled ? "off" : configuration.desktopScope.rawValue
@@ -150,7 +160,7 @@ struct PreferencesSidebarView: View {
                      + (configuration.displayScope == .currentDisplay
                         ? "Current display lists windows belonging to this sidebar’s display; apps without windows are omitted. "
                         : "Apps without windows appear last. ")
-                     + "In full screen, the sidebar stays at the screen edge. Compact keeps its number strip visible; Auto-hide applies across all desktops.")
+                     + "In full screen, the sidebar stays at the screen edge. Compact keeps its number strip visible. Mac Notch opens a horizontal app bar below a real or virtual top-centre notch.")
 
             }
             .disabled(!enabled)
@@ -162,7 +172,18 @@ struct PreferencesSidebarView: View {
                     }
                 }
                 .disabled(!editingEnabled)
-                .help("Fade makes the idle sidebar more transparent. Auto-Hide shows it at the screen edge. Always visible keeps it fully opaque. Compact keeps a narrow number strip visible and opens the app sidebar on hover. Numbers fade for hidden apps or apps without open windows.")
+                .help("Fade makes the idle sidebar more transparent. Auto-Hide shows it at the screen edge. Always visible keeps it fully opaque. Compact keeps a numbered strip visible. Mac Notch opens a horizontal app bar below a real or virtual notch; each app’s windows remain in one vertical list.")
+                if usesVirtualNotch {
+                    HStack {
+                        Text("Notch width")
+                        Slider(value: setting(\.virtualNotchWidth), in: SidebarSettings.virtualNotchWidthRange, step: 10)
+                            .accessibilityLabel("Virtual notch width")
+                        Text("\(Int(configuration.virtualNotchWidth)) pt")
+                            .monospacedDigit().foregroundStyle(.secondary)
+                            .frame(width: 50, alignment: .trailing)
+                    }
+                    .help("Resize the virtual notch on this display. A physical camera housing keeps its actual width.")
+                }
                 HStack {
                     Text("Snap distance")
                     Slider(value: Binding(
@@ -182,6 +203,10 @@ struct PreferencesSidebarView: View {
                     Text("Left").tag(SidebarSide.left)
                     Text("Right").tag(SidebarSide.right)
                 }
+                .disabled(configuration.idleBehavior == .notch)
+                .help(configuration.idleBehavior == .notch
+                    ? "Mac Notch centres the sidebar below the notch."
+                    : "Choose the screen edge for the sidebar.")
                 HStack {
                     Text("Vertical position")
                     Text("Top").font(.caption).foregroundStyle(.secondary)
@@ -189,10 +214,14 @@ struct PreferencesSidebarView: View {
                         .accessibilityLabel("Sidebar vertical position")
                     Text("Bottom").font(.caption).foregroundStyle(.secondary)
                 }
+                .disabled(configuration.idleBehavior == .notch)
+                .help(configuration.idleBehavior == .notch
+                    ? "Mac Notch uses a fixed top-centre position."
+                    : "Move the sidebar vertically along its screen edge.")
                 HStack {
                     Text("Gap between apps")
                     Slider(value: setting(\.appSpacing), in: 0...SidebarSettings.maximumAppSpacing, step: 1)
-                        .accessibilityLabel("Vertical gap between apps")
+                        .accessibilityLabel("Gap between apps")
                     Text("\(Int(configuration.appSpacing)) pt")
                         .monospacedDigit()
                         .foregroundStyle(.secondary)

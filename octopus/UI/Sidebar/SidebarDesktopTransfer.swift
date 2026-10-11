@@ -116,6 +116,21 @@ struct SidebarMonitorGroup: Identifiable {
             + CGFloat(separators) * SidebarLayout.desktopSeparatorHeight
             + CGFloat(gaps) * spacing + SidebarLayout.verticalPadding * 2
     }
+
+    static func notchContentWidth(_ groups: [Self], spacing: CGFloat) -> CGFloat {
+        groups.reduce(CGFloat(max(0, groups.count - 1)) * spacing) { total, group in
+            let entriesWidth = group.sections.reduce(CGFloat.zero) { width, section in
+                width + CGFloat(section.entries.count) * SidebarLayout.width
+                    + CGFloat(max(0, section.entries.count - 1)) * spacing
+            }
+            let separators = CGFloat(max(0, group.sections.count - 1))
+                * (SidebarLayout.notchSeparatorWidth + spacing)
+            let header = group.monitor == nil ? 0 : SidebarLayout.notchMonitorWidth + spacing
+            let empty = group.monitor != nil && group.sections.allSatisfy({ $0.entries.isEmpty })
+                ? SidebarLayout.notchEmptyWidth : 0
+            return total + entriesWidth + separators + header + empty
+        }
+    }
 }
 
 struct SidebarDesktopDropTarget {

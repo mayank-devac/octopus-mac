@@ -13,6 +13,8 @@ final class SidebarViewState: ObservableObject {
     @Published var monitors: [SidebarMonitor] = []
     @Published var configuration = SidebarConfiguration()
     @Published var isExpanded = false
+    @Published var isTopCentered = false
+    @Published var topContentWidth: CGFloat?
     var dragDesktops: [SidebarDesktop]?
 }
 
@@ -39,8 +41,12 @@ struct SidebarView: View {
 
     private var isCompact: Bool { state.configuration.idleBehavior == .compact }
     private var showsMainSidebar: Bool { !isCompact || state.isExpanded }
-    private var contentWidth: CGFloat {
-        (showsMainSidebar ? SidebarLayout.width : 0) + (isCompact ? SidebarLayout.compactWidth : 0)
+    private var contentWidth: CGFloat? {
+        state.isTopCentered ? state.topContentWidth
+            : (showsMainSidebar ? SidebarLayout.width : 0) + (isCompact ? SidebarLayout.compactWidth : 0)
+    }
+    private var sidebarAlignment: Alignment {
+        state.isTopCentered ? .center : state.side == .left ? .leading : .trailing
     }
 
     private var sections: [SidebarDesktopSection] {
@@ -85,6 +91,8 @@ struct SidebarView: View {
                 }
             } else if isCompact && !showsMainSidebar {
                 compactEntries(indices: indices)
+            } else if state.isTopCentered {
+                notchEntries(indices: indices)
             } else {
                 ScrollView(.vertical) {
                     VStack(spacing: CGFloat(appSpacing)) {
@@ -144,7 +152,7 @@ struct SidebarView: View {
         .foregroundStyle(colorScheme == .dark ? Color.white : Color.black)
         .frame(width: contentWidth)
         .frame(maxHeight: .infinity)
-        .background(alignment: state.side == .left ? .leading : .trailing) {
+        .background(alignment: sidebarAlignment) {
             if isCompact {
                 UnevenRoundedRectangle(
                     topLeadingRadius: state.side == .right ? 12 : 0,
@@ -157,7 +165,7 @@ struct SidebarView: View {
                 .allowsHitTesting(false)
             }
         }
-        .frame(maxWidth: .infinity, alignment: state.side == .left ? .leading : .trailing)
+        .frame(maxWidth: .infinity, alignment: sidebarAlignment)
         .accessibilityAction(named: Text("Expand sidebar"), onReveal)
     }
 
@@ -207,6 +215,77 @@ struct SidebarView: View {
         .scrollClipDisabled()
     }
 
+    private func notchEntries(indices: [SidebarEntryID: Int]) -> some View {
+        ScrollView(.horizontal) {
+            HStack(spacing: CGFloat(appSpacing)) {
+                ForEach(groups) { group in
+                    notchGroup(group, indices: indices)
+                }
+            }
+            .padding(SidebarLayout.notchBarPadding)
+        }
+        .scrollIndicators(.hidden)
+        .scrollClipDisabled()
+    }
+
+    private func notchGroup(_ group: SidebarMonitorGroup, indices: [SidebarEntryID: Int]) -> some View {
+        HStack(spacing: 0) {
+            if let monitor = group.monitor {
+                notchMonitorLabel(monitor)
+                    .padding(.trailing, CGFloat(appSpacing))
+                if group.sections.allSatisfy({ $0.entries.isEmpty }) {
+                    Text("Empty").font(.caption).foregroundStyle(.secondary)
+                        .frame(width: SidebarLayout.notchEmptyWidth, height: SidebarLayout.rowHeight)
+                }
+            }
+            ForEach(Array(group.sections.enumerated()), id: \.element.id) { index, section in
+                if index > 0 {
+                    Rectangle().fill(Color.primary.opacity(0.45))
+                        .frame(width: 1, height: SidebarLayout.rowHeight - 8)
+                        .frame(width: SidebarLayout.notchSeparatorWidth)
+                        .padding(.horizontal, CGFloat(appSpacing) / 2)
+                        .accessibilityLabel(section.desktop?.title ?? "Other apps")
+                }
+                notchSection(section, indices: indices)
+            }
+        }
+    }
+
+    private func notchMonitorLabel(_ monitor: SidebarMonitor) -> some View {
+        let number = (state.monitors.firstIndex { $0.id == monitor.id } ?? (monitor.isPrimary ? 0 : 1)) + 1
+        let title = "\(number) · \(monitor.name.isEmpty ? "Monitor" : monitor.name)"
+        return Text(title)
+            .font(.system(size: CGFloat(labelFontSize), weight: .medium))
+            .foregroundStyle(.secondary)
+            .lineLimit(1).minimumScaleFactor(0.65)
+            .frame(width: SidebarLayout.rowHeight - 8, height: SidebarLayout.notchMonitorWidth)
+            .rotationEffect(.degrees(-90))
+            .frame(width: SidebarLayout.notchMonitorWidth, height: SidebarLayout.rowHeight)
+            .contentShape(Rectangle())
+            .overlay {
+                SidebarGeometryAnchor(id: monitor.id, onAnchor: onMonitorAnchor).allowsHitTesting(false)
+            }
+            .help(title).accessibilityLabel(title)
+    }
+
+    private func notchSection(_ section: SidebarDesktopSection, indices: [SidebarEntryID: Int]) -> some View {
+        HStack(spacing: CGFloat(appSpacing)) {
+            ForEach(section.entries) { entry in
+                item(entry, index: indices[entry.id] ?? 0).frame(width: SidebarLayout.width)
+            }
+        }
+        .background {
+            if let desktop = section.desktop, state.dropDesktopID == desktop.id {
+                RoundedRectangle(cornerRadius: 8).fill(Color.accentColor.opacity(0.22))
+            }
+        }
+        .overlay {
+            if let desktop = section.desktop {
+                SidebarGeometryAnchor(id: desktop.id, onAnchor: onDesktopAnchor).allowsHitTesting(false)
+            }
+        }
+    }
+
     private func compactNumber(_ entry: SidebarEntry, index: Int, reservesLabelSpace: Bool = true) -> some View {
         let number = index + 1
         let isOpen = entry.hasOpenWindows
@@ -238,7 +317,7 @@ struct SidebarView: View {
         // Reserve width for the largest zoom so labels keep the same wrapping during hover.
         let labelPadding: CGFloat = 4
         let labelWidth = (SidebarLayout.width - 6) / maximumLabelScale - labelPadding * 2
-        return VStack(spacing: 0) {
+        return VStack(alignment: .center, spacing: 0) {
             Group {
                 if let icon = entry.application.runningApplication?.icon {
                     Image(nsImage: icon).resizable()
@@ -277,7 +356,7 @@ struct SidebarView: View {
                 .frame(height: SidebarLayout.labelHeight, alignment: .top)
                 .padding(.horizontal, 3)
         }
-        .frame(maxWidth: .infinity)
+        .frame(maxWidth: .infinity, alignment: .center)
         .frame(height: SidebarLayout.rowHeight)
         .opacity(entry.visibleIDs.isEmpty ? 0.65 : 1)
         .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: scale(for: index))
@@ -351,6 +430,36 @@ struct SidebarView: View {
     private func openAccessibilitySettings() {
         guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") else { return }
         NSWorkspace.shared.open(url)
+    }
+}
+
+struct SidebarNotchTriggerView: View {
+    var body: some View {
+        SidebarNotchShape()
+            .fill(Color.black.opacity(0.94))
+            .accessibilityHidden(true)
+    }
+}
+
+struct SidebarNotchShape: Shape {
+    func path(in rect: CGRect) -> Path {
+        let r = min(16, min(rect.height / 2, rect.width / 4))
+        return Path { path in
+            path.move(to: CGPoint(x: rect.minX, y: rect.minY))
+            path.addLine(to: CGPoint(x: rect.maxX, y: rect.minY))
+            path.addQuadCurve(to: CGPoint(x: rect.maxX - r, y: rect.minY + r),
+                              control: CGPoint(x: rect.maxX - r, y: rect.minY))
+            path.addLine(to: CGPoint(x: rect.maxX - r, y: rect.maxY - r))
+            path.addQuadCurve(to: CGPoint(x: rect.maxX - 2 * r, y: rect.maxY),
+                              control: CGPoint(x: rect.maxX - r, y: rect.maxY))
+            path.addLine(to: CGPoint(x: rect.minX + 2 * r, y: rect.maxY))
+            path.addQuadCurve(to: CGPoint(x: rect.minX + r, y: rect.maxY - r),
+                              control: CGPoint(x: rect.minX + r, y: rect.maxY))
+            path.addLine(to: CGPoint(x: rect.minX + r, y: rect.minY + r))
+            path.addQuadCurve(to: CGPoint(x: rect.minX, y: rect.minY),
+                              control: CGPoint(x: rect.minX + r, y: rect.minY))
+            path.closeSubpath()
+        }
     }
 }
 

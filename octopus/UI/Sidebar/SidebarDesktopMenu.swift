@@ -34,7 +34,7 @@ final class SidebarDesktopMenu {
     }
 
     func show(desktops: [SidebarDesktop], sourceID: UInt64, anchor: CGRect,
-              side: SidebarSide, screen: CGRect) {
+              side: SidebarSide, screen: CGRect, belowBar: CGRect? = nil) {
         let desktops = desktops.filter { $0.number != nil }.sorted { $0.order < $1.order }
         guard !desktops.isEmpty else { hide(); return }
         if state.desktops != desktops { state.desktops = desktops }
@@ -42,8 +42,9 @@ final class SidebarDesktopMenu {
         self.anchor = anchor
         let height = CGFloat(desktops.count) * SidebarLayout.menuRowHeight
             + CGFloat(max(0, desktops.count - 1)) + SidebarLayout.menuPadding * 2
-        let next = SidebarLayout.menuFrame(size: CGSize(width: 280, height: min(520, height)),
-            icon: anchor, screen: screen, side: side)
+        let size = CGSize(width: 280, height: min(520, height))
+        let next = belowBar.map { SidebarLayout.notchMenuFrame(size: size, icon: anchor, bar: $0, screen: screen) }
+            ?? SidebarLayout.menuFrame(size: size, icon: anchor, screen: screen, side: side)
         if panel.frame != next { panel.setFrame(next, display: true) }
         if !panel.isVisible { panel.orderFrontRegardless() }
     }
@@ -87,6 +88,10 @@ final class SidebarDesktopMenu {
 
 enum SidebarDesktopMenuGeometry {
     static func interactionFrames(menu: CGRect, anchor: CGRect) -> [CGRect] {
+        if menu.maxY <= anchor.minY {
+            let bridge = SidebarLayout.notchMenuBridge(menu: menu, anchor: anchor)
+            return [menu, anchor, bridge].filter { !$0.isEmpty }.map { $0.insetBy(dx: -3, dy: -3) }
+        }
         // Preserve the short route from the heading into its popup, without
         // treating every app beside a tall popup as part of the popup.
         let bottom = max(menu.minY, anchor.minY)

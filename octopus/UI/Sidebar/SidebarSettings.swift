@@ -8,6 +8,8 @@ enum SidebarWindowLevels {
     static let menu = NSWindow.Level(rawValue: NSWindow.Level.floating.rawValue + 2)
     static let dragPreview = NSWindow.Level(rawValue: NSWindow.Level.floating.rawValue + 3)
     static let dragIcon = NSWindow.Level(rawValue: NSWindow.Level.floating.rawValue + 4)
+    // The notch occupies menu-bar space, but stays below opened popup menus.
+    static let notch = NSWindow.Level.statusBar
 }
 
 enum SidebarSide: String, CaseIterable, Codable {
@@ -61,7 +63,7 @@ enum SidebarActiveAppClickAction: String, CaseIterable {
 }
 
 enum SidebarIdleBehavior: String, CaseIterable, Codable {
-    case fade, hide, stayVisible, compact
+    case fade, hide, stayVisible, compact, notch
 
     static func saved(_ value: String?) -> Self {
         value.flatMap(Self.init(rawValue:)) ?? .fade
@@ -73,6 +75,7 @@ enum SidebarIdleBehavior: String, CaseIterable, Codable {
         case .hide: return "Auto-Hide"
         case .stayVisible: return "Alway visible"
         case .compact: return "Compact"
+        case .notch: return "Mac Notch"
         }
     }
 }
@@ -102,6 +105,7 @@ struct SidebarConfiguration: Codable, Equatable {
     var fontSize: Double
     var shadowOpacity: Double
     var snapDistance: Double
+    var virtualNotchWidth: Double
 
     init(defaults: UserDefaults? = .standard) {
         enabled = defaults?.object(forKey: "sidebarEnabled") as? Bool ?? true
@@ -115,6 +119,8 @@ struct SidebarConfiguration: Codable, Equatable {
         fontSize = defaults?.object(forKey: "sidebarFontSize") as? Double ?? SidebarSettings.defaultFontSize
         shadowOpacity = defaults?.object(forKey: "sidebarShadowOpacity") as? Double ?? SidebarSettings.defaultShadowOpacity
         snapDistance = defaults.map { SidebarSettings.snapDistance(in: $0) } ?? SidebarSettings.defaultSnapDistance
+        virtualNotchWidth = defaults?.object(forKey: SidebarSettings.virtualNotchWidthKey) as? Double
+            ?? SidebarSettings.defaultVirtualNotchWidth
         normalize()
     }
 
@@ -123,7 +129,7 @@ struct SidebarConfiguration: Codable, Equatable {
 
     private enum CodingKeys: String, CodingKey {
         case enabled, desktopScope, displayScope, side, position, idleBehavior
-        case showSingleWindowMenu, appSpacing, fontSize, shadowOpacity, snapDistance
+        case showSingleWindowMenu, appSpacing, fontSize, shadowOpacity, snapDistance, virtualNotchWidth
     }
 
     init(from decoder: Decoder) throws {
@@ -141,6 +147,7 @@ struct SidebarConfiguration: Codable, Equatable {
         fontSize = try saved.decodeIfPresent(Double.self, forKey: .fontSize) ?? fontSize
         shadowOpacity = try saved.decodeIfPresent(Double.self, forKey: .shadowOpacity) ?? shadowOpacity
         snapDistance = try saved.decodeIfPresent(Double.self, forKey: .snapDistance) ?? snapDistance
+        virtualNotchWidth = try saved.decodeIfPresent(Double.self, forKey: .virtualNotchWidth) ?? virtualNotchWidth
         normalize()
     }
 
@@ -155,6 +162,8 @@ struct SidebarConfiguration: Codable, Equatable {
         shadowOpacity = clamp(shadowOpacity, 0...SidebarSettings.maximumShadowOpacity,
                               fallback: SidebarSettings.defaultShadowOpacity)
         snapDistance = SidebarSettings.normalizedSnapDistance(snapDistance)
+        virtualNotchWidth = clamp(virtualNotchWidth, SidebarSettings.virtualNotchWidthRange,
+                                 fallback: SidebarSettings.defaultVirtualNotchWidth)
     }
 
     func saveSingleSidebar(in defaults: UserDefaults = .standard) {
@@ -165,7 +174,8 @@ struct SidebarConfiguration: Codable, Equatable {
             SidebarSettings.idleBehaviorKey: idleBehavior.rawValue,
             "sidebarShowSingleWindowMenu": showSingleWindowMenu, "sidebarAppSpacing": appSpacing,
             "sidebarFontSize": fontSize, "sidebarShadowOpacity": shadowOpacity,
-            "sidebarSnapDistance": snapDistance
+            "sidebarSnapDistance": snapDistance,
+            SidebarSettings.virtualNotchWidthKey: virtualNotchWidth
         ]
         for (key, value) in values { defaults.set(value, forKey: key) }
     }
@@ -187,6 +197,9 @@ enum SidebarDisplayTarget: Hashable {
 }
 
 enum SidebarSettings {
+    static let virtualNotchWidthKey = "sidebarVirtualNotchWidth"
+    static let defaultVirtualNotchWidth: Double = 200
+    static let virtualNotchWidthRange: ClosedRange<Double> = 100...400
     static let multiDisplayKey = "sidebarMultiDisplayEnabled"
     static let displayPreferencesKey = "sidebarDisplayPreferences"
     static let defaultAppSpacing: Double = 4
@@ -234,7 +247,8 @@ enum SidebarSettings {
             "sidebarAppSpacing": defaultAppSpacing,
             "sidebarFontSize": defaultFontSize,
             "sidebarShadowOpacity": defaultShadowOpacity,
-            "sidebarSnapDistance": defaultSnapDistance
+            "sidebarSnapDistance": defaultSnapDistance,
+            virtualNotchWidthKey: defaultVirtualNotchWidth
         ])
     }
 
@@ -333,7 +347,17 @@ enum SidebarLayout {
 
     // Keep the icon close to the display edge while leaving room for its label.
     static let width: CGFloat = 86
-    static let compactWidth: CGFloat = 20
+    static let compactWidth: CGFloat = 22
+    static let notchTriggerHeight: CGFloat = 10
+    static let virtualNotchWidthRatio: CGFloat = 0.13
+    static let virtualNotchHeightRatio: CGFloat = 0.033
+    static let virtualNotchWidthRange: ClosedRange<CGFloat> = 160...240
+    static let virtualNotchHeightRange: ClosedRange<CGFloat> = 24...36
+    static let notchBarMaximumScreenFraction: CGFloat = 0.72
+    static let notchBarPadding: CGFloat = 4
+    static let notchMonitorWidth: CGFloat = 28
+    static let notchEmptyWidth: CGFloat = 40
+    static let notchSeparatorWidth: CGFloat = 12
     // Extra canvas toward the desktop for the magnified frost's soft edges.
     static let drawingPadding: CGFloat = 36
     static let menuGap: CGFloat = 2
@@ -400,7 +424,88 @@ enum SidebarLayout {
         return (main, compact, expanded ? drawing.union(compact) : compact)
     }
 
+    // A hardware notch gets a small extension; other Macs get a proportional top-centre notch.
+    static func hardwareNotchFrame(screenFrame: CGRect, safeTopInset: CGFloat,
+                                   leftArea: CGRect?, rightArea: CGRect?) -> CGRect? {
+        guard safeTopInset.isFinite, safeTopInset > 0, let leftArea, let rightArea else { return nil }
+        let minX = max(screenFrame.minX, leftArea.maxX)
+        let maxX = min(screenFrame.maxX, rightArea.minX)
+        let y = screenFrame.maxY - safeTopInset - notchTriggerHeight
+        guard minX.isFinite, maxX.isFinite, y.isFinite, maxX > minX, y >= screenFrame.minY else { return nil }
+        return CGRect(x: minX, y: y, width: maxX - minX, height: notchTriggerHeight)
+    }
+
+    static func notchTriggerFrame(screenFrame: CGRect, safeTopInset: CGFloat,
+                                  leftArea: CGRect?, rightArea: CGRect?, virtualWidth: CGFloat? = nil) -> CGRect? {
+        guard screenFrame.width.isFinite, screenFrame.height.isFinite,
+              screenFrame.width > 0, screenFrame.height > 0 else { return nil }
+        if let hardware = hardwareNotchFrame(screenFrame: screenFrame, safeTopInset: safeTopInset,
+                                             leftArea: leftArea, rightArea: rightArea) {
+            return hardware
+        }
+        let automaticWidth = min(max(screenFrame.width * virtualNotchWidthRatio,
+                            virtualNotchWidthRange.lowerBound), virtualNotchWidthRange.upperBound)
+        let requestedWidth = virtualWidth.flatMap { $0.isFinite ? $0 : nil } ?? automaticWidth
+        let width = min(screenFrame.width, max(0, requestedWidth))
+        let height = min(max(screenFrame.height * virtualNotchHeightRatio,
+                             virtualNotchHeightRange.lowerBound), virtualNotchHeightRange.upperBound)
+        return CGRect(x: screenFrame.midX - width / 2, y: screenFrame.maxY - height,
+                      width: width, height: height)
+    }
+
+    static func notchSidebarFrames(contentSize: CGSize, below notch: CGRect,
+                                   availableFrame: CGRect) -> (content: CGRect, panel: CGRect) {
+        let width = min(max(0, contentSize.width), availableFrame.width)
+        let availableHeight = max(0, notch.minY - availableFrame.minY)
+        let height = min(max(0, contentSize.height), availableHeight)
+        let x = min(max(notch.midX - width / 2, availableFrame.minX), availableFrame.maxX - width)
+        let content = CGRect(x: x, y: notch.minY - height, width: width, height: height)
+        let panelWidth = min(width + drawingPadding * 2, availableFrame.width)
+        let panelX = min(max(content.midX - panelWidth / 2, availableFrame.minX),
+                         availableFrame.maxX - panelWidth)
+        return (content, CGRect(x: panelX, y: content.minY, width: panelWidth, height: height))
+    }
+
+    static func notchBarSize(count: Int, appSpacing: CGFloat,
+                             availableFrame: CGRect, groupedWidth: CGFloat? = nil) -> CGSize {
+        let itemCount = max(1, count)
+        let idealWidth = (groupedWidth ?? (CGFloat(itemCount) * width
+            + CGFloat(max(0, itemCount - 1)) * appSpacing)) + notchBarPadding * 2
+        let maximumWidth = min(availableFrame.width,
+            max(width + notchBarPadding * 2, availableFrame.width * notchBarMaximumScreenFraction))
+        return CGSize(width: min(idealWidth, maximumWidth),
+                      height: min(rowHeight + notchBarPadding * 2, availableFrame.height))
+    }
+
     static func acceptsSidebarPointer(at point: CGPoint, sidebar: CGRect, menu: CGRect?) -> Bool {
         sidebar.contains(point) && !(menu?.contains(point) ?? false)
+    }
+
+    // Below the bar, beginning at the icon's centre and extending to its right when space permits.
+    static func notchMenuFrame(size: CGSize, icon: CGRect, bar: CGRect, screen: CGRect) -> CGRect {
+        let width = min(size.width, screen.width)
+        let height = min(size.height, max(0, bar.minY - screen.minY))
+        return CGRect(x: min(max(icon.midX, screen.minX), screen.maxX - width),
+                      y: bar.minY - height, width: width, height: height)
+    }
+
+    static func notchMenuBridge(menu: CGRect, anchor: CGRect) -> CGRect {
+        guard menu.maxY <= anchor.minY else { return .zero }
+        let left = max(menu.minX, anchor.minX)
+        let right = min(menu.maxX, anchor.maxX)
+        return CGRect(x: left, y: menu.maxY, width: max(0, right - left), height: anchor.minY - menu.maxY)
+    }
+
+    static func dragScrollDelta(at point: CGPoint, frame: CGRect, horizontal: Bool,
+                                 flipped: Bool) -> CGPoint {
+        guard frame.contains(point) else { return .zero }
+        if horizontal {
+            if point.x < frame.minX + 22 { return CGPoint(x: -10, y: 0) }
+            if point.x > frame.maxX - 22 { return CGPoint(x: 10, y: 0) }
+        } else {
+            if point.y > frame.maxY - 22 { return CGPoint(x: 0, y: flipped ? -10 : 10) }
+            if point.y < frame.minY + 22 { return CGPoint(x: 0, y: flipped ? 10 : -10) }
+        }
+        return .zero
     }
 }
