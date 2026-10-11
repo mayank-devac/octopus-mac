@@ -12,6 +12,10 @@ final class SidebarViewState: ObservableObject {
     @Published var pairDropDirection: PairDropDirection?
     @Published var monitors: [SidebarMonitor] = []
     @Published var configuration = SidebarConfiguration()
+    @Published var isExpanded = false
+    @Published var isTopCentered = false
+    @Published var topContentWidth: CGFloat?
+    @Published var topDrawingBottomPadding: CGFloat = 0
     var dragDesktops: [SidebarDesktop]?
 }
 
@@ -24,23 +28,34 @@ struct SidebarView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.colorScheme) private var colorScheme
     var onClick: (SidebarEntryID) -> Void
-    var onAnchor: (SidebarEntryID, NSView?) -> Void
-    var onIconAnchor: (SidebarEntryID, NSView?) -> Void = { _, _ in }
+    var onAnchor: (SidebarEntryID, SidebarAnchorChange) -> Void
+    var onIconAnchor: (SidebarEntryID, SidebarAnchorChange) -> Void = { _, _ in }
     var pairTargetsProvider: () -> [SidebarIconPairTarget] = { [] }
     var onPairCommand: (SidebarWindowID, SidebarWindowID, PairDropDirection) -> Void = { _, _, _ in }
     var onDrag: (SidebarEntryID, SidebarWindowID?, String, NSView, NSEvent) -> Void = { _, _, _, _, _ in }
     var onPlacement: (SidebarWindowID, SidebarSnapTarget) -> Void = { _, _ in }
     var onMouseAction: (SidebarEntryID, MouseShortcutAction, SidebarWindowID?) -> Void = { _, _, _ in }
-    var onDesktopAnchor: (UInt64, NSView?) -> Void = { _, _ in }
+    var onDesktopAnchor: (UInt64, SidebarAnchorChange) -> Void = { _, _ in }
     var onDesktopTransfer: (SidebarWindowID, SidebarDesktop) -> Void = { _, _ in }
-    var onMonitorAnchor: (String, NSView?) -> Void = { _, _ in }
+    var onMonitorAnchor: (String, SidebarAnchorChange) -> Void = { _, _ in }
+    var onReveal: () -> Void = {}
+
+    private var isCompact: Bool { state.configuration.idleBehavior == .compact }
+    private var showsMainSidebar: Bool { !isCompact || state.isExpanded }
+    private var contentWidth: CGFloat? {
+        state.isTopCentered ? state.topContentWidth
+            : (showsMainSidebar ? SidebarLayout.width : 0) + (isCompact ? SidebarLayout.compactWidth : 0)
+    }
+    private var sidebarAlignment: Alignment {
+        state.isTopCentered ? .center : state.side == .left ? .leading : .trailing
+    }
 
     private var sections: [SidebarDesktopSection] {
         state.dragSections ?? SidebarDesktopSection.make(entries: inventory.entries,
             desktops: inventory.desktops, scope: inventory.desktopScope)
     }
 
-    private var displayedEntries: [SidebarEntry] { sections.flatMap(\.entries) }
+    private var displayedEntries: [SidebarEntry] { groups.flatMap(\.sections).flatMap(\.entries) }
     private var groups: [SidebarMonitorGroup] {
         SidebarMonitorGroup.make(sections: sections, desktops: state.dragDesktops ?? inventory.desktops,
             monitors: state.monitors, scope: inventory.desktopScope)
@@ -50,51 +65,79 @@ struct SidebarView: View {
         let indices = Dictionary(uniqueKeysWithValues: displayedEntries.enumerated().map { ($0.element.id, $0.offset) })
         return Group {
             if !inventory.hasPermission {
-                Button(action: openAccessibilitySettings) {
-                    VStack(spacing: 6) {
-                        Image(systemName: "hand.raised.fill").font(.title2)
-                        Text("Allow access").font(.caption)
+                sidebarRow {
+                    Button(action: openAccessibilitySettings) {
+                        VStack(spacing: 6) {
+                            Image(systemName: "hand.raised.fill").font(.title2)
+                            Text("Allow access").font(.caption)
+                        }
+                        .frame(maxWidth: .infinity, minHeight: 76)
                     }
-                    .frame(maxWidth: .infinity, minHeight: 76)
+                    .buttonStyle(.plain)
+                    .help("Allow octopus in System Settings → Privacy & Security → Accessibility")
+                } compact: {
+                    Button(action: openAccessibilitySettings) { Image(systemName: "hand.raised") }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Allow Accessibility access")
+                        .frame(width: SidebarLayout.compactWidth, height: 76)
                 }
-                .buttonStyle(.plain)
-                .help("Allow octopus in System Settings → Privacy & Security → Accessibility")
             } else if groups.isEmpty || (inventory.desktopScope == .visibleDesktops && inventory.entries.isEmpty) {
-                Text("No windows")
-                    .font(.caption)
-                    .frame(maxWidth: .infinity, minHeight: 76)
+                sidebarRow {
+                    Text("No windows")
+                        .font(.caption)
+                        .frame(maxWidth: .infinity, minHeight: 76)
+                } compact: {
+                    Text("–").frame(width: SidebarLayout.compactWidth, height: 76)
+                        .accessibilityLabel("No windows")
+                }
+            } else if isCompact && !showsMainSidebar {
+                compactEntries(indices: indices)
+            } else if state.isTopCentered {
+                notchEntries(indices: indices)
             } else {
                 ScrollView(.vertical) {
                     VStack(spacing: CGFloat(appSpacing)) {
                         ForEach(groups) { group in
                             VStack(spacing: 0) {
                                 if let monitor = group.monitor {
-                                    Text(monitor.title)
-                                        .font(.system(size: max(CGFloat(labelFontSize) - 1, 8), weight: .medium))
-                                        .foregroundStyle(colorScheme == .dark ? Color.white : Color.black)
-                                        .multilineTextAlignment(.center).lineLimit(3)
-                                        .padding(.horizontal, 6).padding(.vertical, 2)
-                                        .background { SidebarFrostBackground(shadowOpacity: state.configuration.shadowOpacity) }
-                                        .frame(maxWidth: .infinity).frame(height: SidebarMonitor.headerHeight)
-                                        .overlay {
-                                            SidebarGeometryAnchor(id: monitor.id, onAnchor: onMonitorAnchor)
-                                                .allowsHitTesting(false)
-                                        }
-                                        .help(monitor.title)
-                                    if group.sections.allSatisfy({ $0.entries.isEmpty }) {
-                                        Text("Empty")
+                                    sidebarRow {
+                                        Text(monitor.title)
                                             .font(.system(size: max(CGFloat(labelFontSize) - 1, 8), weight: .medium))
                                             .foregroundStyle(colorScheme == .dark ? Color.white : Color.black)
+                                            .multilineTextAlignment(.center).lineLimit(3)
                                             .padding(.horizontal, 6).padding(.vertical, 2)
                                             .background { SidebarFrostBackground(shadowOpacity: state.configuration.shadowOpacity) }
-                                            .frame(maxWidth: .infinity).frame(height: SidebarMonitor.emptyHeight)
+                                            .frame(maxWidth: .infinity).frame(height: SidebarMonitor.headerHeight)
+                                            .overlay {
+                                                SidebarGeometryAnchor(id: monitor.id, onAnchor: onMonitorAnchor)
+                                                    .allowsHitTesting(false)
+                                            }
+                                            .help(monitor.title)
+                                    } compact: {
+                                        Color.clear.frame(width: SidebarLayout.compactWidth, height: SidebarMonitor.headerHeight)
+                                    }
+                                    if group.sections.allSatisfy({ $0.entries.isEmpty }) {
+                                        sidebarRow {
+                                            Text("Empty")
+                                                .font(.system(size: max(CGFloat(labelFontSize) - 1, 8), weight: .medium))
+                                                .foregroundStyle(colorScheme == .dark ? Color.white : Color.black)
+                                                .padding(.horizontal, 6).padding(.vertical, 2)
+                                                .background { SidebarFrostBackground(shadowOpacity: state.configuration.shadowOpacity) }
+                                                .frame(maxWidth: .infinity).frame(height: SidebarMonitor.emptyHeight)
+                                        } compact: {
+                                            Color.clear.frame(width: SidebarLayout.compactWidth, height: SidebarMonitor.emptyHeight)
+                                        }
                                     }
                                 }
                                 ForEach(Array(group.sections.enumerated()), id: \.element.id) { index, section in
                                     if index > 0 {
-                                        SidebarDesktopSeparator(title: section.desktop?.title ?? "Other apps",
-                                                                shadowOpacity: state.configuration.shadowOpacity)
-                                            .padding(.vertical, CGFloat(appSpacing) / 2)
+                                        sidebarRow {
+                                            SidebarDesktopSeparator(title: section.desktop?.title ?? "Other apps",
+                                                                    shadowOpacity: state.configuration.shadowOpacity)
+                                        } compact: {
+                                            Color.clear.frame(width: SidebarLayout.compactWidth, height: SidebarLayout.desktopSeparatorHeight)
+                                        }
+                                        .padding(.vertical, CGFloat(appSpacing) / 2)
                                     }
                                     desktopSection(section, indices: indices)
                                 }
@@ -107,17 +150,46 @@ struct SidebarView: View {
                 .scrollClipDisabled()
             }
         }
-        .foregroundStyle(.white)
-        .frame(width: SidebarLayout.width)
-        .frame(maxHeight: .infinity)
-        .background(Color.clear)
-        .frame(maxWidth: .infinity, alignment: state.side == .left ? .leading : .trailing)
+        .foregroundStyle(colorScheme == .dark ? Color.white : Color.black)
+        .frame(width: contentWidth)
+        .frame(maxHeight: .infinity, alignment: state.isTopCentered ? .top : .center)
+        .background(alignment: sidebarAlignment) {
+            if isCompact {
+                UnevenRoundedRectangle(
+                    topLeadingRadius: state.side == .right ? 12 : 0,
+                    bottomLeadingRadius: state.side == .right ? 12 : 0,
+                    bottomTrailingRadius: state.side == .left ? 12 : 0,
+                    topTrailingRadius: state.side == .left ? 12 : 0
+                )
+                .fill((colorScheme == .dark ? Color.black : Color.white).opacity(0.45))
+                .frame(width: SidebarLayout.compactWidth)
+                .allowsHitTesting(false)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: sidebarAlignment)
+        .padding(.bottom, state.isTopCentered ? state.topDrawingBottomPadding : 0)
+        .accessibilityAction(named: Text("Expand sidebar"), onReveal)
+    }
+
+    // Both columns live in the same scroll view, so numbers cannot drift from their app rows.
+    private func sidebarRow<Main: View, Compact: View>(@ViewBuilder main: () -> Main,
+                                                      @ViewBuilder compact: () -> Compact) -> some View {
+        HStack(spacing: 0) {
+            if isCompact && state.side == .left { compact() }
+            if showsMainSidebar { main().frame(width: SidebarLayout.width) }
+            if isCompact && state.side == .right { compact() }
+        }
     }
 
     private func desktopSection(_ section: SidebarDesktopSection, indices: [SidebarEntryID: Int]) -> some View {
         VStack(spacing: CGFloat(appSpacing)) {
             ForEach(section.entries) { entry in
-                item(entry, index: indices[entry.id] ?? 0)
+                let index = indices[entry.id] ?? 0
+                sidebarRow {
+                    item(entry, index: index)
+                } compact: {
+                    compactNumber(entry, index: index)
+                }
             }
         }
         .background {
@@ -132,6 +204,127 @@ struct SidebarView: View {
         }
     }
 
+    private func compactEntries(indices: [SidebarEntryID: Int]) -> some View {
+        ScrollView(.vertical) {
+            VStack(spacing: SidebarLayout.labelHeight + CGFloat(appSpacing)) {
+                ForEach(displayedEntries) { entry in
+                    compactNumber(entry, index: indices[entry.id] ?? 0, reservesLabelSpace: false)
+                }
+            }
+            .padding(.vertical, SidebarLayout.verticalPadding)
+        }
+        .scrollIndicators(.hidden)
+        .scrollClipDisabled()
+    }
+
+    private func notchEntries(indices: [SidebarEntryID: Int]) -> some View {
+        ScrollView(.horizontal) {
+            HStack(spacing: CGFloat(appSpacing)) {
+                ForEach(groups) { group in
+                    notchGroup(group, indices: indices)
+                }
+            }
+            .padding(SidebarLayout.notchBarPadding)
+        }
+        .scrollIndicators(.hidden)
+        .scrollClipDisabled()
+    }
+
+    private func notchGroup(_ group: SidebarMonitorGroup, indices: [SidebarEntryID: Int]) -> some View {
+        HStack(spacing: 0) {
+            if let monitor = group.monitor {
+                notchMonitorLabel(monitor)
+                    .padding(.trailing, CGFloat(appSpacing))
+                if group.sections.allSatisfy({ $0.entries.isEmpty }) {
+                    Text("Empty").font(.caption).foregroundStyle(.secondary)
+                        .frame(width: SidebarLayout.notchEmptyWidth, height: SidebarLayout.rowHeight)
+                }
+            }
+            ForEach(Array(group.sections.enumerated()), id: \.element.id) { index, section in
+                if index > 0 {
+                    notchDesktopSeparator(title: section.desktop?.title ?? "Other apps")
+                        .padding(.horizontal, CGFloat(appSpacing) / 2)
+                }
+                notchSection(section, indices: indices)
+            }
+        }
+    }
+
+    private func notchMonitorLabel(_ monitor: SidebarMonitor) -> some View {
+        let title = monitor.numberedTitle
+        return Text(title)
+            .font(.system(size: CGFloat(max(labelFontSize - 1, 8)), weight: .medium))
+            .foregroundStyle(colorScheme == .dark ? Color.white : Color.black)
+            .multilineTextAlignment(.center)
+            .lineLimit(3).minimumScaleFactor(0.65)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background { SidebarFrostBackground(shadowOpacity: state.configuration.shadowOpacity) }
+            .frame(width: SidebarLayout.rowHeight - 8, height: SidebarLayout.notchMonitorWidth)
+            .rotationEffect(.degrees(-90))
+            .frame(width: SidebarLayout.notchMonitorWidth, height: SidebarLayout.rowHeight)
+            .contentShape(Rectangle())
+            .overlay {
+                SidebarGeometryAnchor(id: monitor.id, onAnchor: onMonitorAnchor).allowsHitTesting(false)
+            }
+            .help(title).accessibilityLabel(title)
+    }
+
+    private func notchDesktopSeparator(title: String) -> some View {
+        let lineColor: Color = colorScheme == .dark ? .white : .black
+        return LinearGradient(stops: [
+            .init(color: .clear, location: 0), .init(color: lineColor.opacity(0.65), location: 0.2),
+            .init(color: lineColor.opacity(0.65), location: 0.8), .init(color: .clear, location: 1)
+        ], startPoint: .top, endPoint: .bottom)
+        .frame(width: 1, height: SidebarLayout.rowHeight - 8)
+        .frame(width: SidebarLayout.notchSeparatorWidth)
+        .background { SidebarFrostBackground(shadowOpacity: state.configuration.shadowOpacity).opacity(0.55) }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(title)
+        .allowsHitTesting(false)
+    }
+
+    private func notchSection(_ section: SidebarDesktopSection, indices: [SidebarEntryID: Int]) -> some View {
+        HStack(spacing: CGFloat(appSpacing)) {
+            ForEach(section.entries) { entry in
+                item(entry, index: indices[entry.id] ?? 0).frame(width: SidebarLayout.notchItemWidth)
+            }
+        }
+        .background {
+            if let desktop = section.desktop, state.dropDesktopID == desktop.id {
+                RoundedRectangle(cornerRadius: 8).fill(Color.accentColor.opacity(0.22))
+            }
+        }
+        .overlay {
+            if let desktop = section.desktop {
+                SidebarGeometryAnchor(id: desktop.id, onAnchor: onDesktopAnchor).allowsHitTesting(false)
+            }
+        }
+    }
+
+    private func compactNumber(_ entry: SidebarEntry, index: Int, reservesLabelSpace: Bool = true) -> some View {
+        let number = index + 1
+        let isOpen = entry.hasOpenWindows
+        let numberColor: Color = colorScheme == .dark ? .white : .black
+        let numberOpacity: Double = isOpen ? 1 : 0.35
+        let stateDescription = isOpen ? "open" : "hidden or no open windows"
+        let accessibilityDescription = "\(number), \(entry.application.title), \(stateDescription)"
+        return Text(String(number))
+            .font(.system(size: CGFloat(labelFontSize) + 3, weight: .medium, design: .rounded))
+            .monospacedDigit()
+            .lineLimit(1)
+            .minimumScaleFactor(0.6)
+            .foregroundStyle(numberColor.opacity(numberOpacity))
+            .frame(width: SidebarLayout.compactWidth, height: SidebarLayout.iconSlotHeight)
+            .frame(height: reservesLabelSpace ? SidebarLayout.rowHeight : SidebarLayout.iconSlotHeight,
+                   alignment: .top)
+            .contentShape(Rectangle())
+            .onTapGesture(perform: onReveal)
+            .accessibilityLabel(Text(accessibilityDescription))
+            .accessibilityAction { onReveal() }
+            .help(entry.application.title)
+    }
+
     private func item(_ entry: SidebarEntry, index: Int) -> some View {
         let title = entry.preferredWindow?.title ?? entry.application.title
         let hasNoWindows = entry.windows.isEmpty && entry.preferredID == nil && !entry.hasOtherWindows
@@ -143,8 +336,9 @@ struct SidebarView: View {
         let maximumLabelScale: CGFloat = reduceMotion ? 1 : 1 + SidebarLayout.magnificationGrowth
         // Reserve width for the largest zoom so labels keep the same wrapping during hover.
         let labelPadding: CGFloat = 4
-        let labelWidth = (SidebarLayout.width - 6) / maximumLabelScale - labelPadding * 2
-        return VStack(spacing: 0) {
+        let itemWidth = state.isTopCentered ? SidebarLayout.notchItemWidth : SidebarLayout.width
+        let labelWidth = (itemWidth - 6) / maximumLabelScale - labelPadding * 2
+        return VStack(alignment: .center, spacing: 0) {
             Group {
                 if let icon = entry.application.runningApplication?.icon {
                     Image(nsImage: icon).resizable()
@@ -197,7 +391,7 @@ struct SidebarView: View {
                 .frame(height: SidebarLayout.labelHeight, alignment: .top)
                 .padding(.horizontal, 3)
         }
-        .frame(maxWidth: .infinity)
+        .frame(maxWidth: .infinity, alignment: .center)
         .frame(height: SidebarLayout.rowHeight)
         // Keep windowless names legible; only their icons retain the inactive dimming.
         .opacity(entry.visibleIDs.isEmpty && !hasNoWindows ? 0.65 : 1)
@@ -275,6 +469,42 @@ struct SidebarView: View {
     }
 }
 
+struct SidebarNotchTriggerView: View {
+    var onReveal: () -> Void = {}
+
+    var body: some View {
+        Button(action: onReveal) {
+            SidebarNotchShape().fill(Color.black.opacity(0.94))
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Open app bar")
+    }
+}
+
+struct SidebarNotchShape: Shape {
+    func path(in rect: CGRect) -> Path {
+        let r = min(16, min(rect.height / 2, rect.width / 4))
+        return Path { path in
+            path.move(to: CGPoint(x: rect.minX, y: rect.minY))
+            path.addLine(to: CGPoint(x: rect.maxX, y: rect.minY))
+            path.addQuadCurve(to: CGPoint(x: rect.maxX - r, y: rect.minY + r),
+                              control: CGPoint(x: rect.maxX - r, y: rect.minY))
+            path.addLine(to: CGPoint(x: rect.maxX - r, y: rect.maxY - r))
+            path.addQuadCurve(to: CGPoint(x: rect.maxX - 2 * r, y: rect.maxY),
+                              control: CGPoint(x: rect.maxX - r, y: rect.maxY))
+            path.addLine(to: CGPoint(x: rect.minX + 2 * r, y: rect.maxY))
+            path.addQuadCurve(to: CGPoint(x: rect.minX + r, y: rect.maxY - r),
+                              control: CGPoint(x: rect.minX + r, y: rect.maxY))
+            path.addLine(to: CGPoint(x: rect.minX + r, y: rect.minY + r))
+            path.addQuadCurve(to: CGPoint(x: rect.minX, y: rect.minY),
+                              control: CGPoint(x: rect.minX + r, y: rect.minY))
+            path.closeSubpath()
+        }
+    }
+}
+
 // A quiet neutral outline identifies B; the thick segment shows where dragged A will land.
 private struct SidebarPairBorder: View {
     let direction: PairDropDirection?
@@ -326,23 +556,41 @@ private struct SidebarDesktopSeparator: View {
     }
 }
 
-private struct SidebarGeometryAnchor<ID: Hashable>: NSViewRepresentable {
+// Register only at creation: SwiftUI can update retiring views after replacements are made.
+// Teardown must identify its view so it cannot clear the replacement's registration.
+enum SidebarAnchorChange {
+    case registered(NSView)
+    case removed(NSView)
+
+    func apply<ID: Hashable>(to anchors: inout [ID: NSView], id: ID) {
+        switch self {
+        case .registered(let view):
+            anchors[id] = view
+        case .removed(let view):
+            if anchors[id] === view { anchors.removeValue(forKey: id) }
+        }
+    }
+}
+
+struct SidebarGeometryAnchor<ID: Hashable>: NSViewRepresentable {
     let id: ID
-    let onAnchor: (ID, NSView?) -> Void
+    let onAnchor: (ID, SidebarAnchorChange) -> Void
 
     final class AnchorView: NSView {
-        var onRemoval: (() -> Void)?
+        var onRemoval: ((NSView) -> Void)?
         override func hitTest(_ point: NSPoint) -> NSView? { nil }
     }
 
     func makeNSView(context: Context) -> AnchorView {
         let view = AnchorView()
-        view.onRemoval = { onAnchor(id, nil) }
-        onAnchor(id, view)
+        updateNSView(view, context: context)
+        onAnchor(id, .registered(view))
         return view
     }
-    func updateNSView(_ view: AnchorView, context: Context) {}
-    static func dismantleNSView(_ view: AnchorView, coordinator: ()) { view.onRemoval?() }
+    func updateNSView(_ view: AnchorView, context: Context) {
+        view.onRemoval = { onAnchor(id, .removed($0)) }
+    }
+    static func dismantleNSView(_ view: AnchorView, coordinator: ()) { view.onRemoval?(view) }
 }
 
 private struct SidebarFrostBackground: View {
@@ -412,7 +660,7 @@ private struct SidebarLabelBackground: NSViewRepresentable {
 // Keep the click area fixed while the controller tracks the pointer independently.
 struct SidebarPointerRegion: NSViewRepresentable {
     var onClick: () -> Void
-    var onAnchor: (NSView?) -> Void
+    var onAnchor: (SidebarAnchorChange) -> Void
     var onDrag: ((NSView, NSEvent) -> Void)? = nil
     var dragShortcut: MouseShortcut? = .left
     var onMouseClick: ((MouseShortcut) -> Void)? = nil
@@ -422,7 +670,7 @@ struct SidebarPointerRegion: NSViewRepresentable {
     func makeNSView(context: Context) -> PointerView {
         let view = PointerView()
         updateNSView(view, context: context)
-        onAnchor(view)
+        onAnchor(.registered(view))
         return view
     }
 
@@ -438,12 +686,12 @@ struct SidebarPointerRegion: NSViewRepresentable {
 
     static func dismantleNSView(_ view: PointerView, coordinator: ()) {
         view.cancelOperation(nil)
-        view.onAnchor?(nil)
+        view.onAnchor?(.removed(view))
     }
 
     final class PointerView: NSView {
         var onClick: (() -> Void)?
-        var onAnchor: ((NSView?) -> Void)?
+        var onAnchor: ((SidebarAnchorChange) -> Void)?
         var onDrag: ((NSView, NSEvent) -> Void)?
         var dragShortcut: MouseShortcut? = .left
         var cornerModifiersProvider: () -> NSEvent.ModifierFlags = { MouseShortcutStore.shared.cornerSnapModifiers }

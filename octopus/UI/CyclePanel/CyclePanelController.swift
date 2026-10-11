@@ -28,7 +28,7 @@ final class CyclePanelController: NSObject {
     private var panelAnchorCenter: CGPoint?
     private var isDismissing = false
     private(set) var presentation = CyclePanelPresentation.keyboard
-    private var sidebarAnchor: (icon: CGRect, screen: CGRect, side: SidebarSide)?
+    private var sidebarAnchor: (icon: CGRect, screen: CGRect, side: SidebarSide, bar: CGRect?)?
     private var sidebarRowAnchors: [CyclePanelItem.ID: NSView] = [:]
     private var sidebarHideAnchor: NSView?
     private var sidebarQuitAnchor: NSView?
@@ -195,7 +195,8 @@ final class CyclePanelController: NSObject {
         }
     }
 
-    func showSidebar(for entry: SidebarEntry, icon: CGRect, screen: CGRect, side: SidebarSide) {
+    func showSidebar(for entry: SidebarEntry, icon: CGRect, screen: CGRect, side: SidebarSide,
+                     belowBar: CGRect? = nil) {
         guard !isKeyboardSwitcherVisible, !entry.windows.isEmpty else { return }
         panel.level = SidebarWindowLevels.menu
         let isRefresh = sidebarEntryID == entry.id
@@ -204,7 +205,7 @@ final class CyclePanelController: NSObject {
         removeFlagsMonitor()
         currentApplication = entry.application
         currentSidebarEntryID = entry.id
-        sidebarAnchor = (icon, screen, side)
+        sidebarAnchor = (icon, screen, side, belowBar)
         state.setWindows(entry.windows, applicationTitle: entry.application.title,
                          selectedID: selectedID ?? entry.preferredID?.windowID,
                          preserveInteraction: isRefresh, sidebarWindowStates: entry.windowStates,
@@ -287,7 +288,12 @@ final class CyclePanelController: NSObject {
 
         let minimumContentHeight = headerHeight + (listVerticalPadding * 2) + rowHeight + actionHeight
         let clampedContentHeight = max(minimumContentHeight, min(desiredContentHeight, maxContentHeightByScreen))
-        let contentWidth = sidebarAnchor == nil ? panelContentWidth : sidebarContentWidth
+        let contentWidth: CGFloat
+        if let anchor = sidebarAnchor {
+            contentWidth = anchor.bar == nil ? sidebarContentWidth : SidebarLayout.notchWindowMenuWidth
+        } else {
+            contentWidth = panelContentWidth
+        }
         let targetContentRect = NSRect(x: 0, y: 0, width: contentWidth, height: clampedContentHeight)
         let targetFrameSize = panel.frameRect(forContentRect: targetContentRect).size
 
@@ -299,8 +305,13 @@ final class CyclePanelController: NSObject {
         )
         let newFrame: CGRect
         if let anchor = sidebarAnchor {
-            newFrame = SidebarLayout.menuFrame(size: targetFrameSize, icon: anchor.icon,
-                                               screen: anchor.screen, side: anchor.side)
+            if let bar = anchor.bar {
+                newFrame = SidebarLayout.notchMenuFrame(size: targetFrameSize, icon: anchor.icon,
+                                                       bar: bar, screen: anchor.screen, belowIcon: true)
+            } else {
+                newFrame = SidebarLayout.menuFrame(size: targetFrameSize, icon: anchor.icon,
+                                                   screen: anchor.screen, side: anchor.side)
+            }
         } else {
             newFrame = NSRect(origin: newOrigin, size: targetFrameSize)
         }

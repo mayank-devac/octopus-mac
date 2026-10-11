@@ -2,7 +2,7 @@
 //  MenuBarLabel.swift
 //  octopus
 //
-//  The menu-bar label: the octopus glyph, optionally followed by the current
+//  The menu-bar label: the juggling glyph, optionally followed by the current
 //  profile name.
 //
 
@@ -23,8 +23,11 @@ struct MenuBarLabel: View {
 
     var body: some View {
         HStack(spacing: 4) {
-            Image("menu_placeholder")
-                .renderingMode(.template)
+            Image("JuggleMenu")
+                .renderingMode(.original)
+                .resizable()
+                .scaledToFit()
+                .frame(width: 22, height: 22)
             if showActiveProfileInMenuBar, !text.isEmpty {
                 Text(text)
             }

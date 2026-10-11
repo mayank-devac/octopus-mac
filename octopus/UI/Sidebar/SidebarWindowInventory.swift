@@ -18,6 +18,15 @@ struct SidebarEntry: Identifiable {
     var hasOtherWindows = false
     var id: SidebarEntryID { SidebarEntryID(pid: pid, desktopID: desktop?.id) }
 
+    // A window on another desktop is still open. Hidden apps and minimised-only apps are dimmed.
+    var hasOpenWindows: Bool {
+        !isHidden && application.runningApplication?.isTerminated != true
+            && windows.contains { window in
+                guard let id = window.cgWindowID else { return false }
+                return windowStates[id]?.isMinimized != true
+            }
+    }
+
     var visibleIDs: Set<SidebarWindowID> {
         guard !isHidden else { return [] }
         return Set(windows.compactMap { window in

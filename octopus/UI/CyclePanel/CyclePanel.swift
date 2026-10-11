@@ -45,6 +45,19 @@ final class CyclePanel: NSPanel, NSWindowDelegate {
         effectView.layer?.cornerCurve = .continuous
         effectView.layer?.masksToBounds = true
 
+        // Mask the native backdrop as well as the content layer. Layer rounding
+        // alone can leave rectangular material/shadow outside the visible corners.
+        let radius: CGFloat = 12
+        let mask = NSImage(size: NSSize(width: radius * 2 + 1, height: radius * 2 + 1),
+                           flipped: false) { rect in
+            NSColor.white.setFill()
+            NSBezierPath(roundedRect: rect, xRadius: radius, yRadius: radius).fill()
+            return true
+        }
+        mask.capInsets = NSEdgeInsets(top: radius, left: radius, bottom: radius, right: radius)
+        mask.resizingMode = .stretch
+        effectView.maskImage = mask
+
         // Inherit system appearance so the existing blur adapts to Light and Dark mode.
         self.contentView = effectView
     }

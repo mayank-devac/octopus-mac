@@ -154,12 +154,6 @@ struct MenuBarView: View {
             openPreferencesWindow()
         }
 
-        Button("Support octopus...") {
-            if let url = URL(string: "https://getoctopus.app/verify?action=checkout") {
-                NSWorkspace.shared.open(url)
-            }
-        }
-        
         Button("About octopus") {
             NSApp.orderFrontStandardAboutPanel()
         }
