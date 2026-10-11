@@ -105,6 +105,23 @@ final class SidebarSpaceReader {
         return Self.visibleDesktopIDs(from: raw)
     }
 
+    func visibleDesktop(on displayID: String) -> SidebarDesktop? {
+        guard let connection, let displays,
+              let raw = displays(connection())?.takeRetainedValue() as? [[String: Any]] else { return nil }
+        return Self.visibleDesktop(on: displayID, from: raw)
+    }
+
+    static func visibleDesktop(on displayID: String, from displays: [[String: Any]]) -> SidebarDesktop? {
+        // With separate Spaces disabled, macOS reports one shared "Main" display.
+        guard let display = displays.first(where: { $0["Display Identifier"] as? String == displayID })
+                ?? displays.first(where: { $0["Display Identifier"] as? String == "Main" }),
+              let current = display["Current Space"] as? [String: Any],
+              (current["type"] as? NSNumber)?.intValue == 0,
+              let id = (current["ManagedSpaceID"] as? NSNumber ?? current["id64"] as? NSNumber)?.uint64Value,
+              let desktop = desktops(from: displays).first(where: { $0.id == id && $0.number != nil }) else { return nil }
+        return desktop
+    }
+
     static func visibleDesktopIDs(from displays: [[String: Any]]) -> Set<UInt64> {
         Set(displays.compactMap { display in
             guard let current = display["Current Space"] as? [String: Any],

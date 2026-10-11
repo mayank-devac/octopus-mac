@@ -22,6 +22,9 @@ let keypadKeys: [KeyboardShortcuts.Key] = [
 ]
 
 extension KeyboardShortcuts.Name {
+    static let moveWindowLeftMonitor = Self("moveWindowLeftMonitor", default: .init(.leftArrow, modifiers: [.control, .shift]))
+    static let moveWindowRightMonitor = Self("moveWindowRightMonitor", default: .init(.rightArrow, modifiers: [.control, .shift]))
+
     static let bindShortcuts: [KeyboardShortcuts.Name] = (0...9).map { number in
         Self("bind\(number)")
     }
@@ -48,19 +51,60 @@ extension KeyboardShortcuts.Name {
     }
 }
 
+enum WindowMonitorShortcuts {
+    static func migrateDefaults(in defaults: UserDefaults = .standard,
+                                read: (KeyboardShortcuts.Name) -> KeyboardShortcuts.Shortcut? = { KeyboardShortcuts.getShortcut(for: $0) },
+                                write: (KeyboardShortcuts.Shortcut?, KeyboardShortcuts.Name) -> Void = { KeyboardShortcuts.setShortcut($0, for: $1) }) {
+        let migrationKey = "monitorMoveControlShiftDefaultsMigrated"
+        guard !defaults.bool(forKey: migrationKey) else { return }
+        let oldDefaults: [(KeyboardShortcuts.Name, KeyboardShortcuts.Shortcut)] = [
+            (.moveWindowLeftMonitor, .init(.leftArrow, modifiers: .option)),
+            (.moveWindowRightMonitor, .init(.rightArrow, modifiers: .option))
+        ]
+        for (name, oldDefault) in oldDefaults where read(name) == oldDefault {
+            write(name.defaultShortcut, name)
+        }
+        // Run once so explicitly choosing Option later remains a saved user preference.
+        // Other combinations and cleared shortcuts never match the old defaults.
+        defaults.set(true, forKey: migrationKey)
+    }
+
+    static func conflict(for shortcut: KeyboardShortcuts.Shortcut?, excluding name: KeyboardShortcuts.Name) -> Bool {
+        guard let shortcut else { return false }
+        let names: [KeyboardShortcuts.Name] = [.moveWindowLeftMonitor, .moveWindowRightMonitor]
+            + KeyboardShortcuts.Name.bindShortcuts + KeyboardShortcuts.Name.activateShortcuts
+            + KeyboardShortcuts.Name.profileShortcuts + KeyboardShortcuts.Name.bindKeypadShortcuts
+            + KeyboardShortcuts.Name.activateKeypadShortcuts + KeyboardShortcuts.Name.profileKeypadShortcuts
+        return names.contains { $0 != name && KeyboardShortcuts.getShortcut(for: $0) == shortcut }
+    }
+}
+
 @MainActor
 final class ShortcutController {
     private let cycleController: CyclePanelController
     private let profileManager: ProfileManager
+    private let monitorMoveController = WindowMonitorMoveController()
     
     init(_ cycleController: CyclePanelController, _ profileManager: ProfileManager) {
         self.cycleController = cycleController
         self.profileManager = profileManager
         
+        WindowMonitorShortcuts.migrateDefaults()
+        monitorMoveController.start()
         setupShortcuts()
     }
     
     private func setupShortcuts() {
+        // Key-up fires once per press, even when holding the arrow generates key repeats.
+        for (name, direction) in [(KeyboardShortcuts.Name.moveWindowLeftMonitor, WindowMonitorMoveDirection.left),
+                                  (.moveWindowRightMonitor, .right)] {
+            KeyboardShortcuts.onKeyUp(for: name) { [weak self] in
+                // A later modifier change can make an app/profile shortcut collide with this one.
+                // Keep the existing action; never also move a window under an ambiguous binding.
+                guard !WindowMonitorShortcuts.conflict(for: KeyboardShortcuts.getShortcut(for: name), excluding: name) else { return }
+                self?.monitorMoveController.move(direction)
+            }
+        }
         for number in 0...9 {
             // Register both the main-row and numeric-keypad shortcut for each
             // number so either physical key triggers the same action.
@@ -82,6 +126,11 @@ final class ShortcutController {
                 }
             }
         }
+    }
+
+    func stop() {
+        KeyboardShortcuts.disable(.moveWindowLeftMonitor, .moveWindowRightMonitor)
+        monitorMoveController.stop()
     }
     
     private func handleBind(number: Int) {

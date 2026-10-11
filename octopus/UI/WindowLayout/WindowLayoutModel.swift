@@ -46,7 +46,8 @@ struct WindowLayoutWindow {
     let stackOrder: Int
 
     var visible: Bool { !hidden && !minimized }
-    var eligible: Bool { visible && !blocked && canMove && canResize }
+    var movable: Bool { visible && !blocked && canMove }
+    var eligible: Bool { movable && canResize }
 }
 
 struct WindowLayoutSnapshot {

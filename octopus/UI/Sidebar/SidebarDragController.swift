@@ -21,8 +21,7 @@ final class SidebarDragController: NSObject, NSDraggingSource {
     private var allowPairing = false
     private var dragIconPanel: NSPanel?
     private var dragIcon: NSImage?
-    private var feedbackPanel: NSPanel?
-    private var feedbackWork: DispatchWorkItem?
+    private let feedback = WindowPlacementFeedback()
     private var generation = 0
     private var snapDistance = SidebarSettings.defaultSnapDistance
     private var cornerModifiers: NSEvent.ModifierFlags = []
@@ -155,32 +154,7 @@ final class SidebarDragController: NSObject, NSDraggingSource {
     }
 
     func showFeedback(_ message: String) {
-        dismissFeedback()
-        guard let screen = NSScreen.screens.first(where: { $0.frame.contains(NSEvent.mouseLocation) }) ?? NSScreen.screens.first else { return }
-        let size = CGSize(width: min(400, screen.visibleFrame.width), height: 66)
-        let frame = CGRect(x: screen.visibleFrame.midX - size.width / 2,
-                           y: screen.visibleFrame.minY + 32, width: size.width, height: size.height)
-        let panel = Self.panel(frame: frame, ignoresMouse: true)
-        let label = NSTextField(wrappingLabelWithString: message)
-        label.font = .systemFont(ofSize: 13, weight: .medium)
-        label.alignment = .center
-        label.frame = panel.contentView!.bounds.insetBy(dx: 12, dy: 10)
-        label.autoresizingMask = [.width, .height]
-        let background = NSVisualEffectView(frame: panel.contentView!.bounds)
-        background.material = .hudWindow
-        background.state = .active
-        background.wantsLayer = true
-        background.layer?.cornerRadius = 10
-        background.layer?.masksToBounds = true
-        background.addSubview(label)
-        panel.contentView = background
-        panel.orderFrontRegardless()
-        feedbackPanel = panel
-        NSAccessibility.post(element: NSApp as Any, notification: .announcementRequested,
-            userInfo: [.announcement: message, .priority: NSAccessibilityPriorityLevel.medium.rawValue])
-        let work = DispatchWorkItem { [weak self] in self?.dismissFeedback() }
-        feedbackWork = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 3, execute: work)
+        feedback.showFeedback(message)
     }
 
     func draggingSession(_ session: NSDraggingSession, sourceOperationMaskFor context: NSDraggingContext) -> NSDragOperation {
@@ -433,10 +407,7 @@ final class SidebarDragController: NSObject, NSDraggingSource {
     }
 
     private func dismissFeedback() {
-        feedbackWork?.cancel()
-        feedbackWork = nil
-        feedbackPanel?.close()
-        feedbackPanel = nil
+        feedback.stop()
     }
 
     private static func panel(frame: CGRect, ignoresMouse: Bool) -> NSPanel {

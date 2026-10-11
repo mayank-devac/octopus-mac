@@ -10,8 +10,7 @@ final class WindowLayoutController: ObservableObject {
     @Published private(set) var status = ""
     @Published private(set) var canUndo = false
     private let reader = SidebarWindowReader(onChange: {}, tracksFrontmostFocus: true)
-    private let feedbackInventory = SidebarWindowInventory()
-    private lazy var feedback = SidebarDragController(inventory: feedbackInventory)
+    private let feedback = WindowPlacementFeedback()
     private let logger = Logger(subsystem: "com.mayank.octopus", category: "WindowLayout")
     private var observers: [NSObjectProtocol] = []
     private var workspaceObservers: [NSObjectProtocol] = []
