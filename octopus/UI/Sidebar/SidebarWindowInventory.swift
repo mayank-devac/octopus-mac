@@ -93,6 +93,7 @@ final class SidebarPendingAction: @unchecked Sendable {
     private let lock = NSLock()
     private var cancelled = false
     private var focusStarted = false
+    private var reopenDeadline: TimeInterval?
     let frontmostPID: pid_t?
 
     init(frontmostPID: pid_t?) { self.frontmostPID = frontmostPID }
@@ -122,6 +123,43 @@ final class SidebarPendingAction: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return focusStarted
+    }
+
+    func beginReopen(at time: TimeInterval = ProcessInfo.processInfo.systemUptime) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !cancelled, reopenDeadline == nil else { return false }
+        focusStarted = true
+        reopenDeadline = time + 2
+        return true
+    }
+
+    var reopenExpiresAt: TimeInterval? {
+        lock.lock()
+        defer { lock.unlock() }
+        return reopenDeadline
+    }
+
+    func isWaitingForReopen(at time: TimeInterval = ProcessInfo.processInfo.systemUptime) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return !cancelled && reopenDeadline.map { time < $0 } == true
+    }
+
+    func finishReopen() {
+        lock.lock()
+        reopenDeadline = nil
+        lock.unlock()
+    }
+
+    func finishReopenIfReady(hasWindow: Bool, isLive: Bool,
+                             at time: TimeInterval = ProcessInfo.processInfo.systemUptime) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let deadline = reopenDeadline,
+              cancelled || hasWindow || !isLive || time >= deadline else { return false }
+        reopenDeadline = nil
+        return true
     }
 
     var isCurrent: Bool {
@@ -154,6 +192,39 @@ enum SidebarFocusActivation {
         // No target window: macOS chooses the Space either way.
         guard let target else { return activateApp([.activateAllWindows]) }
         return focusWindow(target) || activateApp([])
+    }
+}
+
+enum SidebarAppReopen {
+    enum WindowPresence: Equatable {
+        case empty, existing, unknown
+    }
+
+    enum Result: Equatable {
+        case activate, reopen, rejected
+    }
+
+    // CG retains backing surfaces after windows close. Use verified sidebar
+    // handles for off-Desktop windows instead of vetoing on rendering surfaces.
+    static func windowPresence(axWindowCount: Int?, hasVerifiedWindow: Bool) -> WindowPresence {
+        if hasVerifiedWindow { return .existing }
+        guard let axWindowCount, axWindowCount >= 0 else { return .unknown }
+        return axWindowCount == 0 ? .empty : .existing
+    }
+
+    static func action(canContinue: () -> Bool, readWindows: () -> WindowPresence) -> Result {
+        guard canContinue() else { return .rejected }
+        let presence = readWindows()
+        guard canContinue() else { return .rejected }
+        return presence == .empty ? .reopen : .activate
+    }
+
+    static func openConfiguration() -> NSWorkspace.OpenConfiguration {
+        let configuration = NSWorkspace.OpenConfiguration()
+        configuration.activates = true
+        configuration.createsNewApplicationInstance = false
+        configuration.promptsUserIfNeeded = false
+        return configuration
     }
 }
 
@@ -479,6 +550,14 @@ final class SidebarWindowInventory: ObservableObject {
                     }
                     self.canTransferDesktops = snapshot.canTransferDesktops
                     self.updatePermissionTimer()
+                    // Use the unfiltered snapshot: the new window can belong to a different display.
+                    for (pid, token) in self.pendingActions {
+                        let hasWindow = snapshot.entries.contains { $0.pid == pid && !$0.windows.isEmpty }
+                        let isLive = applications.contains { $0.processIdentifier == pid && !$0.isTerminated }
+                        if token.finishReopenIfReady(hasWindow: hasWindow, isLive: isLive) {
+                            self.pendingActions[pid] = nil
+                        }
+                    }
                     if snapshot.needsWindowDiscovery {
                         self.scheduleDiscoveryRefresh()
                     } else {
@@ -629,12 +708,16 @@ final class SidebarWindowInventory: ObservableObject {
         let systemFullScreenPID = NSApp.currentSystemPresentationOptions.contains(.fullScreen) ? frontmostPID : nil
         reader.queue.async { [weak self, reader] in
             let result = reader.perform(action, desktop: desktop, token: token,
-                                        systemFullScreenPID: systemFullScreenPID, application: application)
+                systemFullScreenPID: systemFullScreenPID, application: application)
             DispatchQueue.main.async {
                 guard let self, self.running, !token.isCancelled,
+                      self.pendingActions[pid] === token,
                       desktop == self.desktopGeneration
                         || (self.desktopScope == .allDesktops && token.hasStartedFocus) else { return }
                 switch result {
+                case .reopen(let application):
+                    self.requestSystemReopen(application, token: token)
+                    return
                 case .activate(let application):
                     if token.canFinishFocus(on: pid), !application.isTerminated {
                         self.requestForeground(application, target: action.target, token: token)
@@ -665,6 +748,51 @@ final class SidebarWindowInventory: ObservableObject {
                 // AX returns; a second click must never act on the pre-minimise snapshot.
                 self.refreshAndUnlock(pid, token: token)
             }
+        }
+    }
+
+    private func requestSystemReopen(_ application: NSRunningApplication, token: SidebarPendingAction) {
+        let pid = application.processIdentifier
+        guard pendingActions[pid] === token, token.canFinishFocus(on: pid), !application.isTerminated else {
+            refreshAndUnlock(pid, token: token)
+            return
+        }
+        guard application.bundleURL != nil else {
+            requestForeground(application, target: nil, token: token)
+            return
+        }
+        guard token.beginReopen(), let expiry = token.reopenExpiresAt else { return }
+        let remaining = max(0, expiry - ProcessInfo.processInfo.systemUptime)
+        DispatchQueue.main.asyncAfter(deadline: .now() + remaining) { [weak self] in
+            guard let self, self.pendingActions[pid] === token else { return }
+            token.cancel()
+            token.finishReopen()
+            self.pendingActions[pid] = nil
+            self.refresh()
+        }
+        let submitted = SidebarFocusActivation.request(
+            canContinue: { token.canFinishFocus(on: pid) && !application.isTerminated },
+            yieldActivation: { NSApp.yieldActivation(to: application) },
+            activate: {
+                do {
+                    // Same system helper as the centred menu. Keep this transient
+                    // model separate from the reader's queue-owned inventory models.
+                    try Application(application).reopen(configuration: SidebarAppReopen.openConfiguration()) { [weak self] result in
+                        DispatchQueue.main.async {
+                            guard let self, self.running, self.pendingActions[pid] === token, !token.isCancelled else { return }
+                            if case .failure = result { token.finishReopen() }
+                            // NSWorkspace owns activation; late completion never reasserts focus.
+                            self.refreshAndUnlock(pid, token: token)
+                        }
+                    }
+                    return true
+                } catch {
+                    return false
+                }
+            })
+        if !submitted {
+            token.finishReopen()
+            refreshAndUnlock(pid, token: token)
         }
     }
 
@@ -715,6 +843,9 @@ final class SidebarWindowInventory: ObservableObject {
         guard running, pendingActions[pid] === token else { return }
         refresh { [weak self] in
             guard let self, self.pendingActions[pid] === token else { return }
+            // Event acceptance can precede slow window creation. Publication alone
+            // must not allow a second reopen while the first is still pending.
+            guard !token.isWaitingForReopen() else { return }
             self.pendingActions[pid] = nil
         }
     }
@@ -1215,6 +1346,7 @@ final class SidebarWindowReader: @unchecked Sendable {
 
     enum ActionResult {
         case activate(NSRunningApplication)
+        case reopen(NSRunningApplication)
         case completed
         case rejected
         case placement(SidebarPlacementResult, NSRunningApplication?)
@@ -1299,18 +1431,35 @@ final class SidebarWindowReader: @unchecked Sendable {
     func perform(_ action: SidebarWindowAction, desktop: Int, token: SidebarPendingAction,
                  systemFullScreenPID: pid_t?, application: NSRunningApplication?) -> ActionResult {
         dispatchPrecondition(condition: .onQueue(queue))
-        guard desktopGeneration == desktop, token.isCurrent else { return .rejected }
+        guard desktopGeneration == desktop else { return .rejected }
         if case .activateApp(let pid) = action {
             guard desktopScope == .allDesktops, pid != ProcessInfo.processInfo.processIdentifier,
                   let running = application, running.processIdentifier == pid,
                   running.activationPolicy == .regular, !running.isTerminated,
-                  token.isCurrent, token.beginFocus() else { return .rejected }
+                  token.isCurrent else { return .rejected }
+            let result = SidebarAppReopen.action(
+                canContinue: { token.isCurrent && !running.isTerminated },
+                readWindows: {
+                    let element = AXUIElementCreateApplication(pid)
+                    AXUIElementSetMessagingTimeout(element, 0.2)
+                    let windows: [AXUIElement]? = element.getAttributeValue(.windows)
+                    // The inventory already discovers real windows on other Desktops.
+                    // Revalidate those handles; raw CG surfaces cannot prove an app has a window.
+                    let hasVerifiedWindow = windows?.isEmpty == false || knownWindows.keys.contains {
+                        $0.pid == pid && validatedWindow($0) != nil
+                    }
+                    let presence = SidebarAppReopen.windowPresence(axWindowCount: windows?.count,
+                                                                  hasVerifiedWindow: hasVerifiedWindow)
+                    return presence
+                })
+            guard result != .rejected, token.canFinishFocus(on: pid), !running.isTerminated,
+                  token.beginFocus() else { return .rejected }
+            if result == .reopen { return .reopen(running) }
             if running.isHidden, !running.unhide() { return .rejected }
             guard token.canFinishFocus(on: pid), !running.isTerminated else { return .rejected }
-            // Do not launch or reopen an app to manufacture a window for the sidebar.
             return .activate(running)
         }
-        guard let id = action.target,
+        guard token.isCurrent, let id = action.target,
               let known = validatedWindow(id), token.isCurrent else { return .rejected }
         let element = known.element
         AXUIElementSetMessagingTimeout(element, 0.2)

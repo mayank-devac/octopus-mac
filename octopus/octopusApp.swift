@@ -85,6 +85,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if let appearanceObserver { NotificationCenter.default.removeObserver(appearanceObserver) }
         appearanceObserver = nil
         sidebarController?.stop()
+        shortcutManager?.stop()
         windowLayoutController.stop()
         AppDelegate.profileManager.saveNow()
     }

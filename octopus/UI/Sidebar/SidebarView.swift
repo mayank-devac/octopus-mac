@@ -327,6 +327,10 @@ struct SidebarView: View {
 
     private func item(_ entry: SidebarEntry, index: Int) -> some View {
         let title = entry.preferredWindow?.title ?? entry.application.title
+        let hasNoWindows = entry.windows.isEmpty && entry.preferredID == nil && !entry.hasOtherWindows
+        let labelColor: Color = hasNoWindows
+            ? Color(white: colorScheme == .dark ? 0.72 : 0.32)
+            : (colorScheme == .dark ? .white : .black)
         let dragTarget = SidebarIconDragPolicy.target(for: entry)
         let mouseBindings = mouseShortcuts.bindings
         let maximumLabelScale: CGFloat = reduceMotion ? 1 : 1 + SidebarLayout.magnificationGrowth
@@ -342,6 +346,14 @@ struct SidebarView: View {
                 }
             }
             .frame(width: SidebarLayout.iconSize, height: SidebarLayout.iconSize)
+            .opacity(hasNoWindows ? 0.65 : 1)
+            .overlay {
+                if hasNoWindows {
+                    RoundedRectangle(cornerRadius: SidebarLayout.iconSize * 0.22)
+                        .stroke(Color(white: 0.55), lineWidth: 1.5)
+                        .allowsHitTesting(false)
+                }
+            }
             .overlay {
                 // Measure the actual icon, rather than using its larger row/title hit area.
                 SidebarGeometryAnchor(id: entry.id, onAnchor: onIconAnchor).allowsHitTesting(false)
@@ -357,7 +369,7 @@ struct SidebarView: View {
 
             Text(title)
                 .font(.system(size: CGFloat(labelFontSize), weight: .medium))
-                .foregroundStyle(colorScheme == .dark ? Color.white : Color.black)
+                .foregroundStyle(labelColor)
                 .lineLimit(2)
                 .allowsTightening(true)
                 .multilineTextAlignment(.center)
@@ -374,7 +386,8 @@ struct SidebarView: View {
         }
         .frame(maxWidth: .infinity, alignment: .center)
         .frame(height: SidebarLayout.rowHeight)
-        .opacity(entry.visibleIDs.isEmpty ? 0.65 : 1)
+        // Keep windowless names legible; only their icons retain the inactive dimming.
+        .opacity(entry.visibleIDs.isEmpty && !hasNoWindows ? 0.65 : 1)
         .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: scale(for: index))
         .overlay {
             SidebarPointerRegion(

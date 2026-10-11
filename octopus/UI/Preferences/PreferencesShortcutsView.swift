@@ -7,8 +7,10 @@
 
 import SwiftUI
 import AppKit
+import KeyboardShortcuts
 
 struct PreferencesShortcutsView: View {
+    private static let maximumFormHeight: CGFloat = 520
     @StateObject private var modifierManager: ModifierManager = {
         if let manager = AppDelegate.modifierManager {
             return manager
@@ -20,6 +22,43 @@ struct PreferencesShortcutsView: View {
     @State private var recordingMouseAction: MouseShortcutAction?
     @State private var mouseShortcutError: String?
     @State private var formHeight: CGFloat?
+    @State private var monitorShortcutError: String?
+    @State private var monitorShortcutConflict = false
+    @State private var savedLeftMonitorShortcut = KeyboardShortcuts.getShortcut(for: .moveWindowLeftMonitor)
+    @State private var savedRightMonitorShortcut = KeyboardShortcuts.getShortcut(for: .moveWindowRightMonitor)
+
+    private func refreshMonitorShortcutConflict() {
+        monitorShortcutConflict = WindowMonitorShortcuts.conflict(
+            for: KeyboardShortcuts.getShortcut(for: .moveWindowLeftMonitor), excluding: .moveWindowLeftMonitor)
+            || WindowMonitorShortcuts.conflict(
+                for: KeyboardShortcuts.getShortcut(for: .moveWindowRightMonitor), excluding: .moveWindowRightMonitor)
+    }
+
+    private func monitorShortcutChanged(_ shortcut: KeyboardShortcuts.Shortcut?, name: KeyboardShortcuts.Name) {
+        let isLeft = name == .moveWindowLeftMonitor
+        let previous = isLeft ? savedLeftMonitorShortcut : savedRightMonitorShortcut
+        if WindowMonitorShortcuts.conflict(for: shortcut, excluding: name) {
+            KeyboardShortcuts.setShortcut(previous, for: name)
+            monitorShortcutError = "This shortcut is already assigned to another Octopus action. Choose another."
+            return
+        }
+        if isLeft { savedLeftMonitorShortcut = shortcut } else { savedRightMonitorShortcut = shortcut }
+        monitorShortcutError = nil
+    }
+
+    private func monitorShortcutRow(_ title: String, name: KeyboardShortcuts.Name) -> some View {
+        HStack {
+            Text(title).frame(maxWidth: .infinity, alignment: .leading)
+            KeyboardShortcuts.Recorder(for: name) { monitorShortcutChanged($0, name: name) }
+                .accessibilityLabel(title)
+            Button("Disable") {
+                KeyboardShortcuts.setShortcut(nil, for: name)
+                monitorShortcutChanged(nil, name: name)
+            }
+            .help("Remove this shortcut and return the key combination to other apps")
+            .accessibilityLabel("Disable \(title.lowercased()) shortcut")
+        }
+    }
 
     private func positionModifier(_ flag: NSEvent.ModifierFlags, symbol: String, name: String) -> some View {
         Toggle(symbol, isOn: Binding(
@@ -162,6 +201,26 @@ struct PreferencesShortcutsView: View {
             }
 
             Section {
+                Button("Reset monitor shortcuts") {
+                    KeyboardShortcuts.reset(.moveWindowLeftMonitor, .moveWindowRightMonitor)
+                    monitorShortcutChanged(KeyboardShortcuts.getShortcut(for: .moveWindowLeftMonitor), name: .moveWindowLeftMonitor)
+                    monitorShortcutChanged(KeyboardShortcuts.getShortcut(for: .moveWindowRightMonitor), name: .moveWindowRightMonitor)
+                }
+                monitorShortcutRow("Move window to left monitor", name: .moveWindowLeftMonitor)
+                monitorShortcutRow("Move window to right monitor", name: .moveWindowRightMonitor)
+                if monitorShortcutConflict {
+                    Text("A monitor shortcut conflicts with another Octopus action and will not move windows. Choose another shortcut.")
+                        .font(.caption).foregroundStyle(.red)
+                } else if let monitorShortcutError {
+                    Text(monitorShortcutError).font(.caption).foregroundStyle(.red)
+                }
+            } header: {
+                Text("Move focused window between monitors")
+            } footer: {
+                Text("Default: Control + Shift + arrows. Moves on key release to the next monitor’s visible desktop, wrapping at either end. Order is left to right, then top to bottom when stacked. Uses your monitor-move size setting. Global shortcuts can conflict with other apps. Full-screen windows and dialogs are excluded.")
+            }
+
+            Section {
                 Button("Reset all mouse shortcuts") {
                     recordingMouseAction = nil
                     mouseShortcutError = nil
@@ -249,7 +308,11 @@ struct PreferencesShortcutsView: View {
         }
         .formStyle(.grouped)
         .onDisappear { recordingMouseAction = nil }
-        .frame(height: formHeight)
+        .onAppear { refreshMonitorShortcutConflict() }
+        .onReceive(NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification).receive(on: DispatchQueue.main)) { _ in
+            refreshMonitorShortcutConflict()
+        }
+        .frame(height: min(formHeight ?? Self.maximumFormHeight, Self.maximumFormHeight))
         .alert("Reset keyboard modifiers?", isPresented: $showingResetConfirmation) {
             Button("Cancel", role: .cancel) {}
             Button("Reset", role: .destructive) {

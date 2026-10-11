@@ -50,6 +50,42 @@ final class WindowControlAccess: @unchecked Sendable {
         displays.contains { $0.id == scope.displayID } && spaces.visibleDesktopIDs().contains(scope.spaceID)
     }
 
+    func visibleScope(on displayID: String, budget: WindowControlBudget) -> WindowLayoutScope? {
+        dispatchPrecondition(condition: .onQueue(queue))
+        guard budget.isCurrent, let desktop = spaces.visibleDesktop(on: displayID), budget.isCurrent else { return nil }
+        return WindowLayoutScope(displayID: displayID, spaceID: desktop.id)
+    }
+
+    func focusedWindowID(pid: pid_t, budget: WindowControlBudget) -> SidebarWindowID? {
+        dispatchPrecondition(condition: .onQueue(queue))
+        guard budget.isCurrent, NSWorkspace.shared.frontmostApplication?.processIdentifier == pid,
+              pid != ProcessInfo.processInfo.processIdentifier,
+              let app = NSRunningApplication(processIdentifier: pid), app.activationPolicy == .regular,
+              !app.isTerminated, !app.isHidden else { return nil }
+        let element = AXUIElementCreateApplication(pid)
+        AXUIElementSetMessagingTimeout(element, Float(min(0.2, max(0.001, budget.deadline - budget.clock()))))
+        guard let focused: AXUIElement = element.getAttributeValue(.focusedWindow), budget.isCurrent else { return nil }
+        AXUIElementSetMessagingTimeout(focused, Float(min(0.2, max(0.001, budget.deadline - budget.clock()))))
+        guard let number = focused.getWindowID(), budget.isCurrent else { return nil }
+        return SidebarWindowID(pid: pid, windowID: number)
+    }
+
+    // The shortcut moves an already focused window. Never activate its app again: the user
+    // may have switched apps or windows while the native move was finishing.
+    func raiseFocused(_ expected: WindowLayoutWindow, displays: [WindowLayoutDisplay],
+                      budget: WindowControlBudget) -> Bool {
+        dispatchPrecondition(condition: .onQueue(queue))
+        guard budget.isCurrent,
+              let current = read(expected.id.window, displays: displays, budget: budget, expected: expected).window,
+              current.movable, current.scope == expected.scope,
+              SidebarPlacementGeometry.matches(current.frame, expected.frame),
+              case .resolved(let handle) = resolve(expected.id.window, budget), handle.id == expected.id,
+              focusedWindowID(pid: expected.id.window.pid, budget: budget) == expected.id.window,
+              budget.isCurrent else { return false }
+        return AXUIElementPerformAction(handle.element, kAXRaiseAction as CFString) == .success
+            && focusedWindowID(pid: expected.id.window.pid, budget: budget) == expected.id.window
+    }
+
     // Pair focus reuses the existing exact-window request; it never raises before that request.
     @MainActor func focusConfirmed(_ window: WindowLayoutWindow, token: WindowLayoutBatchToken,
                                    completion: @escaping () -> Void) {
@@ -148,24 +184,30 @@ final class WindowControlAccess: @unchecked Sendable {
     // The caller supplies its last verified starting frame. Reject intervening movement before any setter.
     func write(_ expected: WindowLayoutWindow, frame: CGRect, workArea: CGRect,
                destination: WindowLayoutScope, displays: [WindowLayoutDisplay], budget: WindowControlBudget,
-               policy: WindowFrameWritePolicy) -> SidebarPlacementResult {
+               policy: WindowFrameWritePolicy, resize: Bool = true,
+               requireFocused: Bool = false) -> SidebarPlacementResult {
         dispatchPrecondition(condition: .onQueue(queue))
         guard budget.isCurrent, scopeIsVisible(destination, displays: displays),
               let current = read(expected.id.window, displays: displays, budget: budget, expected: expected).window,
-              current.scope == expected.scope, current.eligible,
+              current.scope == expected.scope, current.movable, (!resize || current.canResize),
               SidebarPlacementGeometry.matches(current.frame, expected.frame) else { return .cancelled }
         guard case .resolved(let handle) = resolve(expected.id.window, budget), handle.id == expected.id else { return .cancelled }
         // Recheck immediately before each setter; an app can close, show a sheet or change Desktop mid-write.
         func permitted() -> Bool {
             guard budget.isCurrent, scopeIsVisible(destination, displays: displays),
                   let live = read(expected.id.window, displays: displays, budget: budget, expected: expected).window,
-                  live.eligible else { return false }
+                  live.movable, (!resize || live.canResize) else { return false }
+            if requireFocused {
+                guard focusedWindowID(pid: expected.id.window.pid, budget: budget) == expected.id.window,
+                      visibleScope(on: expected.scope.displayID, budget: budget) == expected.scope,
+                      visibleScope(on: destination.displayID, budget: budget) == destination else { return false }
+            }
             if policy == .sameDisplayAdjustment { return live.scope == destination }
             // Native membership/frame can settle separately during the explicitly requested visible-display move.
             return [expected.scope.displayID, destination.displayID].contains(live.scope.displayID)
                 && [expected.scope.spaceID, destination.spaceID].contains(live.scope.spaceID)
         }
-        let request = SidebarPlacementRequest(frame: frame, workArea: workArea, resize: true,
+        let request = SidebarPlacementRequest(frame: frame, workArea: workArea, resize: resize,
             desktopGeneration: 0, crossesDisplay: policy == .crossDisplayPlacement)
         var writeResults: [String] = []
         var nativeFailure: AXError?

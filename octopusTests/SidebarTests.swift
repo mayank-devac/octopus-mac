@@ -1027,6 +1027,97 @@ struct SidebarTests {
         #expect(!action.beginFocus())
     }
 
+    @Test func reopenUsesReadableAXWindowsAndVerifiedSidebarHandles() {
+        // Ghostty reported zero AX windows after closing them while CG retained
+        // nine surfaces. Those surfaces are deliberately not an input to this decision.
+        #expect(SidebarAppReopen.windowPresence(axWindowCount: 0, hasVerifiedWindow: false) == .empty)
+        // A minimized, hidden, modal or full-screen AX window is still an existing window.
+        for count in [1, 2] {
+            #expect(SidebarAppReopen.windowPresence(axWindowCount: count, hasVerifiedWindow: false) == .existing)
+        }
+        // A verified remote window remains protected even when AX omits it from this Desktop's list.
+        for count in [Optional(0), nil] {
+            #expect(SidebarAppReopen.windowPresence(axWindowCount: count, hasVerifiedWindow: true) == .existing)
+        }
+        #expect(SidebarAppReopen.windowPresence(axWindowCount: nil, hasVerifiedWindow: false) == .unknown)
+        #expect(SidebarAppReopen.windowPresence(axWindowCount: -1, hasVerifiedWindow: false) == .unknown)
+    }
+
+    @Test func onlyConfirmedWindowlessEntriesSelectSystemReopen() {
+        for presence in [SidebarAppReopen.WindowPresence.empty, .existing, .unknown] {
+            let result = SidebarAppReopen.action(canContinue: { true }, readWindows: { presence })
+            #expect(result == (presence == .empty ? .reopen : .activate))
+        }
+    }
+
+    @Test func reopenRejectsStaleIntentBeforeAndAfterReadingWindows() {
+        var reads = 0
+        let rejected = SidebarAppReopen.action(canContinue: { false },
+            readWindows: { reads += 1; return .empty })
+        #expect(rejected == .rejected && reads == 0)
+
+        let token = SidebarPendingAction(frontmostPID: nil)
+        let cancelled = SidebarAppReopen.action(canContinue: { !token.isCancelled },
+            readWindows: { reads += 1; token.cancel(); return .empty })
+        #expect(cancelled == .rejected && reads == 1)
+
+        var current = true
+        let changed = SidebarAppReopen.action(canContinue: { current },
+            readWindows: { current = false; return .unknown })
+        #expect(changed == .rejected)
+    }
+
+    @Test func systemReopenActivatesTheAppWithoutANewInstanceOrCustomAppleEvent() {
+        let configuration = SidebarAppReopen.openConfiguration()
+        #expect(configuration.activates)
+        #expect(!configuration.createsNewApplicationInstance)
+        #expect(configuration.appleEvent == nil)
+        #expect(!configuration.promptsUserIfNeeded)
+    }
+
+    @Test func slowWindowCreationBlocksRepeatReopensForAtMostTwoSeconds() {
+        let token = SidebarPendingAction(frontmostPID: nil)
+        var submissions = 0
+        func request() -> SidebarAppReopen.Result {
+            let result = SidebarAppReopen.action(canContinue: { !token.isCancelled }, readWindows: { .empty })
+            guard result == .reopen, token.beginReopen(at: 10) else { return .rejected }
+            submissions += 1
+            return result
+        }
+        #expect(request() == .reopen)
+        #expect(token.hasStartedFocus)
+        #expect(token.reopenExpiresAt == 12)
+        #expect(token.isWaitingForReopen(at: 10.1))
+        #expect(token.isWaitingForReopen(at: 11.99))
+        #expect(request() == .rejected && submissions == 1)
+        #expect(!token.isWaitingForReopen(at: 12))
+        token.cancel()
+        token.finishReopen()
+        #expect(request() == .rejected && submissions == 1)
+    }
+
+    @Test func publicationKeepsAnEmptyLiveAppLockedButReleasesWindowsExitAndExpiry() {
+        let pending = SidebarPendingAction(frontmostPID: nil)
+        #expect(pending.beginReopen(at: 10))
+        #expect(!pending.finishReopenIfReady(hasWindow: false, isLive: true, at: 10.01))
+        #expect(pending.isWaitingForReopen(at: 10.01))
+        // The production publication path releases on an observed window, exit, expiry or cancellation.
+        for state in [(true, true, 10.01, false), (false, false, 10.01, false),
+                      (false, true, 12.0, false), (false, true, 10.01, true)] {
+            let token = SidebarPendingAction(frontmostPID: nil)
+            #expect(token.beginReopen(at: 10))
+            if state.3 { token.cancel() }
+            #expect(token.finishReopenIfReady(hasWindow: state.0, isLive: state.1, at: state.2))
+            #expect(token.reopenExpiresAt == nil)
+            #expect(!token.isWaitingForReopen(at: 10.01))
+            #expect(!token.finishReopenIfReady(hasWindow: true, isLive: true, at: 11))
+            if state.3 { #expect(!token.beginReopen(at: 11)) }
+        }
+        let ordinaryFocus = SidebarPendingAction(frontmostPID: nil)
+        #expect(ordinaryFocus.beginFocus())
+        #expect(!ordinaryFocus.finishReopenIfReady(hasWindow: true, isLive: true, at: 10))
+    }
+
     @MainActor @Test func anActiveAppOnAnotherDesktopIsFocusedInsteadOfHiddenOrMinimised() {
         let pid = getpid()
         let app = Application(NSRunningApplication.current)
