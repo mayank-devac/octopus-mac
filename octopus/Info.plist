@@ -5,8 +5,8 @@
 	<key>CFBundleIconFile</key>
 	<string>octopus_placeholder</string>
 	<key>SUFeedURL</key>
-	<string>https://gouwsxander.github.io/octopus/appcast.xml</string>
+	<string>https://raw.githubusercontent.com/mayank-devac/octopus-dist/main/appcast.xml</string>
 	<key>SUPublicEDKey</key>
-	<string>yq02ZX609yRYBN8syhl4tWbxWY8HesyBdiMX3yDugH4=</string>
+	<string>ef8cij7gl1ItP7GnrxGGaRJkIynol9avA/n9HlT1NGk=</string>
 </dict>
 </plist>

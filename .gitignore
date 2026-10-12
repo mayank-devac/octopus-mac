@@ -49,3 +49,7 @@ Build/
 Config/LocalSigning.xcconfig
 default.profraw
 .agent/images
+WEB
+scripts/__pycache__
+scripts/BETA-RELEASE.md
+scripts/beta-release.py
