@@ -4,7 +4,7 @@ enum WindowLayoutSelection: String, CaseIterable {
     case mostRecent, allNormal
 
     static func saved(_ value: String?) -> Self { value.flatMap(Self.init(rawValue:)) ?? .mostRecent }
-    var title: String { self == .mostRecent ? "Most recently used other window" : "All other normal windows" }
+    var title: String { self == .mostRecent ? "Most recently used window" : "All windows (beta)" }
 }
 
 enum VisibleDisplayMoveSize: String, CaseIterable {

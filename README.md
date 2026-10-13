@@ -1,20 +1,151 @@
 # octopus
 
+<p align="center">
+  <a href="octopus/assets/app.gif">
+    <img src="octopus/assets/app.gif" width="100%" alt="Octopus app demo">
+  </a>
+</p>
+
+> 🚧 **Beta:** Octopus may have bugs in window snapping and other edge cases.
+> Users and developers are welcome to [report a bug](https://github.com/mayank-devac/octopus-mac/issues)
+> or [contribute a fix or improvement](https://github.com/mayank-devac/octopus-mac/pulls).
+
+## Why use Octopus?
+
+- 🧭 **Sidebar:** keep apps and windows within easy reach.
+- 🖱️ **Drag and drop:** move windows straight from the sidebar.
+- 🧲 **Snap:** arrange windows in halves or quarters with the corner shortcut.
+- 🤝 **Pair windows:** drop one app icon onto another for a side-by-side view.
+- 🪟 **Window layouts:** automatically fit other windows beside your snapped window.
+- ↩️ **Undo:** reverse the last layout adjustment.
+- 💻 **Mac Notch mode:** keep the sidebar around your MacBook’s notch.
+- 🖥️ **Multiple monitors:** use a sidebar on each display and move windows between them.
+- ⌨️ **Keyboard shortcuts:** bind apps to number keys for quick switching.
+- 🖱️ **Mouse shortcuts:** customise snapping, minimising, and hiding actions.
+- 🗂️ **Profiles:** switch app bindings for work, study, or browsing.
+- 🚀 **Per-app window switching:** cycle through one app’s windows with an Alt-Tab-style panel.
+- 🌐 **Desktops:** move windows between macOS Desktops from the sidebar.
+- 🎨 **Your setup:** customise sidebar position, spacing, labels, and idle behaviour.
+
 Octopus is a macOS window switcher and window-management app. This repository is
 Mayank Baral's modified version of the original Octopus by Xander Gouws and Omar Hayat.
 
 Source code: [mayank-devac/octopus-mac](https://github.com/mayank-devac/octopus-mac).
 
+## See Octopus in action
+
+Click any screenshot for a closer look.
+
+<table>
+  <tr>
+    <td width="50%" align="center" valign="top">
+      <a href="octopus/assets/sidebar.png"><img src="octopus/assets/sidebar.png" width="80" alt="Octopus sidebar with app icons and number bindings"></a>
+      <p><strong>🧭 Window sidebar</strong><br>Keep your apps and windows within reach.</p>
+    </td>
+    <td width="50%" align="center" valign="top">
+      <a href="octopus/assets/windows.png"><img src="octopus/assets/windows.png" width="180" alt="Sidebar menu listing multiple Brave windows"></a>
+      <p><strong>🪟 Find a window</strong><br>Pick a window, minimise it, or close it from the sidebar.</p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" align="center" valign="top">
+      <a href="octopus/assets/mac%20notch.png"><img src="octopus/assets/mac%20notch.png" width="400" alt="Horizontal Octopus app bar beneath the MacBook notch"></a>
+      <p><strong>💻 Mac Notch mode</strong><br>Keep your app bar just below the notch.</p>
+    </td>
+    <td width="50%" align="center" valign="top">
+      <a href="octopus/assets/preferences.png"><img src="octopus/assets/preferences.png" width="240" alt="Sidebar preferences for displays, visibility, position, and appearance"></a>
+      <p><strong>🎨 Make it yours</strong><br>Choose displays, sidebar position, spacing, and visibility.</p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" align="center" valign="top">
+      <a href="octopus/assets/snap.png"><img src="octopus/assets/snap.png" width="400" alt="Blue window placement preview covering the available screen area"></a>
+      <p><strong>🖱️ Drag to position</strong><br>Preview where your window will go before dropping it.</p>
+    </td>
+    <td width="50%" align="center" valign="top">
+      <a href="octopus/assets/rightsnap.png"><img src="octopus/assets/rightsnap.png" width="400" alt="Blue snap preview covering the right half of the display"></a>
+      <p><strong>🧲 Snap to a half (auto-snap)</strong><br>drag app icon from sidebar and Place a window on one side</p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" align="center" valign="top">
+      <a href="octopus/assets/darg%20to%20snap%20.png"><img src="octopus/assets/darg%20to%20snap%20.png" width="300" alt="Window layout preferences for automatic adjustment, monitor moves, and snap areas"></a>
+      <p><strong>🤝 Window layouts</strong><br>Adjust other windows after snapping, or pair two app windows.</p>
+    </td>
+    <td width="50%" align="center" valign="top">
+      <a href="octopus/assets/shortcuts.png"><img src="octopus/assets/shortcuts.png" width="320" alt="Keyboard and mouse shortcut settings for monitor moves and window actions"></a>
+      <p><strong>⌨️ Your shortcuts</strong><br>Customise keyboard and mouse actions for windows and monitors.</p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" align="center" valign="top">
+      <a href="octopus/assets/desktops.png"><img src="octopus/assets/desktops.png" width="200" alt="Desktop selection popup while dragging a window from the sidebar"></a>
+      <p><strong>🌐 Move between Desktops</strong><br>Send a window to another macOS Desktop from the sidebar.</p>
+    </td>
+    <td width="50%" align="center" valign="top">
+      <a href="octopus/assets/open.png"><img src="octopus/assets/open.png" width="400" alt="Desktop overview with sidebar apps grouped under two monitor headings"></a>
+      <p><strong>🖥️ Multiple monitors</strong><br>See your running apps grouped by display.</p>
+    </td>
+  </tr>
+</table>
+
 ## Key Features
 
-octopus lets you bind applications to number keys and cycle through their windows with an Alt-Tab-like interface.
+octopus lets you bind applications to number keys and cycle through their windows with
+an Alt-Tab-like interface. We built octopus because we wanted a fast and simple window
+switcher for macOS — and it has grown into a keyboard-and-mouse window manager:
 
-We built octopus because we wanted a fast and simple window switcher for macOS.
-
+### App and window switching
 - Bind applications to number keys to refocus to **any** window for that app
 - Assign profiles for different sets of bindings
 - Do your binding and profile management through the keyboard
-- Customizable keyboard shortcuts
+- Optional numpad <kbd>0</kbd>–<kbd>9</kbd> for the same shortcuts (off by default, because
+  those combinations can conflict with other apps)
+- Independently configurable modifiers for binding, switching, and profile switching
+- Per-app Alt-Tab panel with macOS notch awareness and refined anchoring
+- Show the active profile in the menu bar, or hide the menu bar icon entirely
+
+### Window sidebar
+- A vertical app bar listing running apps and their windows on the selected display
+- Click an app icon to show and focus it; click again to minimise or restore
+  (configurable: do nothing, hide, or minimise/restore)
+- Window menus for: focus window, minimise/restore, close window, move to another
+  Desktop, and pair windows
+- Apps without windows appear last with grey fills, and can be reopened from their icon
+- Desktop scope (all Desktops or visible Desktops) and display scope (all displays or
+  the current one)
+- Multi-display sidebars with per-display settings, including one sidebar per monitor
+- Idle behaviour: fade, auto-hide, always visible, compact, or Mac Notch
+- Move the sidebar along its screen edge with <kbd>Control</kbd> + scroll wheel
+- Adjustable: screen edge, vertical position, label font size, text shadow opacity,
+  and gap between apps
+
+### Window management
+- Drag sidebar windows to snap them to halves, quarters, screen corners, or maximise
+- Drag one app icon onto another to pair just those two windows on the chosen side
+- Configurable snap distance from screen edges, and a configurable corner-snap shortcut
+  (<kbd>Control</kbd> + <kbd>Option</kbd> + <kbd>Shift</kbd> by default)
+- Automatically adjust other windows after a snap — the most recently used other
+  window, or all other normal windows — with Undo for the last adjustment
+- Move the focused window between monitors with <kbd>Control</kbd> + <kbd>Shift</kbd> +
+  arrow keys (left/right, wrapping at either end, top-to-bottom when monitors are
+  stacked), keeping original size or filling the screen
+- Move individual windows to another Desktop from the sidebar
+- Cross-desktop focus that navigates to a window's Desktop instead of briefly
+  surfacing it on the current one
+- Safety checks throughout: fixed-size, minimised, modal, sheet, and full-screen
+  windows are detected and reported instead of being moved incorrectly
+
+### Mouse shortcuts
+- Record mouse buttons (with optional modifiers) for: resize and snap window,
+  minimise/restore window, and hide app
+- Defaults: left click = resize and snap, right click = minimise/restore
+- <kbd>Control</kbd> + scroll wheel over the sidebar moves it vertically
+- Reset any recorded shortcut from Preferences
+
+### Updates
+- Built-in Sparkle 2 updater with feed and EdDSA signature verification
+- **Check for updates…** in the menu bar
 
 
 ## Usage
@@ -23,6 +154,9 @@ We built octopus because we wanted a fast and simple window switcher for macOS.
 You should start by binding different applications to the number keys. You can do this:
 - through **Preferences → Profiles** (accessed through the menu bar), or
 - by selecting the application of your choice and then pressing <kbd>Ctrl</kbd> + <kbd>Option</kbd> + <kbd>Shift</kbd>.
+
+If you also use a numeric keypad for other apps, enable **Use numpad digits for
+shortcuts** in **Preferences → Shortcuts**; it is off by default.
 
 ### Profiles
 You can also set your bindings up in different profiles.
@@ -35,6 +169,8 @@ You can switch between profiles:
 - using the menu bar, or
 - by binding them to the number keys, and then pressing <kbd>Ctrl</kbd> + <kbd>Option</kbd> + <kbd>[0-9]</kbd>.
 
+Profiles can also appear in the menu bar so the active one is always visible.
+
 ### Switching applications
 Suppose you're in your coding profile, and have your editor bound to `0`.
 
@@ -46,6 +182,59 @@ To switch between apps and windows:
 In this way, octopus gives every app its own 'Alt-Tab'.
 
 Note that window switching is scoped to your current [macOS space](https://support.apple.com/en-ca/guide/mac-help/mh14112/mac).
+
+### The sidebar
+The sidebar sits along a screen edge and lists your apps and their windows:
+
+- Click an app icon to focus its most recent window; click it again to minimise or
+  restore (change this under **Preferences → Sidebar**).
+- Open an app's window list to focus, minimise/restore, close a window, or move it
+  to another Desktop.
+- Drag an app icon to move that app's window: release near a screen edge or corner
+  to snap it, or drop it onto another app icon to pair the two windows.
+- Use **Expand sidebar** for a wider view, and <kbd>Control</kbd> + scroll to slide the
+  sidebar up or down its edge.
+- Choose **Fade**, **Auto-Hide**, **Alway visible**, **Compact**, or **Mac Notch**
+  in **Preferences → Sidebar**. Compact keeps a thin number strip at the edge and
+  expands on hover; Mac Notch turns the sidebar into a top-centre bar that opens
+  below the notch (a hardware notch is used automatically when present).
+
+### Snapping and pairing windows
+- Drag a sidebar window toward a screen edge to snap it to that half. While dragging,
+  hold <kbd>Control</kbd> + <kbd>Option</kbd> + <kbd>Shift</kbd> to snap to a quarter or
+  corner instead. Drag to the top edge, or use the maximise target, to fill the screen.
+- Drop a window onto another visible app icon to pair exactly those two windows on the
+  chosen side of the outlined icon. This works even when automatic adjustment is off.
+- After a snap, Octopus can rearrange the other normal windows on that display and
+  Desktop — either the most recently used window or all of them — and offers
+  **Undo last adjustment**. Snap distance, snap areas, and companion selection are
+  configurable in **Preferences → Window Layout**.
+- If an app refuses a size or position (fixed-size windows, minimum sizes, or
+  non-overlapping constraints), Octopus keeps the window reachable and tells you why.
+
+### Moving windows between monitors and Desktops
+- Hold <kbd>Control</kbd> + <kbd>Shift</kbd> and press an arrow key to move the focused
+  window to the next monitor. It wraps at either end and uses your chosen move size
+  (original size or full screen). Full-screen windows and dialogs are skipped.
+- Drag a window to another monitor's visible Desktop to move it there, keeping its
+  size or filling the screen depending on your setting. Moving to an inactive Desktop
+  always keeps the current size.
+- From a window's sidebar menu, use **Move to …** to send it to another Desktop.
+- Selecting a window on another Desktop focuses it there without first surfacing it on
+  your current Desktop.
+
+### Mouse shortcuts
+In **Preferences → Shortcuts**, click **Record** and then click with the mouse button
+you want (modifiers optional, <kbd>Escape</kbd> cancels):
+
+| Action | Default |
+| --- | --- |
+| Resize and snap window | Left click |
+| Minimise / restore window | Right click |
+| Hide app | Not set |
+
+Click and drag shortcuts work on sidebar app icons; inactive apps focus first. Hide
+and minimise must use different shortcuts.
 
 ### Customization
 
@@ -70,7 +259,12 @@ This source repository does not provide a newly built or notarized app.
 
 octopus is compatible with **macOS 14.6 (Sonoma)** and onwards. 
 
-You can find your macOS version from the ** → About This Mac** page.
+You can find your macOS version from the **** → About This Mac** page.
+
+The app moves and resizes other apps' windows, so it needs Accessibility permission
+(**System Settings → Privacy & Security → Accessibility**). octopus prompts for it and
+links straight to that pane. Without it, window management is unavailable and octopus
+still works as an app switcher when macOS allows.
 
 
 ## Development
@@ -111,6 +305,7 @@ Issues and pull requests are welcome. Include your macOS version, steps to
 reproduce the issue, and the result you expected. Do not include private window
 titles, account details, or credentials in reports.
 
+
 ## Licence
 
 This version of Octopus is distributed under **GNU GPL version 3 only
@@ -137,6 +332,30 @@ scripts are not included; the source build command above uses standard Xcode too
 <summary><b>Why is it called "octopus"?</b></summary>
 <br>
 The name comes from the starting sounds of the words "refocus" and "reframe". And, like a coral octopus supports a diverse ecosystem, octopus supports your workspace—helping you navigate between windows quickly and easily.
+</details>
+
+<details>
+<summary><b>Why does octopus need Accessibility permission?</b></summary>
+<br>
+macOS only lets an app read and move another app's windows with Accessibility
+access. octopus uses it to list windows, focus them, and place them. Window
+switching that macOS itself permits keeps working without it.
+</details>
+
+<details>
+<summary><b>Why can't octopus move a particular window?</b></summary>
+<br>
+Some windows refuse to move or resize: fixed-size dialogs, minimised or
+full-screen windows, sheets, and windows on hidden Desktops. octopus checks
+before acting, skips what it cannot move, and shows the reason instead of
+failing silently.
+</details>
+
+<details>
+<summary><b>Does octopus watch what I do?</b></summary>
+<br>
+No. octopus has no analytics, accounts, or network calls other than the update
+check, and everything else stays on your Mac.
 </details>
 
 

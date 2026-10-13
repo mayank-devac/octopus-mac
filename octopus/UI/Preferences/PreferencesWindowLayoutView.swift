@@ -9,7 +9,7 @@ struct PreferencesWindowLayoutView: View {
     var body: some View {
         Form {
             Section {
-                Toggle("Adjust other windows when snapping", isOn: $enabled)
+                Toggle("Adjust windows when snapping", isOn: $enabled)
                     .help("Arrange the selected normal windows beside the snapped window. The split may shift to fit app size limits.")
                 Picker("Adjust", selection: $selection) {
                     ForEach(WindowLayoutSelection.allCases, id: \.rawValue) { choice in Text(choice.title).tag(choice.rawValue) }
