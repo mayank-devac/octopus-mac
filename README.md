@@ -1,6 +1,9 @@
 # octopus
 
+Octopus is a macOS window switcher and window-management app. This repository is
+Mayank Baral's modified version of the original Octopus by Xander Gouws and Omar Hayat.
 
+Source code: [mayank-devac/octopus-mac](https://github.com/mayank-devac/octopus-mac).
 
 ## Key Features
 
@@ -59,7 +62,9 @@ Simply:
 1) Download the `.zip` and unzip the file.
 2) Drag `octopus.app` into your Applications folder.
 
-octopus is free/pay-what-you-want. Use the link on our website to support us.
+Beta downloads, when available, are published in
+[octopus-dist](https://github.com/mayank-devac/octopus-dist/releases).
+This source repository does not provide a newly built or notarized app.
 
 ### Compatibility
 
@@ -70,8 +75,61 @@ You can find your macOS version from the ** → About This Mac** page.
 
 ## Development
 
+Clone this repository and open the Xcode project:
 
-Feel free to submit pull requests, though we can't guarantee that we'll get to them.
+```sh
+git clone https://github.com/mayank-devac/octopus-mac.git
+cd octopus-mac
+open octopus.xcodeproj
+```
+
+Use Xcode with a macOS SDK supported by the project. Xcode resolves the
+KeyboardShortcuts and Sparkle packages automatically. Select the `octopus`
+scheme and **My Mac** as the destination.
+
+For a local app build, choose your own team under **Signing & Capabilities** for
+the app and test targets. The existing team ID belongs to the maintainer; it
+does not include signing credentials or give you access to that team.
+Use a unique bundle identifier for your local build if required by signing.
+Never commit signing certificates, private keys, passwords, or local credentials.
+
+To build without signing from Terminal:
+
+```sh
+xcodebuild -project octopus.xcodeproj -scheme octopus \
+  -configuration Debug -destination 'platform=macOS' \
+  -derivedDataPath .build/DerivedData CODE_SIGNING_ALLOWED=NO build
+```
+
+The app target supports macOS 14.6 or later; the test targets require macOS 15
+or later. Local builds need Accessibility permission to control other apps.
+The updater currently points to the maintainer's `octopus-dist` feed and verifies
+updates using its public signing key. Fork maintainers should configure their
+own feed and public key before distributing builds.
+
+Issues and pull requests are welcome. Include your macOS version, steps to
+reproduce the issue, and the result you expected. Do not include private window
+titles, account details, or credentials in reports.
+
+## Licence
+
+This version of Octopus is distributed under **GNU GPL version 3 only
+(GPL-3.0-only)**; see [LICENSE](LICENSE). Modifications to Octopus are
+Copyright (c) 2026 Mayank Baral.
+
+The original Octopus code by Xander Gouws and Omar Hayat was released under MIT.
+Its existing copyright and permission notices are preserved in
+[LICENSES/Octopus-MIT.txt](LICENSES/Octopus-MIT.txt). Previously MIT-licensed
+versions remain available under their original terms.
+
+The Rectangle reference files retain their own [MIT licence](clone/Rectangle/LICENSE)
+and are not compiled or bundled. External dependencies retain their respective
+licences: [KeyboardShortcuts](https://github.com/sindresorhus/KeyboardShortcuts)
+and [Sparkle](https://github.com/sparkle-project/Sparkle).
+
+When distributing a build of this GPLv3 version, include the required licence
+notices and provide its matching source code under GPLv3. The private release
+scripts are not included; the source build command above uses standard Xcode tools.
 
 
 ## FAQ
