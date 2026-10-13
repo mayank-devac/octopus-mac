@@ -53,3 +53,6 @@ WEB
 scripts/__pycache__
 scripts/BETA-RELEASE.md
 scripts/beta-release.py
+*.log
+.vscode/
+.idea/
