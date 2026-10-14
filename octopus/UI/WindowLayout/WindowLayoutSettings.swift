@@ -28,7 +28,7 @@ enum WindowLayoutSettings {
     static let selectionKey = "windowLayoutSelection"
     static let moveSizeKey = "visibleDisplayMoveSize"
     static let maximumWindowsKey = "windowLayoutMaximumWindows"
-    static let defaultMaximumWindows = 4
+    static let defaultMaximumWindows = 3
     static let maximumWindowsRange = 2...8
 
     static func normalizedMaximumWindows(_ value: Int) -> Int {

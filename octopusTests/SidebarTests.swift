@@ -299,7 +299,7 @@ struct SidebarTests {
         #expect(SidebarSettings.configuration(for: "B", in: restarted) == other)
         #expect(SidebarIdleBehavior.saved("compact") == .compact)
         #expect(SidebarIdleBehavior.saved("notch") == .notch)
-        #expect(SidebarConfiguration.factoryDefaults.idleBehavior == .fade)
+        #expect(SidebarConfiguration.factoryDefaults.idleBehavior == .compact)
     }
 
     @Test func notchTriggerUsesHardwareGeometryOrProportionalVirtualNotch() throws {
@@ -669,7 +669,7 @@ struct SidebarTests {
         // Reset uses factory defaults, not the customized single-sidebar settings.
         let factory = SidebarConfiguration.factoryDefaults
         #expect(factory.enabled && factory.desktopScope == .allDesktops && factory.side == .right)
-        #expect(factory.position == 0.5 && factory.idleBehavior == .fade && factory.showSingleWindowMenu)
+        #expect(factory.position == 0.5 && factory.idleBehavior == .compact && factory.showSingleWindowMenu)
         #expect(factory.appSpacing == SidebarSettings.defaultAppSpacing)
         #expect(factory.fontSize == SidebarSettings.defaultFontSize)
         #expect(factory.shadowOpacity == SidebarSettings.defaultShadowOpacity)
@@ -839,8 +839,8 @@ struct SidebarTests {
         SidebarSettings.migrateLegacyAutoHide(in: defaults)
         #expect(defaults.string(forKey: SidebarSettings.idleBehaviorKey) == "stayVisible")
 
-        #expect(SidebarIdleBehavior.saved(nil) == .fade)
-        #expect(SidebarIdleBehavior.saved("bogus") == .fade)
+        #expect(SidebarIdleBehavior.saved(nil) == .compact)
+        #expect(SidebarIdleBehavior.saved("bogus") == .compact)
     }
 
     @Test func windowOnEveryDesktopOfADisplayCollapsesToTheVisibleDesktop() {

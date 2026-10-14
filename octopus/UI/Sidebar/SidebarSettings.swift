@@ -66,7 +66,7 @@ enum SidebarIdleBehavior: String, CaseIterable, Codable {
     case fade, hide, stayVisible, compact, notch
 
     static func saved(_ value: String?) -> Self {
-        value.flatMap(Self.init(rawValue:)) ?? .fade
+        value.flatMap(Self.init(rawValue:)) ?? .compact
     }
 
     var title: String {
@@ -349,7 +349,7 @@ enum SidebarLayout {
     static let width: CGFloat = 86
     // Horizontal slots need less label space, while retaining the enlarged icon's width.
     static let notchItemWidth: CGFloat = 64
-    static let compactWidth: CGFloat = 22
+    static let compactWidth: CGFloat = 20
     static let notchTriggerHeight: CGFloat = 10
     static let virtualNotchWidthRatio: CGFloat = 0.13
     static let virtualNotchHeightRatio: CGFloat = 0.033

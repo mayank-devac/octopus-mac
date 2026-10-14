@@ -144,7 +144,7 @@ private final class SidebarDisplayController {
 
     private var ownsMenu: Bool { cycleController.sidebarOwnerID == menuOwnerID }
     private var presentation: SidebarPresentation {
-        SidebarPresentation(behavior: settings?.idleBehavior ?? .fade,
+        SidebarPresentation(behavior: settings?.idleBehavior ?? .compact,
                             hasNotchTrigger: !notchFrame.isEmpty, fullScreen: isFullScreen)
     }
     private var pointerFrame: CGRect {

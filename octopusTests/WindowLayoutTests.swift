@@ -970,7 +970,7 @@ struct WindowLayoutTests {
         #expect(WindowLayoutSettings.selection(in: defaults) == .allNormal)
     }
 
-    @Test func allWindowCapSelectsThreeRecentCompanionsWithoutReadingOlderWindows() throws {
+    @Test func allWindowCapSelectsTwoRecentCompanionsWithoutReadingOlderWindows() throws {
         let anchor = window(1, frame: target(.left))
         let candidates = (2...101).map { number in
             WindowLayoutCandidate(window: window(UInt32(number)).id.window, recency: UInt64(number), stackOrder: number)
@@ -981,14 +981,14 @@ struct WindowLayoutTests {
                 reads += 1
                 return .window(window(candidate.window.windowID, recency: candidate.recency))
             })
-        #expect(reads == 3)
+        #expect(reads == 2)
         #expect(result.complete && result.failureReason == nil)
-        #expect(result.windows.map(\.id.window.windowID) == [1, 101, 100, 99])
+        #expect(result.windows.map(\.id.window.windowID) == [1, 101, 100])
         guard case .ready(let plan) = WindowLayoutPlanner.plan(snapshot: result, anchorID: anchor.id.window,
             request: request(.left), selection: .allNormal) else {
             Issue.record("A busy Desktop should produce a capped layout"); return
         }
-        #expect(plan.peers.map(\.id.window.windowID) == [101, 100, 99])
+        #expect(plan.peers.map(\.id.window.windowID) == [101, 100])
         let old = window(2)
         var live = Dictionary(uniqueKeysWithValues: (plan.windows + [old]).map { ($0.id, $0) })
         var writes: [WindowLayoutIdentity] = []
@@ -1006,10 +1006,10 @@ struct WindowLayoutTests {
         guard case .ready(let capped) = direct else {
             Issue.record("Direct snapshots must also enforce the cap"); return
         }
-        #expect(capped.peers.map(\.id.window.windowID) == [5, 4, 3])
+        #expect(capped.peers.map(\.id.window.windowID) == [5, 4])
     }
 
-    @Test func previousFrontmostWindowPrecedesTwoRecentExtrasEvenWithOlderHistory() throws {
+    @Test func previousFrontmostWindowPrecedesOneRecentExtraEvenWithOlderHistory() throws {
         let anchor = window(1, frame: target(.left))
         let previous = window(2, recency: 1)
         let windows = [previous, window(3, recency: 30), window(4, recency: 40), window(5, recency: 50)]
@@ -1021,11 +1021,11 @@ struct WindowLayoutTests {
                 reads.append(candidate.window.windowID)
                 return .window(windows.first { $0.id.window == candidate.window }!)
             })
-        #expect(reads == [2, 5, 4])
+        #expect(reads == [2, 5])
         let result = WindowLayoutPlanner.plan(snapshot: selected, anchorID: anchor.id.window,
             request: request(.left), selection: .allNormal, preferredCompanion: previous.id.window)
         guard case .ready(let plan) = result else { Issue.record("Previous window should be selected"); return }
-        #expect(plan.peers.map(\.id.window.windowID) == [2, 5, 4])
+        #expect(plan.peers.map(\.id.window.windowID) == [2, 5])
     }
 
     @Test func unavailableOrFixedPreviousWindowFallsBackToEligibleRecentWindows() {
@@ -1038,19 +1038,19 @@ struct WindowLayoutTests {
             preferredCompanion: previous.id.window, read: { candidate in
                 .window(windows.first { $0.id.window == candidate.window }!)
             })
-        #expect(selected.complete && selected.windows.map(\.id.window.windowID) == [1, 5, 4, 3])
+        #expect(selected.complete && selected.windows.map(\.id.window.windowID) == [1, 5, 4])
         let absent = WindowLayoutPlanner.plan(snapshot: snapshot([anchor] + Array(windows.dropFirst())),
             anchorID: anchor.id.window, request: request(.left), selection: .allNormal,
             preferredCompanion: previous.id.window)
         guard case .ready(let plan) = absent else { Issue.record("Missing preferred window should not block snapping"); return }
-        #expect(plan.peers.map(\.id.window.windowID) == [5, 4, 3])
+        #expect(plan.peers.map(\.id.window.windowID) == [5, 4])
     }
 
     @Test func windowCapPersistsAndClampsInvalidSavedValues() throws {
         let suite = "WindowLayoutCapTests.\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
-        #expect(WindowLayoutSettings.maximumWindows(in: defaults) == 4)
+        #expect(WindowLayoutSettings.maximumWindows(in: defaults) == 3)
         defaults.set(6, forKey: WindowLayoutSettings.maximumWindowsKey)
         #expect(WindowLayoutSettings.maximumWindows(in: defaults) == 6)
         defaults.set(-10, forKey: WindowLayoutSettings.maximumWindowsKey)
