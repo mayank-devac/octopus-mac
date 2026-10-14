@@ -84,7 +84,9 @@ struct WindowLayoutPlan {
     let peers: [WindowLayoutWindow]
     let constraints: [WindowLayoutIdentity: WindowLayoutSizeConstraint]
     // Includes the anchor because hidden app limits may require moving the shared split boundary.
-    let frames: [WindowLayoutIdentity: CGRect]
+    var frames: [WindowLayoutIdentity: CGRect]
+    // The selected edge layout's columns/rows stay fixed while its shared divider moves.
+    var edgeGroups: [[WindowLayoutIdentity]]? = nil
 
     var windows: [WindowLayoutWindow] { [anchor] + peers }
 }
@@ -103,7 +105,7 @@ struct WindowSnapSettings: Equatable {
 
 // Original frames/scopes are retained independently of the displayed destination frames.
 struct WindowLayoutPreparedSnap {
-    let plan: WindowLayoutPlan
+    var plan: WindowLayoutPlan
     let request: SidebarPlacementRequest
     let displays: [WindowLayoutDisplay]
     let settings: WindowSnapSettings
@@ -111,6 +113,11 @@ struct WindowLayoutPreparedSnap {
     let frontmostPID: pid_t?
     let frontmostWindow: SidebarWindowID?
     let fallbackReason: String?
+
+    var allowsDividerAdjustment: Bool {
+        settings.mode == .current && plan.anchor.scope == plan.scope && !plan.peers.isEmpty
+            && !plan.snap.isCorner && plan.snap != .maximize && plan.edgeGroups != nil
+    }
 
     func isCurrent(generation: Int, settings: WindowSnapSettings,
                    displays: [WindowLayoutDisplay], frontmostPID: pid_t?) -> Bool {
@@ -122,6 +129,37 @@ struct WindowLayoutPreparedSnap {
         displays.count == current.count && displays.allSatisfy { old in
             current.contains { $0.id == old.id && $0.frame == old.frame && $0.workArea == old.workArea && $0.scale == old.scale }
         }
+    }
+}
+
+// Pointer coordinates are AX points. This value contains geometry only; it never reads or writes apps.
+struct WindowLayoutDividerGesture {
+    let original: WindowLayoutPreparedSnap
+    let startPoint: CGPoint
+    let startLength: CGFloat
+    private(set) var preview: WindowLayoutPreparedSnap
+    private(set) var isLimited = false
+
+    init?(prepared: WindowLayoutPreparedSnap, at point: CGPoint) {
+        guard prepared.allowsDividerAdjustment, point.x.isFinite, point.y.isFinite,
+              let frame = prepared.plan.frames[prepared.plan.anchor.id], SidebarPlacementGeometry.isValid(frame) else { return nil }
+        original = prepared
+        startPoint = point
+        startLength = prepared.plan.snap == .left || prepared.plan.snap == .right ? frame.width : frame.height
+        preview = prepared
+    }
+
+    @discardableResult mutating func update(at point: CGPoint) -> Bool {
+        guard point.x.isFinite, point.y.isFinite else { return false }
+        let horizontal = original.plan.snap == .left || original.plan.snap == .right
+        let delta = horizontal ? point.x - startPoint.x : point.y - startPoint.y
+        let growsForward = original.plan.snap == .left || original.plan.snap == .top
+        let requested = startLength + (growsForward ? delta : -delta)
+        guard let adjusted = WindowLayoutPlanner.adjustingDivider(original, anchorLength: requested),
+              let actual = adjusted.plan.frames[adjusted.plan.anchor.id] else { return false }
+        preview = adjusted
+        isLimited = abs((horizontal ? actual.width : actual.height) - requested) > 1 / original.plan.scale
+        return true
     }
 }
 

@@ -364,6 +364,127 @@ struct WindowLayoutTests {
 
     private enum FixtureError: Error { case notReady }
 
+    private func dividerPreview(_ snap: SidebarSnapTarget = .left, peers: [WindowLayoutWindow]? = nil,
+                                mode: WindowSnapMode = .current) throws -> WindowLayoutPreparedSnap {
+        let selected = try prepared(peers: peers, snap: snap)
+        return WindowLayoutPreparedSnap(plan: selected.plan, request: request(snap), displays: snapshot(selected.plan.windows).displays,
+            settings: WindowSnapSettings(enabled: true, selection: .allNormal, maximumWindows: 4, mode: mode),
+            generation: 7, frontmostPID: 42, frontmostWindow: selected.plan.anchor.id.window, fallbackReason: selected.fallbackReason)
+    }
+
+    @Test(arguments: [SidebarSnapTarget.left, .right, .top, .bottom])
+    func dividerStartsWithoutJumpingAndMovesRelativeToItsOriginalPosition(_ snap: SidebarSnapTarget) throws {
+        let preview = try dividerPreview(snap)
+        let start = CGPoint(x: area.midX, y: area.midY)
+        var gesture = try #require(WindowLayoutDividerGesture(prepared: preview, at: start))
+        #expect(gesture.preview.plan.frames == preview.plan.frames)
+        let stayedAtStart = gesture.update(at: start)
+        #expect(stayedAtStart && gesture.preview.plan.frames == preview.plan.frames)
+        let movedDivider = gesture.update(at: CGPoint(x: start.x + 40, y: start.y + 40))
+        #expect(movedDivider)
+        let actual = try #require(gesture.preview.plan.frames[preview.plan.anchor.id])
+        let initial = try #require(preview.plan.frames[preview.plan.anchor.id])
+        let horizontal = snap == .left || snap == .right
+        let delta: CGFloat = snap == .left || snap == .top ? 40 : -40
+        #expect((horizontal ? actual.width : actual.height) == (horizontal ? initial.width : initial.height) + delta)
+        #expect(!gesture.isLimited && gesture.preview.plan.edgeGroups == preview.plan.edgeGroups)
+        #expect(gesture.preview.plan.anchor.frame == preview.plan.anchor.frame)
+        let returnedToStart = gesture.update(at: start)
+        #expect(returnedToStart && gesture.preview.plan.frames == preview.plan.frames)
+    }
+
+    @Test func dividerClampsAtSizeLimitsAndPreservesTheSelectedGrouping() throws {
+        let preview = try dividerPreview(peers: [window(2, minimum: CGSize(width: 500, height: 200))])
+        let start = CGPoint(x: area.midX, y: area.midY)
+        var gesture = try #require(WindowLayoutDividerGesture(prepared: preview, at: start))
+        let expanded = gesture.update(at: CGPoint(x: start.x + 10000, y: start.y))
+        #expect(expanded)
+        let peerFrame = try #require(gesture.preview.plan.frames[preview.plan.peers[0].id])
+        #expect(peerFrame.width == 500 && gesture.isLimited)
+        let contracted = gesture.update(at: CGPoint(x: start.x - 10000, y: start.y))
+        #expect(contracted)
+        #expect(gesture.preview.plan.frames[preview.plan.anchor.id]?.width == WindowLayoutSettings.readabilityMinimum.width)
+        #expect(gesture.isLimited && gesture.preview.plan.edgeGroups == preview.plan.edgeGroups)
+        let acceptedInvalidPoint = gesture.update(at: CGPoint(x: .nan, y: start.y))
+        #expect(!acceptedInvalidPoint)
+    }
+
+    @Test func dividerKeepsMultipleCompanionColumnsAndPixelAlignment() throws {
+        let peers = [window(2, minimum: CGSize(width: 320, height: 500)),
+                     window(3, minimum: CGSize(width: 320, height: 500)),
+                     window(4, minimum: CGSize(width: 320, height: 500))]
+        let preview = try dividerPreview(peers: peers)
+        #expect(preview.plan.edgeGroups?.count == 3)
+        let adjusted = try #require(WindowLayoutPlanner.adjustingDivider(preview, anchorLength: 333.25))
+        #expect(adjusted.plan.frames[preview.plan.anchor.id]?.width == 333.5)
+        #expect(adjusted.plan.edgeGroups == preview.plan.edgeGroups && adjusted.plan.peers.map(\.id) == peers.map(\.id))
+        let frames = adjusted.plan.windows.compactMap { adjusted.plan.frames[$0.id] }
+        #expect(frames.count == 4)
+        for (index, frame) in frames.enumerated() {
+            #expect(area.contains(frame))
+            #expect([frame.minX, frame.minY, frame.width, frame.height].allSatisfy { ($0 * 2).rounded() == $0 * 2 })
+            #expect(!frames.dropFirst(index + 1).contains { WindowLayoutPlanner.overlaps(frame, $0) })
+        }
+    }
+
+    @Test func dividerIsUnavailableForLegacyCornersSingleWindowsAndCrossDisplayPlans() throws {
+        let legacy = try dividerPreview(mode: .legacy)
+        #expect(WindowLayoutDividerGesture(prepared: legacy, at: .zero) == nil)
+        let corner = try dividerPreview(.topLeft, peers: [window(2), window(3)])
+        #expect(WindowLayoutDividerGesture(prepared: corner, at: .zero) == nil)
+        let single = try dividerPreview(peers: [])
+        #expect(WindowLayoutDividerGesture(prepared: single, at: .zero) == nil)
+        var cross = try dividerPreview()
+        let original = cross.plan
+        let source = pairMoved(original.anchor, frame: original.anchor.frame,
+                               scope: WindowLayoutScope(displayID: "source", spaceID: 1))
+        cross.plan = WindowLayoutPlan(scope: original.scope, desktopGeneration: original.desktopGeneration,
+            workArea: original.workArea, snap: original.snap, scale: original.scale, anchor: source,
+            peers: original.peers, constraints: original.constraints, frames: original.frames, edgeGroups: original.edgeGroups)
+        #expect(WindowLayoutDividerGesture(prepared: cross, at: .zero) == nil)
+    }
+
+    @Test func manyDividerUpdatesCommitTheLastPreviewWithOnlyOneSizeSetterPerWindow() throws {
+        let preview = try dividerPreview()
+        let start = CGPoint(x: area.midX, y: area.midY)
+        var gesture = try #require(WindowLayoutDividerGesture(prepared: preview, at: start))
+        var live = Dictionary(uniqueKeysWithValues: preview.plan.windows.map { ($0.id, $0) })
+        for delta in stride(from: 0, through: 200, by: 10) {
+            let updated = gesture.update(at: CGPoint(x: start.x + CGFloat(delta), y: start.y))
+            #expect(updated)
+        }
+        #expect(live.values.allSatisfy { $0.frame == preview.plan.anchor.frame })
+        let displayed = gesture.preview.plan
+        var sizes: [WindowLayoutIdentity: Int] = [:]
+        let outcome = WindowLayoutExecutor.applyPrepared(displayed, canContinue: { true }, read: { live[$0.id] },
+            write: { window, frame in
+                let placement = SidebarPlacementRequest(frame: frame, workArea: area, resize: true, desktopGeneration: 0)
+                return SidebarPlacementWriter.apply(placement, canContinue: { true }, readFrame: { live[window.id]?.frame },
+                    writePosition: { point in
+                        guard var actual = live[window.id]?.frame else { return false }
+                        actual.origin = point; live[window.id] = moved(window, to: actual); return true
+                    }, writeSize: { size in
+                        guard var actual = live[window.id]?.frame else { return false }
+                        sizes[window.id, default: 0] += 1
+                        actual.size = size; live[window.id] = moved(window, to: actual); return true
+                    }, singleAttempt: true, wait: {})
+            })
+        #expect(outcome.reason == nil)
+        for window in displayed.windows {
+            #expect(sizes[window.id] == 1 && outcome.achieved[window.id]?.frame == displayed.frames[window.id])
+        }
+    }
+
+    @Test func anAdjustedPreviewStillRejectsAWindowThatChangedBeforeRelease() throws {
+        let preview = try dividerPreview()
+        let adjusted = try #require(WindowLayoutPlanner.adjustingDivider(preview, anchorLength: 800))
+        var writes = 0
+        let outcome = WindowLayoutExecutor.applyPrepared(adjusted.plan, canContinue: { true }, read: {
+            $0.id == adjusted.plan.peers[0].id ? moved($0, to: $0.frame.offsetBy(dx: 50, dy: 0)) : $0
+        }, write: { _, frame in writes += 1; return .placed(frame, adjusted: false) })
+        #expect(writes == 0 && outcome.achieved.isEmpty && outcome.reason != nil)
+    }
+
     @Test func pairedWindowFocusRaisesCompanionThenLeavesDraggedWindowActive() throws {
         let plan = try ready(.left)
         let companion = plan.peers[0]

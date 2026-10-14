@@ -6,6 +6,16 @@ struct SidebarDragTests {
     private let screen = CGRect(x: -1440, y: 120, width: 1440, height: 900)
     private let area = CGRect(x: -1440, y: 160, width: 1440, height: 830)
 
+    @Test func dividerModifierHonoursCornerShortcutsAndIgnoresUnrelatedFlags() {
+        let corners = SidebarCornerSnapShortcut.defaultModifiers
+        #expect(SidebarDividerShortcut.isPressed(.option, cornerModifiers: corners))
+        #expect(SidebarDividerShortcut.isPressed([.option, .capsLock], cornerModifiers: corners))
+        #expect(!SidebarDividerShortcut.isPressed([], cornerModifiers: corners))
+        #expect(!SidebarDividerShortcut.isPressed(corners, cornerModifiers: corners))
+        #expect(!SidebarDividerShortcut.isPressed([.option, .command], cornerModifiers: corners))
+        #expect(!SidebarDividerShortcut.isPressed(.option, cornerModifiers: .option))
+    }
+
     @Test func stationaryCornerPreviewChangesWithModifierPressAndRelease() throws {
         let chord = SidebarCornerSnapShortcut.defaultModifiers
         let points: [(CGPoint, SidebarSnapTarget)] = [

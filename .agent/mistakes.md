@@ -85,3 +85,11 @@ The [source-verified review](auto-snap-review.md) found outstanding issues; thes
 - **Mistake:** Generic `NSSound.beep()` calls were added for missing focused-window selection, rejected actions, and failed activation. This produces the Mac alert sound without explaining whether the request was stale, unsupported, or actually failed.
 - **Prevention:** Choose explicit feedback behaviour rather than sounding an alert for every guard failure; keep safe rejection and inventory refresh independent of audible feedback.
 - **Applied behaviour:** Mayank requested quiet sidebar failures: missing focus, rejected actions, and unsuccessful activation refresh the inventory without an alert sound; live-target safety checks remain in place.
+
+## 2026-10-14 — Divider tests and resize confirmation
+
+- **Swift Testing macro mistake:** Direct calls such as `#expect(gesture.update(at: point))` expanded through an immutable closure receiver and caused five compiler errors in the user's divider test build; no tests ran in that session.
+- **Fix and prevention:** Update the mutable gesture first (`let updated = gesture.update(at: point)`), then use `#expect(updated)`; keep state changes outside assertion macros, including negated calls and loops.
+- **Verification limit:** The assertion pattern was corrected and the diff inspected, but a successful rebuild/test rerun was not confirmed afterward; never present this source fix as a passing test result.
+- **Readback interpretation:** "The size request remains unconfirmed" covers several ambiguous observations, including unchanged or unstable sizes and a changed final frame; it is not proof of an app's minimum or a reason to invent one.
+- **Gesture design:** A mouse pointer already holding an app icon cannot separately drag a preview handle; Mayank selected Option-held relative pointer adjustment within the existing drag session, with zero hover writes and commit of exactly the last displayed layout.

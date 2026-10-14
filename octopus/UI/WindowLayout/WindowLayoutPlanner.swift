@@ -123,13 +123,27 @@ enum WindowLayoutPlanner {
             }
             constraints[anchor.id] = observed
         }
+        var edgeGroups: [[WindowLayoutIdentity]]?
         guard let allocation = WindowLayoutAllocator.allocate(workArea: request.workArea, snap: snap,
-            scale: display.scale, anchor: anchor.id, peers: selected.map(\.id), constraints: constraints) else {
+            scale: display.scale, anchor: anchor.id, peers: selected.map(\.id), constraints: constraints,
+            onEdgeGroups: { edgeGroups = $0 }) else {
             return .rejected("These windows cannot fit together on this display without overlapping.")
         }
-        return .ready(WindowLayoutPlan(scope: destination ?? anchor.scope, desktopGeneration: snapshot.desktopGeneration,
+        var plan = WindowLayoutPlan(scope: destination ?? anchor.scope, desktopGeneration: snapshot.desktopGeneration,
             workArea: request.workArea, snap: snap, scale: display.scale,
-            anchor: anchor, peers: selected, constraints: constraints, frames: allocation))
+            anchor: anchor, peers: selected, constraints: constraints, frames: allocation)
+        if destination != nil { plan.edgeGroups = edgeGroups }
+        return .ready(plan)
+    }
+
+    static func adjustingDivider(_ prepared: WindowLayoutPreparedSnap, anchorLength: CGFloat) -> WindowLayoutPreparedSnap? {
+        guard prepared.allowsDividerAdjustment, let groups = prepared.plan.edgeGroups,
+              let frames = WindowLayoutAllocator.allocate(workArea: prepared.plan.workArea, snap: prepared.plan.snap,
+                scale: prepared.plan.scale, anchor: prepared.plan.anchor.id, peers: prepared.plan.peers.map(\.id),
+                constraints: prepared.plan.constraints, frozenGroups: groups, requestedAnchorLength: anchorLength) else { return nil }
+        var adjusted = prepared
+        adjusted.plan.frames = frames
+        return adjusted
     }
 
     // A companion failure cannot block the user's own snap. This fallback is shown before release.

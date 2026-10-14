@@ -19,6 +19,10 @@ struct PreferencesWindowLayoutView: View {
                     ? "Current shows the selected layout before release and requests each window size once. If an app refuses, its accepted size stays and further adjustment stops."
                     : "Legacy shows the dragged window’s target, then adjusts the other windows after release. It can retry resizing and shift the layout to fit app limits.")
                     .foregroundStyle(.secondary)
+                if mode == WindowSnapMode.current.rawValue {
+                    Text("On the same monitor, wait for an edge layout preview, then hold Option and move the pointer to adjust its divider. Release the mouse while holding Option to snap. Releasing Option first restores normal dragging. Corner shortcuts take priority.")
+                        .foregroundStyle(.secondary)
+                }
                 Toggle("Adjust windows when snapping", isOn: $enabled)
                     .help("Arrange the selected normal windows beside the snapped window. The split may shift to fit app size limits.")
                 Picker("Adjust", selection: $selection) {

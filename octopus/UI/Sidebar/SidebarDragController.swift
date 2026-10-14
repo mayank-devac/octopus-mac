@@ -1,5 +1,12 @@
 import AppKit
 
+enum SidebarDividerShortcut {
+    static func isPressed(_ flags: NSEvent.ModifierFlags, cornerModifiers: NSEvent.ModifierFlags) -> Bool {
+        flags.intersection(MouseShortcut.supportedModifiers) == .option
+            && !SidebarCornerSnapShortcut.matches(flags, required: cornerModifiers)
+    }
+}
+
 @MainActor
 final class SidebarDragController: NSObject, NSDraggingSource {
     private static let pasteboardType = NSPasteboard.PasteboardType("app.octopus.window-placement")
@@ -36,6 +43,9 @@ final class SidebarDragController: NSObject, NSDraggingSource {
     private var snapPreparationFailed = false
     private var companionPreviewPanels: [NSPanel] = []
     private var snapApplicationNames: [pid_t: String] = [:]
+    private var dividerGesture: WindowLayoutDividerGesture?
+    private var dividerPanel: NSPanel?
+    private var dividerModifierDown = false
     private var modifierMonitor: Any?
     private var globalModifierMonitor: Any?
     var snapDistanceProvider: () -> Double = { SidebarSettings.snapDistance() }
@@ -66,6 +76,7 @@ final class SidebarDragController: NSObject, NSDraggingSource {
         // Preview and drop must use the same distance throughout this drag.
         snapDistance = SidebarSettings.normalizedSnapDistance(snapDistanceProvider())
         cornerModifiers = MouseShortcutStore.shared.cornerSnapModifiers
+        dividerModifierDown = SidebarDividerShortcut.isPressed(event.modifierFlags, cornerModifiers: cornerModifiers)
         moveSize = WindowLayoutSettings.moveSize()
         sourceDisplay = nil
         generation += 1
@@ -227,6 +238,33 @@ final class SidebarDragController: NSObject, NSDraggingSource {
         placementRequest = nil
         guard isActive else { return [] }
         guard AXIsProcessTrusted() else { cancel(); return [] }
+        let flags = modifiers ?? NSEvent.modifierFlags
+        let dividerDown = SidebarDividerShortcut.isPressed(flags, cornerModifiers: cornerModifiers)
+        let dividerPressed = dividerDown && !dividerModifierDown
+        dividerModifierDown = dividerDown
+        if var gesture = dividerGesture {
+            if !dividerDown {
+                clearDivider() // Restore normal pointer-based snap detection when Option is released.
+            } else if !dividerContextIsCurrent(gesture.original) {
+                clearSnap()
+            } else {
+                guard dividerPointIsAllowed(point, prepared: gesture.original) else { return [] }
+                let top = NSScreen.screens.first?.frame.maxY ?? 0
+                guard gesture.update(at: CGPoint(x: point.x, y: top - point.y)) else { clearSnap(); return [] }
+                dividerGesture = gesture
+                onDesktopHover?(nil)
+                return showSnapPreview(gesture.preview, adjusting: true, limited: gesture.isLimited)
+            }
+        }
+        if dividerPressed, previewPanel?.isVisible == true, let prepared = snapPreparation,
+           dividerContextIsCurrent(prepared), dividerPointIsAllowed(point, prepared: prepared) {
+            let top = NSScreen.screens.first?.frame.maxY ?? 0
+            if let gesture = WindowLayoutDividerGesture(prepared: prepared, at: CGPoint(x: point.x, y: top - point.y)) {
+                dividerGesture = gesture
+                onDesktopHover?(nil)
+                return showSnapPreview(gesture.preview, adjusting: true)
+            }
+        }
         if scroll && allowDesktopTransfer { onSidebarDragUpdate?(point) }
         // Resolve icon intent before the broad section callback can open a Desktop-transfer popup.
         if allowPairing, let source = windowID {
@@ -294,6 +332,7 @@ final class SidebarDragController: NSObject, NSDraggingSource {
     }
 
     fileprivate func drop(at point: CGPoint) -> Bool {
+        if dividerGesture != nil { return commitDivider(at: point) }
         guard update(at: point, scroll: false) == .private else {
             if pairTarget != nil, pairDirection != nil {
                 showFeedback(pairPreparation == nil
@@ -302,6 +341,7 @@ final class SidebarDragController: NSObject, NSDraggingSource {
             }
             return false
         }
+        if dividerGesture != nil { return commitDivider(at: point) }
         if let pairTarget, let direction = pairDirection, pairPreparation != nil, let source = windowID, let onPairDrop {
             let request = WindowPairSnapRequest(source: source, target: pairTarget.window, direction: direction,
                 startedAt: ProcessInfo.processInfo.systemUptime)
@@ -331,6 +371,22 @@ final class SidebarDragController: NSObject, NSDraggingSource {
         // Remove overlays before activating the target app.
         finish()
         inventory.perform(.place(target.id, request))
+        return true
+    }
+
+    private func commitDivider(at point: CGPoint) -> Bool {
+        guard let gesture = dividerGesture,
+              SidebarDividerShortcut.isPressed(NSEvent.modifierFlags, cornerModifiers: cornerModifiers),
+              dividerContextIsCurrent(gesture.original), dividerPointIsAllowed(point, prepared: gesture.original),
+              let onSnapDrop else {
+            showFeedback("Divider adjustment cancelled; no windows were changed.")
+            finish()
+            return false
+        }
+        // Mouse-up commits the last displayed frames; it must not resolve a new edge or unseen layout.
+        let displayed = gesture.preview
+        finish()
+        onSnapDrop(displayed)
         return true
     }
 
@@ -416,18 +472,40 @@ final class SidebarDragController: NSObject, NSDraggingSource {
                 }
             } else { snapPreparationFailed = true }
         }
-        guard let prepared = snapPreparation, let anchorFrame = prepared.plan.frames[prepared.plan.anchor.id] else {
+        guard let prepared = snapPreparation else {
             showPreview(frame: previewFrame,
                 label: snapPreparationFailed ? "Preview unavailable—drag again" : "Preparing preview…", valid: false)
             return .private
         }
+        return showSnapPreview(prepared)
+    }
+
+    private func dividerContextIsCurrent(_ prepared: WindowLayoutPreparedSnap) -> Bool {
+        isActive && AXIsProcessTrusted() && snapPreparationToken?.isCancelled != true
+            && prepared.settings == WindowSnapSettings.current()
+            && prepared.plan.anchor.id.window == windowID
+            && prepared.displaysMatch(WindowLayoutDisplay.connected())
+    }
+
+    private func dividerPointIsAllowed(_ point: CGPoint, prepared: WindowLayoutPreparedSnap) -> Bool {
+        let top = NSScreen.screens.first?.frame.maxY ?? 0
+        return SidebarPlacementGeometry.flip(prepared.plan.workArea, primaryTop: top).contains(point)
+            && !excludedFrames().contains(where: { $0.contains(point) }) && !sidebarDragContains(point)
+    }
+
+    private func showSnapPreview(_ prepared: WindowLayoutPreparedSnap, adjusting: Bool = false,
+                                 limited: Bool = false) -> NSDragOperation {
+        guard let anchorFrame = prepared.plan.frames[prepared.plan.anchor.id] else { return [] }
         let top = NSScreen.screens.first?.frame.maxY ?? 0
         func evidence(_ window: WindowLayoutWindow) -> String {
             window.minimumReported ? " · reported minimum" : ""
         }
         let fallback = prepared.fallbackReason == nil ? "" : "Companions unchanged · "
+        let adjustable = prepared.allowsDividerAdjustment && SidebarDividerShortcut.isPressed(.option, cornerModifiers: cornerModifiers)
+        let hint = adjusting ? (limited ? "Size limit reached · Release mouse to snap · " : "Release mouse to snap · ")
+                             : (adjustable ? "Hold ⌥ to adjust divider · " : "")
         showPreview(frame: SidebarPlacementGeometry.flip(anchorFrame, primaryTop: top),
-            label: "\(fallback)\(evidence(prepared.plan.anchor)) · \(title) · \(prepared.plan.snap.title)", valid: true)
+            label: "\(hint)\(fallback)\(evidence(prepared.plan.anchor)) · \(title) · \(prepared.plan.snap.title)", valid: true)
         for (index, window) in prepared.plan.peers.enumerated() {
             guard let target = prepared.plan.frames[window.id] else { continue }
             let frame = SidebarPlacementGeometry.flip(target, primaryTop: top)
@@ -443,10 +521,37 @@ final class SidebarDragController: NSObject, NSDraggingSource {
             view.needsDisplay = true
             panel.orderFrontRegardless()
         }
+        if adjustable { showDivider(prepared, anchor: anchorFrame, primaryTop: top) }
+        else { dividerPanel?.orderOut(nil) }
         return .private
     }
 
+    private func showDivider(_ prepared: WindowLayoutPreparedSnap, anchor: CGRect, primaryTop: CGFloat) {
+        let vertical = prepared.plan.snap == .left || prepared.plan.snap == .right
+        let area = prepared.plan.workArea
+        let boundary = vertical ? (prepared.plan.snap == .left ? anchor.maxX : anchor.minX)
+                                : (prepared.plan.snap == .top ? anchor.maxY : anchor.minY)
+        let axFrame = vertical ? CGRect(x: boundary - 7, y: area.minY, width: 14, height: area.height)
+                               : CGRect(x: area.minX, y: boundary - 7, width: area.width, height: 14)
+        let frame = SidebarPlacementGeometry.flip(axFrame, primaryTop: primaryTop)
+        let panel = dividerPanel ?? Self.panel(frame: frame, ignoresMouse: true)
+        let view = (panel.contentView as? DividerView) ?? DividerView(frame: .zero)
+        view.vertical = vertical
+        panel.contentView = view
+        panel.setFrame(frame, display: true)
+        view.needsDisplay = true
+        panel.orderFrontRegardless()
+        dividerPanel = panel
+    }
+
+    private func clearDivider() {
+        dividerGesture = nil
+        dividerPanel?.close()
+        dividerPanel = nil
+    }
+
     private func clearSnap() {
+        clearDivider()
         snapPreparationGeneration += 1
         snapPreparationToken?.cancel()
         snapPreparationToken = nil
@@ -491,6 +596,7 @@ final class SidebarDragController: NSObject, NSDraggingSource {
     }
 
     private func finish() {
+        dividerModifierDown = false
         if let modifierMonitor { NSEvent.removeMonitor(modifierMonitor) }
         if let globalModifierMonitor { NSEvent.removeMonitor(globalModifierMonitor) }
         modifierMonitor = nil
@@ -547,6 +653,19 @@ final class SidebarDragController: NSObject, NSDraggingSource {
         override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
             guard let controller, controller.accepts(sender), let window else { return false }
             return controller.drop(at: window.convertToScreen(CGRect(origin: sender.draggingLocation, size: .zero)).origin)
+        }
+    }
+
+    private final class DividerView: NSView {
+        var vertical = true
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+        override func draw(_ dirtyRect: NSRect) {
+            NSColor.controlAccentColor.withAlphaComponent(0.9).setFill()
+            let line = vertical ? bounds.insetBy(dx: 5, dy: 0) : bounds.insetBy(dx: 0, dy: 5)
+            NSBezierPath(roundedRect: line, xRadius: 2, yRadius: 2).fill()
+            let handle = CGRect(x: bounds.midX - (vertical ? 5 : 20), y: bounds.midY - (vertical ? 20 : 5),
+                width: vertical ? 10 : 40, height: vertical ? 40 : 10)
+            NSBezierPath(roundedRect: handle, xRadius: 5, yRadius: 5).fill()
         }
     }
 
