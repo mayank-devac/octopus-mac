@@ -271,6 +271,11 @@ private final class SidebarDisplayController {
             return controller.preparePair(source: source, target: target, completion: completion)
         }
         dragController.onPairDrop = { request in AppDelegate.instance?.windowLayoutController.snapPair(request) }
+        dragController.prepareSnap = { window, request, completion in
+            guard let controller = AppDelegate.instance?.windowLayoutController else { completion(nil); return nil }
+            return controller.prepareSnap(window: window, request: request, completion: completion)
+        }
+        dragController.onSnapDrop = { prepared in AppDelegate.instance?.windowLayoutController.commitSnap(prepared) }
         dragController.sidebarDragContains = { [weak self] point in
             guard let self else { return false }
             return self.otherSidebarFrames().contains { $0.contains(point) } || self.desktopMenu.contains(point)

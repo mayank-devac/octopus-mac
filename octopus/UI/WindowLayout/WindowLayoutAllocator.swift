@@ -5,6 +5,11 @@ struct WindowLayoutSizeConstraint: Equatable {
     var minimum: CGSize
     var maximum: CGSize
 
+    // Read-only previews use app-reported bounds, never bounds inferred from a single old resize.
+    static func reported(for window: WindowLayoutWindow, workArea: CGRect) -> Self {
+        initial(for: window, workArea: workArea)
+    }
+
     static func initial(for window: WindowLayoutWindow, workArea: CGRect,
                         learned: WindowLayoutSizeConstraint? = nil) -> Self {
         let readable = WindowLayoutSettings.readabilityMinimum
@@ -76,7 +81,10 @@ enum WindowLayoutAllocator {
     // Prefer familiar bands, then bounded shelf shapes. Reject invalid input before pixel conversion.
     static func allocate(workArea: CGRect, snap: SidebarSnapTarget, scale: CGFloat,
                          anchor: WindowLayoutIdentity, peers: [WindowLayoutIdentity],
-                         constraints: [WindowLayoutIdentity: WindowLayoutSizeConstraint]) -> [WindowLayoutIdentity: CGRect]? {
+                         constraints: [WindowLayoutIdentity: WindowLayoutSizeConstraint],
+                         frozenGroups: [[WindowLayoutIdentity]]? = nil,
+                         requestedAnchorLength: CGFloat? = nil,
+                         onEdgeGroups: ([[WindowLayoutIdentity]]) -> Void = { _ in }) -> [WindowLayoutIdentity: CGRect]? {
         let identities = [anchor] + peers
         guard snap != .maximize, !peers.isEmpty, peers.count <= 32,
               Set(identities).count == identities.count,
@@ -94,6 +102,14 @@ enum WindowLayoutAllocator {
         }) else { return nil }
         let bounds = PixelBounds(workArea, scale: scale)
         guard bounds.width > 0, bounds.height > 0 else { return nil }
+        if let groups = frozenGroups {
+            let members = groups.flatMap { $0 }
+            guard !snap.isCorner, !groups.isEmpty, groups.allSatisfy({ !$0.isEmpty }),
+                  members.count == peers.count, Set(members) == Set(peers) else { return nil }
+            return allocate(bounds: bounds, snap: snap, scale: scale, anchor: anchor, groups: groups,
+                anchorConstraint: anchorConstraint, constraints: constraints, requestedAnchorLength: requestedAnchorLength)
+        }
+        guard requestedAnchorLength == nil else { return nil }
         if snap.isCorner {
             return allocateCorner(bounds: bounds, snap: snap, scale: scale, anchor: anchor,
                 peers: peers, anchorConstraint: anchorConstraint, constraints: constraints)
@@ -104,9 +120,11 @@ enum WindowLayoutAllocator {
             ? Array(1...peers.count)
             : Array((1...peers.count).reversed())
         for columns in columnChoices {
+            let groups = grouped(peers, columns: columns)
             guard let allocation = allocate(bounds: bounds, snap: snap, scale: scale,
-                anchor: anchor, groups: grouped(peers, columns: columns),
+                anchor: anchor, groups: groups,
                 anchorConstraint: anchorConstraint, constraints: constraints) else { continue }
+            onEdgeGroups(groups)
             return allocation
         }
         // A tall window may need its own column, while several short windows share the next one.
@@ -119,6 +137,7 @@ enum WindowLayoutAllocator {
                   let allocation = allocate(bounds: bounds, snap: snap, scale: scale,
                     anchor: anchor, groups: groups, anchorConstraint: anchorConstraint,
                     constraints: constraints) else { continue }
+            onEdgeGroups(groups)
             return allocation
         }
         return nil
@@ -127,7 +146,8 @@ enum WindowLayoutAllocator {
     private static func allocate(bounds: PixelBounds, snap: SidebarSnapTarget, scale: CGFloat,
                                  anchor: WindowLayoutIdentity, groups: [[WindowLayoutIdentity]],
                                  anchorConstraint: WindowLayoutSizeConstraint,
-                                 constraints: [WindowLayoutIdentity: WindowLayoutSizeConstraint])
+                                 constraints: [WindowLayoutIdentity: WindowLayoutSizeConstraint],
+                                 requestedAnchorLength: CGFloat? = nil)
         -> [WindowLayoutIdentity: CGRect]? {
         let columns = groups.count
         guard columns > 0, groups.allSatisfy({ !$0.isEmpty }) else { return nil }
@@ -153,7 +173,18 @@ enum WindowLayoutAllocator {
             : RangeLimit(minimum: limits.map(\.height.minimum).max()!,
                          maximum: limits.map(\.height.maximum).min()!)
         let rootTotal = horizontalRoot ? bounds.width : bounds.height
-        guard let rootLengths = balancedLengths(total: rootTotal, limits: [anchorRoot, peerRoot]) else { return nil }
+        let rootLengths: [Int]
+        if let requested = requestedAnchorLength {
+            guard requested.isFinite, (requested * scale).isFinite else { return nil }
+            let lower = max(anchorRoot.minimum, rootTotal - peerRoot.maximum)
+            let upper = min(anchorRoot.maximum, rootTotal - peerRoot.minimum)
+            guard lower > 0, lower <= upper, upper < rootTotal else { return nil }
+            let length = Int(min(max(requested * scale, CGFloat(lower)), CGFloat(upper)).rounded())
+            rootLengths = [length, rootTotal - length]
+        } else {
+            guard let lengths = balancedLengths(total: rootTotal, limits: [anchorRoot, peerRoot]) else { return nil }
+            rootLengths = lengths
+        }
         let anchorLength = rootLengths[0]
         let peerLength = rootLengths[1]
 

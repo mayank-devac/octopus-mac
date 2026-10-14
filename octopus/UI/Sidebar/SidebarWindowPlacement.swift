@@ -219,6 +219,15 @@ enum SidebarPlacementGeometry {
         return CGRect(x: x, y: y, width: size.width, height: size.height)
     }
 
+    // Use the size accepted by the app, keeping the selected outside edge fixed.
+    // AX coordinates grow downwards, so bottom alignment subtracts the accepted height.
+    static func snapFrame(_ snap: SidebarSnapTarget, size: CGSize, inAX area: CGRect) -> CGRect {
+        if snap.isCorner { return cornerFrame(snap, size: size, inAX: area) }
+        let x = snap == .right ? area.maxX - size.width : area.minX
+        let y = snap == .bottom ? area.maxY - size.height : area.minY
+        return CGRect(origin: CGPoint(x: x, y: y), size: size)
+    }
+
     static func constrained(_ frame: CGRect, to area: CGRect) -> CGRect {
         // Oversized windows retain their size; keep the title bar reachable.
         CGRect(x: min(max(frame.minX, area.minX), max(area.minX, area.maxX - frame.width)),
@@ -251,7 +260,13 @@ enum SidebarPlacementWriter {
                       readFrame: () -> CGRect?, writePosition: (CGPoint) -> Bool,
                       writeSize: (CGSize) -> Bool,
                       acceptStableMismatch: Bool = true,
+                      singleAttempt: Bool = false,
+                      hasLanded: ((CGRect) -> Bool)? = nil,
                       wait: () -> Void = { Thread.sleep(forTimeInterval: 0.025) }) -> SidebarPlacementResult {
+        if singleAttempt {
+            return applyOnce(request, canContinue: canContinue, readFrame: readFrame,
+                writePosition: writePosition, writeSize: writeSize, hasLanded: hasLanded, wait: wait)
+        }
         let repeatsAfterMove = request.crossesDisplay
         guard SidebarPlacementGeometry.isValid(request.frame),
               SidebarPlacementGeometry.isValid(request.workArea) else { return .failed("Invalid window placement.") }
@@ -335,8 +350,8 @@ enum SidebarPlacementWriter {
 
         guard canContinue() else { return .cancelled }
         let reachable: CGRect
-        if let snap = request.snap, snap.isCorner {
-            reachable = SidebarPlacementGeometry.cornerFrame(snap, size: actual.size, inAX: request.workArea)
+        if let snap = request.snap, snap != .maximize {
+            reachable = SidebarPlacementGeometry.snapFrame(snap, size: actual.size, inAX: request.workArea)
             guard request.workArea.contains(reachable) else {
                 return .failed("This app's minimum size cannot fit on the display; the window may have moved.")
             }
@@ -354,10 +369,94 @@ enum SidebarPlacementWriter {
         }
         guard canContinue() else { return .cancelled }
         guard !writeFailed else { return .failed("The app rejected the window's size or position; it may have moved.") }
-        if let snap = request.snap, snap.isCorner,
-           !SidebarPlacementGeometry.matches(actual, SidebarPlacementGeometry.cornerFrame(snap, size: actual.size, inAX: request.workArea)) {
-            return .failed("The app could not keep the window at the chosen corner; it may have moved.")
+        if let snap = request.snap, snap != .maximize,
+           !SidebarPlacementGeometry.matches(actual, SidebarPlacementGeometry.snapFrame(snap, size: actual.size, inAX: request.workArea)) {
+            return .failed("The app could not keep the window at the chosen snap edge; it may have moved.")
         }
+        return .placed(actual, adjusted: !SidebarPlacementGeometry.matches(actual, request.frame))
+    }
+
+    // A snap gets one size request. Reads can wait for a delayed app; they never reassert a write.
+    private static func applyOnce(_ request: SidebarPlacementRequest, canContinue: () -> Bool,
+                                  readFrame: () -> CGRect?, writePosition: (CGPoint) -> Bool,
+                                  writeSize: (CGSize) -> Bool, hasLanded: ((CGRect) -> Bool)?,
+                                  wait: () -> Void) -> SidebarPlacementResult {
+        guard canContinue() else { return .cancelled }
+        guard SidebarPlacementGeometry.isValid(request.frame), SidebarPlacementGeometry.isValid(request.workArea),
+              let starting = readFrame(), SidebarPlacementGeometry.isValid(starting) else {
+            return .failed("The window's starting position could not be confirmed.")
+        }
+        guard canContinue() else { return .cancelled }
+        if SidebarPlacementGeometry.matches(starting, request.frame) { return .placed(starting, adjusted: false) }
+        func landed(_ frame: CGRect) -> Bool {
+            hasLanded?(frame) ?? request.workArea.contains(CGPoint(x: frame.midX, y: frame.midY))
+        }
+        if request.crossesDisplay && !landed(starting) {
+            guard canContinue() else { return .cancelled }
+            guard writePosition(request.workArea.origin) else { return .failed("The app could not move to this display.") }
+            var arrived = false
+            for _ in 0..<maximumSettlePolls {
+                guard canContinue() else { return .cancelled }
+                guard let frame = readFrame(), SidebarPlacementGeometry.isValid(frame) else {
+                    return .failed("The window's destination could not be confirmed.")
+                }
+                if landed(frame) { arrived = true; break }
+                wait()
+            }
+            guard arrived else { return .failed("The window did not confirm arrival; no size request was sent.") }
+        }
+        guard canContinue() else { return .cancelled }
+        guard let before = readFrame(), SidebarPlacementGeometry.isValid(before) else {
+            return .failed("The window's position could not be confirmed.")
+        }
+        let needsSize = request.resize && (abs(before.width - request.frame.width) > 2 || abs(before.height - request.frame.height) > 2)
+        if needsSize {
+            guard canContinue() else { return .cancelled }
+            guard writeSize(request.frame.size) else { return .failed("The app rejected the size request; achieved positions were kept.") }
+        }
+        if abs(before.minX - request.frame.minX) > 2 || abs(before.minY - request.frame.minY) > 2 {
+            guard canContinue() else { return .cancelled }
+            guard writePosition(request.frame.origin) else { return .failed("The app rejected the position; its size may have changed.") }
+        }
+        var previous: CGRect?
+        var actual = before
+        var stable = false
+        for _ in 0..<maximumSettlePolls {
+            guard canContinue() else { return .cancelled }
+            guard let frame = readFrame(), SidebarPlacementGeometry.isValid(frame) else {
+                return .failed("The app did not confirm its resulting position.")
+            }
+            actual = frame
+            if SidebarPlacementGeometry.matches(frame, request.frame) {
+                return canContinue() ? .placed(frame, adjusted: false) : .cancelled
+            }
+            stable = previous.map { SidebarPlacementGeometry.matches($0, frame) } ?? false
+            previous = frame
+            wait()
+        }
+        guard canContinue() else { return .cancelled }
+        guard stable, !SidebarPlacementGeometry.matches(actual, before),
+              !needsSize || abs(actual.width - before.width) > 2 || abs(actual.height - before.height) > 2,
+              let fresh = readFrame(), SidebarPlacementGeometry.isValid(fresh),
+              SidebarPlacementGeometry.matches(fresh, actual) else {
+            return .failed("The size request remains unconfirmed; no retry was sent.")
+        }
+        let aligned = request.snap.map { SidebarPlacementGeometry.snapFrame($0, size: actual.size, inAX: request.workArea) } ?? actual
+        let reachable = SidebarPlacementGeometry.constrained(aligned, to: request.workArea)
+        if abs(actual.minX - reachable.minX) > 2 || abs(actual.minY - reachable.minY) > 2 {
+            guard canContinue() else { return .cancelled }
+            guard writePosition(reachable.origin) else { return .failed("The accepted size was kept, but edge alignment failed.") }
+            var confirmed = false
+            for _ in 0..<maximumSettlePolls {
+                guard canContinue() else { return .cancelled }
+                guard let frame = readFrame(), SidebarPlacementGeometry.isValid(frame) else { break }
+                actual = frame
+                if SidebarPlacementGeometry.matches(frame, reachable) { confirmed = true; break }
+                wait()
+            }
+            guard confirmed else { return .failed("The accepted size was kept, but edge alignment is unconfirmed.") }
+        }
+        guard canContinue() else { return .cancelled }
         return .placed(actual, adjusted: !SidebarPlacementGeometry.matches(actual, request.frame))
     }
 }

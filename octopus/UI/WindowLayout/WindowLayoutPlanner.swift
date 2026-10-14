@@ -23,8 +23,12 @@ enum WindowLayoutPlanner {
     static func snapshot(anchor: WindowLayoutWindow, candidates: [WindowLayoutCandidate],
                          displays: [WindowLayoutDisplay], desktop: Int, selection: WindowLayoutSelection,
                          maximumWindows: Int = WindowLayoutSettings.defaultMaximumWindows,
+                         preferredCompanion: SidebarWindowID? = nil,
+                         destination: WindowLayoutScope? = nil,
                          read: (WindowLayoutCandidate) -> WindowLayoutCandidateResolution) -> WindowLayoutSnapshot {
+        let preferred = selection == .allNormal ? preferredCompanion : nil
         let ordered = candidates.sorted { a, b in
+            if (a.window == preferred) != (b.window == preferred) { return a.window == preferred }
             if a.recency != b.recency { return a.recency > b.recency }
             if a.stackOrder != b.stackOrder { return a.stackOrder < b.stackOrder }
             return a.window.windowID < b.window.windowID
@@ -35,12 +39,15 @@ enum WindowLayoutPlanner {
         for candidate in ordered where candidate.window != anchor.id.window {
             let resolution = read(candidate)
             if case .excluded = resolution { continue }
-            guard case .window(let window) = resolution, window.scope == anchor.scope else {
+            guard case .window(let window) = resolution, window.scope == (destination ?? anchor.scope) else {
                 complete = false; break
             }
             guard window.visible, !window.blocked else { continue }
+            if selection == .allNormal, !window.eligible { continue }
             windows.append(window)
-            if selection == .mostRecent || windows.count >= limit { break }
+            // The cap is a selection limit, not a reason to reject a busy Desktop.
+            // Do not read older windows once the selected group is complete.
+            if selection == .mostRecent || windows.count == limit { break }
         }
         return WindowLayoutSnapshot(windows: windows, displays: displays, complete: complete, desktopGeneration: desktop)
     }
@@ -61,26 +68,32 @@ enum WindowLayoutPlanner {
     static func plan(snapshot: WindowLayoutSnapshot, anchorID: SidebarWindowID,
                      request: SidebarPlacementRequest, selection: WindowLayoutSelection = .mostRecent,
                      maximumWindows: Int = WindowLayoutSettings.defaultMaximumWindows,
+                     preferredCompanion: SidebarWindowID? = nil,
                      learned: [WindowLayoutIdentity: WindowLayoutSizeConstraint] = [:],
-                     achievedFrame: CGRect? = nil) -> WindowLayoutPlanningResult {
+                     achievedFrame: CGRect? = nil,
+                     preparingFor destination: WindowLayoutScope? = nil) -> WindowLayoutPlanningResult {
         if !snapshot.complete { return .rejected(snapshot.failureReason ?? "An open window could not be verified. Your snap stays in place.") }
         guard snapshot.complete, Set(snapshot.windows.map { $0.id.window }).count == snapshot.windows.count,
               let snap = request.snap,
               let anchor = snapshot.windows.first(where: { $0.id.window == anchorID }), anchor.eligible,
-              let display = snapshot.displays.first(where: { $0.id == anchor.scope.displayID }),
+              let display = snapshot.displays.first(where: { $0.id == (destination ?? anchor.scope).displayID }),
               SidebarPlacementGeometry.matches(display.workArea, request.workArea),
-              SidebarPlacementGeometry.matches(anchor.frame, achievedFrame ?? request.frame) else {
+              destination != nil || SidebarPlacementGeometry.matches(anchor.frame, achievedFrame ?? request.frame) else {
             return .rejected("The snapped window's display or Desktop could not be verified.")
         }
-        let peers = snapshot.windows(in: anchor.scope).filter { $0.id != anchor.id && $0.visible && !$0.blocked }
+        let peers = snapshot.windows(in: destination ?? anchor.scope).filter {
+            $0.id != anchor.id && $0.visible && !$0.blocked && (selection != .allNormal || $0.eligible)
+        }
+        let preferred = selection == .allNormal ? preferredCompanion : nil
         // Unobserved startup history falls back to the frontmost CG surface, never app enumeration order.
         let ordered = peers.sorted { a, b in
+            if (a.id.window == preferred) != (b.id.window == preferred) { return a.id.window == preferred }
             if a.recency != b.recency { return a.recency > b.recency }
             if a.stackOrder != b.stackOrder { return a.stackOrder < b.stackOrder }
             return a.id.window.windowID < b.id.window.windowID
         }
-        let companionLimit = selection == .mostRecent ? 1 : WindowLayoutSettings.normalizedMaximumWindows(maximumWindows) - 1
-        let selected = Array(ordered.prefix(companionLimit))
+        let limit = WindowLayoutSettings.normalizedMaximumWindows(maximumWindows)
+        let selected = Array(ordered.prefix(selection == .mostRecent ? 1 : limit - 1))
         // One selected companion stays untouched. Recent mode therefore never rearranges corners.
         if snap.isCorner && selected.count < 2 { return .noPeer }
         guard !selected.isEmpty else { return .noPeer }
@@ -96,29 +109,80 @@ enum WindowLayoutPlanner {
         }
         let windows = [anchor] + selected
         var constraints = Dictionary(uniqueKeysWithValues: windows.map { window in
-            (window.id, WindowLayoutSizeConstraint.initial(for: window, workArea: request.workArea,
-                                                            learned: learned[window.id]))
+            (window.id, destination != nil
+                ? WindowLayoutSizeConstraint.reported(for: window, workArea: request.workArea)
+                : WindowLayoutSizeConstraint.initial(for: window, workArea: request.workArea, learned: learned[window.id]))
         })
-        if snap.isCorner {
-            guard SidebarPlacementGeometry.matches(anchor.frame,
-                SidebarPlacementGeometry.cornerFrame(snap, size: anchor.frame.size, inAX: request.workArea)),
-                  let initial = constraints[anchor.id] else {
-                return .rejected("The app could not keep the window at the chosen corner.")
+        if destination == nil && (snap.isCorner || !SidebarPlacementGeometry.matches(anchor.frame, request.frame)) {
+            guard request.workArea.contains(anchor.frame),
+                  SidebarPlacementGeometry.matches(anchor.frame,
+                    SidebarPlacementGeometry.snapFrame(snap, size: anchor.frame.size, inAX: request.workArea)),
+                  let initial = constraints[anchor.id],
+                  let observed = initial.observing(requested: request.frame, achieved: anchor.frame) else {
+                return .rejected("The app could not keep the window at the chosen snap edge within this display.")
             }
-            if !SidebarPlacementGeometry.matches(anchor.frame, request.frame) {
-                guard let observed = initial.observing(requested: request.frame, achieved: anchor.frame) else {
-                    return .rejected("The corner window's size limits cannot fit on this display.")
-                }
-                constraints[anchor.id] = observed
-            }
+            constraints[anchor.id] = observed
         }
+        var edgeGroups: [[WindowLayoutIdentity]]?
         guard let allocation = WindowLayoutAllocator.allocate(workArea: request.workArea, snap: snap,
-            scale: display.scale, anchor: anchor.id, peers: selected.map(\.id), constraints: constraints) else {
+            scale: display.scale, anchor: anchor.id, peers: selected.map(\.id), constraints: constraints,
+            onEdgeGroups: { edgeGroups = $0 }) else {
             return .rejected("These windows cannot fit together on this display without overlapping.")
         }
-        return .ready(WindowLayoutPlan(scope: anchor.scope, desktopGeneration: snapshot.desktopGeneration,
+        var plan = WindowLayoutPlan(scope: destination ?? anchor.scope, desktopGeneration: snapshot.desktopGeneration,
             workArea: request.workArea, snap: snap, scale: display.scale,
-            anchor: anchor, peers: selected, constraints: constraints, frames: allocation))
+            anchor: anchor, peers: selected, constraints: constraints, frames: allocation)
+        if destination != nil { plan.edgeGroups = edgeGroups }
+        return .ready(plan)
+    }
+
+    static func adjustingDivider(_ prepared: WindowLayoutPreparedSnap, anchorLength: CGFloat) -> WindowLayoutPreparedSnap? {
+        guard prepared.allowsDividerAdjustment, let groups = prepared.plan.edgeGroups,
+              let frames = WindowLayoutAllocator.allocate(workArea: prepared.plan.workArea, snap: prepared.plan.snap,
+                scale: prepared.plan.scale, anchor: prepared.plan.anchor.id, peers: prepared.plan.peers.map(\.id),
+                constraints: prepared.plan.constraints, frozenGroups: groups, requestedAnchorLength: anchorLength) else { return nil }
+        var adjusted = prepared
+        adjusted.plan.frames = frames
+        return adjusted
+    }
+
+    // A companion failure cannot block the user's own snap. This fallback is shown before release.
+    static func preparedPlan(snapshot: WindowLayoutSnapshot?, anchor: WindowLayoutWindow,
+                             request: SidebarPlacementRequest, destination: WindowLayoutScope,
+                             display: WindowLayoutDisplay, settings: WindowSnapSettings,
+                             generation: Int, preferredCompanion: SidebarWindowID? = nil)
+                             -> (plan: WindowLayoutPlan, fallbackReason: String?)? {
+        guard let single = singleSnap(anchor: anchor, request: request, destination: destination,
+                                      display: display, generation: generation) else { return nil }
+        guard settings.enabled, !(request.snap?.isCorner == true && settings.selection == .mostRecent) else {
+            return (single, nil)
+        }
+        guard let snapshot else { return (single, "Companions could not be verified; only the dragged window will snap.") }
+        switch plan(snapshot: snapshot, anchorID: anchor.id.window, request: request,
+            selection: settings.selection, maximumWindows: settings.maximumWindows,
+            preferredCompanion: preferredCompanion, preparingFor: destination) {
+        case .ready(let group): return (group, nil)
+        case .noPeer: return (single, nil)
+        case .rejected: return (single, "Companions cannot be arranged; only the dragged window will snap.")
+        }
+    }
+
+    static func singleSnap(anchor: WindowLayoutWindow, request: SidebarPlacementRequest,
+                           destination: WindowLayoutScope, display: WindowLayoutDisplay,
+                           generation: Int) -> WindowLayoutPlan? {
+        guard anchor.eligible, let snap = request.snap, snap != .maximize,
+              destination.displayID == display.id,
+              SidebarPlacementGeometry.matches(request.workArea, display.workArea),
+              SidebarPlacementGeometry.isValid(request.frame), SidebarPlacementGeometry.isValid(display.workArea),
+              anchor.minimum.width.isFinite, anchor.minimum.height.isFinite,
+              anchor.minimum.width >= 0, anchor.minimum.height >= 0 else { return nil }
+        let size = CGSize(width: max(request.frame.width, anchor.minimum.width),
+                          height: max(request.frame.height, anchor.minimum.height))
+        let target = SidebarPlacementGeometry.constrained(
+            SidebarPlacementGeometry.snapFrame(snap, size: size, inAX: display.workArea), to: display.workArea)
+        return WindowLayoutPlan(scope: destination, desktopGeneration: generation, workArea: display.workArea,
+            snap: snap, scale: display.scale, anchor: anchor, peers: [],
+            constraints: [anchor.id: .reported(for: anchor, workArea: display.workArea)], frames: [anchor.id: target])
     }
 
     static func overlaps(_ a: CGRect, _ b: CGRect) -> Bool {

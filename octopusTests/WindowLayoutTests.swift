@@ -175,7 +175,315 @@ struct WindowLayoutTests {
         return plan
     }
 
+    private func prepared(peers: [WindowLayoutWindow]? = nil, snap: SidebarSnapTarget = .left,
+                          enabled: Bool = true, selection: WindowLayoutSelection = .allNormal) throws
+                          -> (plan: WindowLayoutPlan, fallbackReason: String?) {
+        let anchor = window(1, frame: area, recency: 99)
+        let state = snapshot([anchor] + (peers ?? [window(2)]))
+        return try #require(WindowLayoutPlanner.preparedPlan(snapshot: state, anchor: anchor,
+            request: request(snap), destination: scope, display: state.displays[0],
+            settings: WindowSnapSettings(enabled: enabled, selection: selection, maximumWindows: 4), generation: 0))
+    }
+
+    @Test func preSnapPlanningKeepsTheSourceFrameAndUsesDestinationCompanions() throws {
+        let sourceScope = WindowLayoutScope(displayID: "source", spaceID: 1)
+        let source = window(1, frame: CGRect(x: 100, y: 50, width: 900, height: 700), scope: sourceScope)
+        let peers = [window(2, recency: 10), window(3, recency: 5), window(4, recency: 2), window(5, recency: 1)]
+        let result = WindowLayoutPlanner.plan(snapshot: snapshot([source] + peers), anchorID: source.id.window,
+            request: request(.left), selection: .allNormal, maximumWindows: 4,
+            preferredCompanion: peers[1].id.window, preparingFor: scope)
+        guard case .ready(let plan) = result else { Issue.record("Pre-snap source scope must be supported"); return }
+        #expect(plan.anchor.frame == source.frame && plan.anchor.scope == sourceScope)
+        #expect(plan.scope == scope && plan.peers.map(\.id) == [peers[1].id, peers[0].id, peers[2].id])
+        #expect(plan.frames.count == 4 && plan.frames[peers[3].id] == nil)
+        #expect(plan.frames[source.id] != source.frame)
+    }
+
+    @Test func infeasibleCompanionsProduceASingleWindowPreviewAndCommit() throws {
+        let bad = window(2, minimum: CGSize(width: 2000, height: 200))
+        let selected = try prepared(peers: [bad])
+        #expect(selected.plan.peers.isEmpty && selected.fallbackReason != nil)
+        var live = [selected.plan.anchor.id: selected.plan.anchor, bad.id: bad]
+        var writes: [WindowLayoutIdentity] = []
+        let outcome = WindowLayoutExecutor.applyPrepared(selected.plan, canContinue: { true }, read: { live[$0.id] },
+            write: { window, frame in
+                writes.append(window.id)
+                live[window.id] = moved(window, to: frame)
+                return .placed(frame, adjusted: false)
+            })
+        #expect(outcome.reason == nil && writes == [selected.plan.anchor.id])
+        #expect(live[bad.id]?.frame == bad.frame)
+    }
+
+    @Test func disabledAdjustmentNoCompanionsAndRecentCornersStillPrepareThePrimarySnap() throws {
+        let disabled = try prepared(enabled: false)
+        let empty = try prepared(peers: [])
+        let corner = try prepared(snap: .topRight, selection: .mostRecent)
+        for selected in [disabled, empty, corner] {
+            #expect(selected.plan.peers.isEmpty && selected.plan.frames.count == 1)
+            #expect(selected.fallbackReason == nil)
+        }
+        let recent = try prepared(peers: [window(2), window(3)], selection: .mostRecent)
+        #expect(recent.plan.peers.count == 1)
+        let anchor = window(1)
+        let timedOut = try #require(WindowLayoutPlanner.preparedPlan(snapshot: nil, anchor: anchor, request: request(.left),
+            destination: scope, display: snapshot([anchor]).displays[0],
+            settings: WindowSnapSettings(enabled: true, selection: .allNormal, maximumWindows: 4), generation: 0))
+        #expect(timedOut.plan.peers.isEmpty && timedOut.fallbackReason != nil)
+    }
+
+    @Test func preSnapPreviewIgnoresBoundsInferredFromAnOlderAcceptedSize() {
+        let anchor = window(1)
+        let peer = window(2)
+        let oldSample = WindowLayoutSizeConstraint(minimum: CGSize(width: 2000, height: 200), maximum: area.size)
+        let result = WindowLayoutPlanner.plan(snapshot: snapshot([anchor, peer]), anchorID: anchor.id.window,
+            request: request(.left), learned: [peer.id: oldSample], preparingFor: scope)
+        guard case .ready(let plan) = result else { Issue.record("Old observations must not block a preview"); return }
+        #expect(plan.constraints[peer.id]?.minimum.width == WindowLayoutSettings.readabilityMinimum.width)
+        #expect(!anchor.minimumReported && !peer.minimumReported)
+    }
+
+    @Test func preparedCommitUsesExactlyPreviewedFramesAndCountsNativeSizeSetters() throws {
+        let plan = try prepared(peers: [window(2), window(3)]).plan
+        var live = Dictionary(uniqueKeysWithValues: plan.windows.map { ($0.id, $0) })
+        var sizes: [WindowLayoutIdentity: Int] = [:]
+        var order: [WindowLayoutIdentity] = []
+        let outcome = WindowLayoutExecutor.applyPrepared(plan, canContinue: { true }, read: { live[$0.id] },
+            write: { window, frame in
+                order.append(window.id)
+                let request = SidebarPlacementRequest(frame: frame, workArea: area, resize: true,
+                    desktopGeneration: 0, snap: window.id == plan.anchor.id ? plan.snap : nil)
+                return SidebarPlacementWriter.apply(request, canContinue: { true }, readFrame: { live[window.id]?.frame },
+                    writePosition: { origin in
+                        guard var current = live[window.id]?.frame else { return false }
+                        current.origin = origin
+                        live[window.id] = moved(window, to: current)
+                        return true
+                    }, writeSize: { size in
+                        guard var current = live[window.id]?.frame else { return false }
+                        sizes[window.id, default: 0] += 1
+                        current.size = size
+                        live[window.id] = moved(window, to: current)
+                        return true
+                    }, singleAttempt: true, wait: {})
+            })
+        #expect(outcome.reason == nil && order == plan.windows.map(\.id))
+        for window in plan.windows {
+            #expect(sizes[window.id] == 1)
+            #expect(outcome.achieved[window.id]?.frame == plan.frames[window.id])
+        }
+    }
+
+    @Test func preparedCommitStopsOnFirstCompanionClampWithoutRewritingTheAnchor() throws {
+        let plan = try prepared(peers: [window(2), window(3), window(4)]).plan
+        var live = Dictionary(uniqueKeysWithValues: plan.windows.map { ($0.id, $0) })
+        var writes: [WindowLayoutIdentity] = []
+        let outcome = WindowLayoutExecutor.applyPrepared(plan, canContinue: { true }, read: { live[$0.id] },
+            write: { window, target in
+                writes.append(window.id)
+                var frame = target
+                if window.id == plan.peers[0].id { frame.size.width += 40 }
+                live[window.id] = moved(window, to: frame)
+                return .placed(frame, adjusted: frame != target)
+            })
+        #expect(outcome.reason != nil && writes == [plan.anchor.id, plan.peers[0].id])
+        #expect(outcome.achieved.count == 2 && live[plan.anchor.id]?.frame == plan.frames[plan.anchor.id])
+        #expect(live[plan.peers[1].id]?.frame == plan.peers[1].frame)
+        #expect(live[plan.peers[2].id]?.frame == plan.peers[2].frame)
+    }
+
+    @Test func preparedCommitRejectsAnyStaleParticipantBeforeTheFirstWrite() throws {
+        let plan = try prepared().plan
+        var writes = 0
+        let peer = plan.peers[0]
+        let outcome = WindowLayoutExecutor.applyPrepared(plan, canContinue: { true }, read: {
+            $0.id == peer.id ? moved($0, to: $0.frame.offsetBy(dx: 30, dy: 0)) : $0
+        }, write: { _, frame in writes += 1; return .placed(frame, adjusted: false) })
+        #expect(outcome.reason != nil && outcome.achieved.isEmpty && writes == 0)
+    }
+
+    @Test func preparedCrossDisplayCommitChecksOriginalScopeThenConfirmsDestination() throws {
+        let anchor = window(1, frame: CGRect(x: 100, y: 50, width: 900, height: 700),
+                            scope: WindowLayoutScope(displayID: "source", spaceID: 1))
+        let state = snapshot([anchor, window(2)])
+        let plan = try #require(WindowLayoutPlanner.preparedPlan(snapshot: state, anchor: anchor, request: request(.left),
+            destination: scope, display: state.displays[0],
+            settings: WindowSnapSettings(enabled: true, selection: .mostRecent, maximumWindows: 4), generation: 0)).plan
+        var live = Dictionary(uniqueKeysWithValues: plan.windows.map { ($0.id, $0) })
+        let outcome = WindowLayoutExecutor.applyPrepared(plan, canContinue: { true }, read: { live[$0.id] },
+            write: { window, target in
+                live[window.id] = pairMoved(window, frame: target, scope: plan.scope)
+                return .placed(target, adjusted: false)
+            })
+        #expect(outcome.reason == nil && outcome.achieved[anchor.id]?.scope == scope)
+        #expect(plan.anchor.scope != scope)
+    }
+
+    @Test func preparedPreviewRejectsNewGesturesSettingsFocusAndDisplayChanges() throws {
+        let plan = try prepared().plan
+        let displays = snapshot(plan.windows).displays
+        let settings = WindowSnapSettings(enabled: true, selection: .allNormal, maximumWindows: 4)
+        let preview = WindowLayoutPreparedSnap(plan: plan, request: request(.left), displays: displays,
+            settings: settings, generation: 7, frontmostPID: 42, frontmostWindow: plan.anchor.id.window, fallbackReason: nil)
+        #expect(preview.isCurrent(generation: 7, settings: settings, displays: displays, frontmostPID: 42))
+        #expect(!preview.isCurrent(generation: 8, settings: settings, displays: displays, frontmostPID: 42))
+        #expect(!preview.isCurrent(generation: 7, settings: settings, displays: displays, frontmostPID: 43))
+        let changed = WindowSnapSettings(enabled: false, selection: .allNormal, maximumWindows: 4)
+        #expect(!preview.isCurrent(generation: 7, settings: changed, displays: displays, frontmostPID: 42))
+        let changedMode = WindowSnapSettings(enabled: true, selection: .allNormal, maximumWindows: 4, mode: .current)
+        #expect(!preview.isCurrent(generation: 7, settings: changedMode, displays: displays, frontmostPID: 42))
+        let screen = displays[0]
+        let resized = WindowLayoutDisplay(id: screen.id, frame: screen.frame, workArea: screen.workArea.insetBy(dx: 20, dy: 0),
+            scale: screen.scale, name: screen.name)
+        #expect(!preview.isCurrent(generation: 7, settings: settings, displays: [resized], frontmostPID: 42))
+    }
+
+    @Test func partialCompanionUndoNeverTouchesTheAnchorOrAnExternalChange() throws {
+        let plan = try prepared(peers: [window(2), window(3)]).plan
+        let peer = plan.peers[0]
+        let achieved = try #require(plan.frames[peer.id])
+        var live = [peer.id: moved(peer, to: achieved)]
+        var writes: [WindowLayoutIdentity] = []
+        let result = WindowLayoutExecutor.restore(plan, achieved: [peer.id: achieved], canContinue: { true },
+            read: { live[$0] }, write: { window, frame, _ in
+                writes.append(window.id)
+                live[window.id] = moved(window, to: frame)
+                return .placed(frame, adjusted: false)
+            }, participants: [peer.id])
+        guard case .applied = result else { Issue.record("Verified partial companion Undo should work"); return }
+        #expect(writes == [peer.id] && live[peer.id]?.frame == peer.frame)
+        live[peer.id] = moved(peer, to: achieved.offsetBy(dx: 50, dy: 0))
+        writes.removeAll()
+        let stale = WindowLayoutExecutor.restore(plan, achieved: [peer.id: achieved], canContinue: { true },
+            read: { live[$0] }, write: { window, frame, _ in
+                writes.append(window.id); return .placed(frame, adjusted: false)
+            }, participants: [peer.id])
+        guard case .stopped = stale else { Issue.record("An external move must prevent Undo"); return }
+        #expect(writes.isEmpty)
+    }
+
     private enum FixtureError: Error { case notReady }
+
+    private func dividerPreview(_ snap: SidebarSnapTarget = .left, peers: [WindowLayoutWindow]? = nil,
+                                mode: WindowSnapMode = .current) throws -> WindowLayoutPreparedSnap {
+        let selected = try prepared(peers: peers, snap: snap)
+        return WindowLayoutPreparedSnap(plan: selected.plan, request: request(snap), displays: snapshot(selected.plan.windows).displays,
+            settings: WindowSnapSettings(enabled: true, selection: .allNormal, maximumWindows: 4, mode: mode),
+            generation: 7, frontmostPID: 42, frontmostWindow: selected.plan.anchor.id.window, fallbackReason: selected.fallbackReason)
+    }
+
+    @Test(arguments: [SidebarSnapTarget.left, .right, .top, .bottom])
+    func dividerStartsWithoutJumpingAndMovesRelativeToItsOriginalPosition(_ snap: SidebarSnapTarget) throws {
+        let preview = try dividerPreview(snap)
+        let start = CGPoint(x: area.midX, y: area.midY)
+        var gesture = try #require(WindowLayoutDividerGesture(prepared: preview, at: start))
+        #expect(gesture.preview.plan.frames == preview.plan.frames)
+        let stayedAtStart = gesture.update(at: start)
+        #expect(stayedAtStart && gesture.preview.plan.frames == preview.plan.frames)
+        let movedDivider = gesture.update(at: CGPoint(x: start.x + 40, y: start.y + 40))
+        #expect(movedDivider)
+        let actual = try #require(gesture.preview.plan.frames[preview.plan.anchor.id])
+        let initial = try #require(preview.plan.frames[preview.plan.anchor.id])
+        let horizontal = snap == .left || snap == .right
+        let delta: CGFloat = snap == .left || snap == .top ? 40 : -40
+        #expect((horizontal ? actual.width : actual.height) == (horizontal ? initial.width : initial.height) + delta)
+        #expect(!gesture.isLimited && gesture.preview.plan.edgeGroups == preview.plan.edgeGroups)
+        #expect(gesture.preview.plan.anchor.frame == preview.plan.anchor.frame)
+        let returnedToStart = gesture.update(at: start)
+        #expect(returnedToStart && gesture.preview.plan.frames == preview.plan.frames)
+    }
+
+    @Test func dividerClampsAtSizeLimitsAndPreservesTheSelectedGrouping() throws {
+        let preview = try dividerPreview(peers: [window(2, minimum: CGSize(width: 500, height: 200))])
+        let start = CGPoint(x: area.midX, y: area.midY)
+        var gesture = try #require(WindowLayoutDividerGesture(prepared: preview, at: start))
+        let expanded = gesture.update(at: CGPoint(x: start.x + 10000, y: start.y))
+        #expect(expanded)
+        let peerFrame = try #require(gesture.preview.plan.frames[preview.plan.peers[0].id])
+        #expect(peerFrame.width == 500 && gesture.isLimited)
+        let contracted = gesture.update(at: CGPoint(x: start.x - 10000, y: start.y))
+        #expect(contracted)
+        #expect(gesture.preview.plan.frames[preview.plan.anchor.id]?.width == WindowLayoutSettings.readabilityMinimum.width)
+        #expect(gesture.isLimited && gesture.preview.plan.edgeGroups == preview.plan.edgeGroups)
+        let acceptedInvalidPoint = gesture.update(at: CGPoint(x: .nan, y: start.y))
+        #expect(!acceptedInvalidPoint)
+    }
+
+    @Test func dividerKeepsMultipleCompanionColumnsAndPixelAlignment() throws {
+        let peers = [window(2, minimum: CGSize(width: 320, height: 500)),
+                     window(3, minimum: CGSize(width: 320, height: 500)),
+                     window(4, minimum: CGSize(width: 320, height: 500))]
+        let preview = try dividerPreview(peers: peers)
+        #expect(preview.plan.edgeGroups?.count == 3)
+        let adjusted = try #require(WindowLayoutPlanner.adjustingDivider(preview, anchorLength: 333.25))
+        #expect(adjusted.plan.frames[preview.plan.anchor.id]?.width == 333.5)
+        #expect(adjusted.plan.edgeGroups == preview.plan.edgeGroups && adjusted.plan.peers.map(\.id) == peers.map(\.id))
+        let frames = adjusted.plan.windows.compactMap { adjusted.plan.frames[$0.id] }
+        #expect(frames.count == 4)
+        for (index, frame) in frames.enumerated() {
+            #expect(area.contains(frame))
+            #expect([frame.minX, frame.minY, frame.width, frame.height].allSatisfy { ($0 * 2).rounded() == $0 * 2 })
+            #expect(!frames.dropFirst(index + 1).contains { WindowLayoutPlanner.overlaps(frame, $0) })
+        }
+    }
+
+    @Test func dividerIsUnavailableForLegacyCornersSingleWindowsAndCrossDisplayPlans() throws {
+        let legacy = try dividerPreview(mode: .legacy)
+        #expect(WindowLayoutDividerGesture(prepared: legacy, at: .zero) == nil)
+        let corner = try dividerPreview(.topLeft, peers: [window(2), window(3)])
+        #expect(WindowLayoutDividerGesture(prepared: corner, at: .zero) == nil)
+        let single = try dividerPreview(peers: [])
+        #expect(WindowLayoutDividerGesture(prepared: single, at: .zero) == nil)
+        var cross = try dividerPreview()
+        let original = cross.plan
+        let source = pairMoved(original.anchor, frame: original.anchor.frame,
+                               scope: WindowLayoutScope(displayID: "source", spaceID: 1))
+        cross.plan = WindowLayoutPlan(scope: original.scope, desktopGeneration: original.desktopGeneration,
+            workArea: original.workArea, snap: original.snap, scale: original.scale, anchor: source,
+            peers: original.peers, constraints: original.constraints, frames: original.frames, edgeGroups: original.edgeGroups)
+        #expect(WindowLayoutDividerGesture(prepared: cross, at: .zero) == nil)
+    }
+
+    @Test func manyDividerUpdatesCommitTheLastPreviewWithOnlyOneSizeSetterPerWindow() throws {
+        let preview = try dividerPreview()
+        let start = CGPoint(x: area.midX, y: area.midY)
+        var gesture = try #require(WindowLayoutDividerGesture(prepared: preview, at: start))
+        var live = Dictionary(uniqueKeysWithValues: preview.plan.windows.map { ($0.id, $0) })
+        for delta in stride(from: 0, through: 200, by: 10) {
+            let updated = gesture.update(at: CGPoint(x: start.x + CGFloat(delta), y: start.y))
+            #expect(updated)
+        }
+        #expect(live.values.allSatisfy { $0.frame == preview.plan.anchor.frame })
+        let displayed = gesture.preview.plan
+        var sizes: [WindowLayoutIdentity: Int] = [:]
+        let outcome = WindowLayoutExecutor.applyPrepared(displayed, canContinue: { true }, read: { live[$0.id] },
+            write: { window, frame in
+                let placement = SidebarPlacementRequest(frame: frame, workArea: area, resize: true, desktopGeneration: 0)
+                return SidebarPlacementWriter.apply(placement, canContinue: { true }, readFrame: { live[window.id]?.frame },
+                    writePosition: { point in
+                        guard var actual = live[window.id]?.frame else { return false }
+                        actual.origin = point; live[window.id] = moved(window, to: actual); return true
+                    }, writeSize: { size in
+                        guard var actual = live[window.id]?.frame else { return false }
+                        sizes[window.id, default: 0] += 1
+                        actual.size = size; live[window.id] = moved(window, to: actual); return true
+                    }, singleAttempt: true, wait: {})
+            })
+        #expect(outcome.reason == nil)
+        for window in displayed.windows {
+            #expect(sizes[window.id] == 1 && outcome.achieved[window.id]?.frame == displayed.frames[window.id])
+        }
+    }
+
+    @Test func anAdjustedPreviewStillRejectsAWindowThatChangedBeforeRelease() throws {
+        let preview = try dividerPreview()
+        let adjusted = try #require(WindowLayoutPlanner.adjustingDivider(preview, anchorLength: 800))
+        var writes = 0
+        let outcome = WindowLayoutExecutor.applyPrepared(adjusted.plan, canContinue: { true }, read: {
+            $0.id == adjusted.plan.peers[0].id ? moved($0, to: $0.frame.offsetBy(dx: 50, dy: 0)) : $0
+        }, write: { _, frame in writes += 1; return .placed(frame, adjusted: false) })
+        #expect(writes == 0 && outcome.achieved.isEmpty && outcome.reason != nil)
+    }
 
     @Test func pairedWindowFocusRaisesCompanionThenLeavesDraggedWindowActive() throws {
         let plan = try ready(.left)
@@ -245,7 +553,7 @@ struct WindowLayoutTests {
 
     @Test func largerCornerGroupsFillAreaAndTryNearbyPopulationsForLimits() throws {
         let peers = (2...7).map { window(UInt32($0), recency: UInt64(10 - $0), minimum: CGSize(width: 320, height: 240)) }
-        let plan = try ready(.topRight, peers: peers, selection: .allNormal, maximumWindows: 7)
+        let plan = try ready(.topRight, peers: peers, selection: .allNormal, maximumWindows: 8)
         let frames = plan.windows.map { plan.frames[$0.id]! }
         #expect(frames.reduce(CGFloat(0)) { $0 + $1.width * $1.height } == area.width * area.height)
         for (index, frame) in frames.enumerated() {
@@ -257,7 +565,7 @@ struct WindowLayoutTests {
         let constrained = try ready(.topRight,
             peers: [window(2, recency: 9, minimum: CGSize(width: 900, height: 550)),
                     window(3, recency: 8, minimum: CGSize(width: 320, height: 450)),
-                    window(4, recency: 7)], selection: .allNormal, maximumWindows: 4)
+                    window(4, recency: 7)], selection: .allNormal)
         #expect(constrained.frames[window(2).id]?.height == 900)
         #expect((constrained.frames[window(3).id]?.height ?? 0) >= 450)
     }
@@ -370,7 +678,7 @@ struct WindowLayoutTests {
                      window(3, minimum: CGSize(width: 400, height: 200)),
                      window(4, minimum: CGSize(width: 400, height: 200)),
                      window(5, minimum: CGSize(width: 400, height: 200))]
-        let plan = try ready(.left, peers: peers, selection: .allNormal, maximumWindows: 5)
+        let plan = try ready(.left, peers: peers, selection: .allNormal, maximumWindows: 8)
         let tall = try #require(plan.frames[peers[0].id])
         #expect(tall.height == area.height)
         #expect(peers.dropFirst().allSatisfy { plan.frames[$0.id]?.minX == tall.maxX })
@@ -409,11 +717,6 @@ struct WindowLayoutTests {
             let result = WindowLayoutPlanner.plan(snapshot: snapshot([anchor, peer]), anchorID: anchor.id.window, request: request(.left))
             guard case .rejected = result else { Issue.record("Ineligible or oversized peer must reject"); continue }
         }
-        // Seven companions need more total area than the display provides, even at the largest cap.
-        let crowded = WindowLayoutPlanner.plan(snapshot: snapshot([anchor] + (2...8).map {
-            window(UInt32($0), minimum: CGSize(width: 500, height: 400))
-        }), anchorID: anchor.id.window, request: request(.left), selection: .allNormal, maximumWindows: 8)
-        guard case .rejected = crowded else { Issue.record("Selected windows that cannot fit must reject"); return }
         let impossible = WindowLayoutPlanner.plan(snapshot: snapshot([
             window(1, frame: target(.top), minimum: CGSize(width: 320, height: 500)),
             window(2, minimum: CGSize(width: 320, height: 600))]),
@@ -667,29 +970,83 @@ struct WindowLayoutTests {
         #expect(WindowLayoutSettings.selection(in: defaults) == .allNormal)
     }
 
-    @Test func defaultWindowCapReadsAndPlansOnlyTwoRecentCompanions() throws {
+    @Test func allWindowCapSelectsTwoRecentCompanionsWithoutReadingOlderWindows() throws {
         let anchor = window(1, frame: target(.left))
         let candidates = (2...101).map { number in
-            WindowLayoutCandidate(window: window(UInt32(number)).id.window,
-                recency: UInt64(number), stackOrder: number)
+            WindowLayoutCandidate(window: window(UInt32(number)).id.window, recency: UInt64(number), stackOrder: number)
         }
-        var reads: [UInt32] = []
-        let selected = WindowLayoutPlanner.snapshot(anchor: anchor, candidates: candidates,
+        var reads = 0
+        let result = WindowLayoutPlanner.snapshot(anchor: anchor, candidates: candidates,
             displays: snapshot([]).displays, desktop: 0, selection: .allNormal, read: { candidate in
-                reads.append(candidate.window.windowID)
+                reads += 1
                 return .window(window(candidate.window.windowID, recency: candidate.recency))
             })
-        #expect(selected.complete && reads == [101, 100])
-        #expect(selected.windows.map(\.id.window.windowID) == [1, 101, 100])
-        let planned = WindowLayoutPlanner.plan(snapshot: snapshot([anchor, window(2, recency: 2),
-            window(3, recency: 3), window(4, recency: 4)]), anchorID: anchor.id.window,
-            request: request(.left), selection: .allNormal)
-        guard case .ready(let plan) = planned else { Issue.record("Capped layout should be ready"); return }
-        #expect(plan.peers.map(\.id.window.windowID) == [4, 3])
-        #expect(plan.frames[window(2).id] == nil)
+        #expect(reads == 2)
+        #expect(result.complete && result.failureReason == nil)
+        #expect(result.windows.map(\.id.window.windowID) == [1, 101, 100])
+        guard case .ready(let plan) = WindowLayoutPlanner.plan(snapshot: result, anchorID: anchor.id.window,
+            request: request(.left), selection: .allNormal) else {
+            Issue.record("A busy Desktop should produce a capped layout"); return
+        }
+        #expect(plan.peers.map(\.id.window.windowID) == [101, 100])
+        let old = window(2)
+        var live = Dictionary(uniqueKeysWithValues: (plan.windows + [old]).map { ($0.id, $0) })
+        var writes: [WindowLayoutIdentity] = []
+        let applied = WindowLayoutExecutor.apply(plan, canContinue: { true }, read: { live[$0] },
+            write: { window, frame, _ in
+                writes.append(window.id)
+                live[window.id] = moved(window, to: frame)
+                return .placed(frame, adjusted: false)
+            }, clock: { 0 })
+        guard case .applied = applied else { Issue.record("Capped layout should complete"); return }
+        #expect(!writes.contains(old.id) && live[old.id]?.frame == old.frame)
+        let direct = WindowLayoutPlanner.plan(snapshot: snapshot([anchor, window(2, recency: 2),
+            window(3, recency: 3), window(4, recency: 4), window(5, recency: 5)]),
+            anchorID: anchor.id.window, request: request(.left), selection: .allNormal)
+        guard case .ready(let capped) = direct else {
+            Issue.record("Direct snapshots must also enforce the cap"); return
+        }
+        #expect(capped.peers.map(\.id.window.windowID) == [5, 4])
     }
 
-    @Test func windowCapDefaultsToThreeAndPreservesSavedValues() throws {
+    @Test func previousFrontmostWindowPrecedesOneRecentExtraEvenWithOlderHistory() throws {
+        let anchor = window(1, frame: target(.left))
+        let previous = window(2, recency: 1)
+        let windows = [previous, window(3, recency: 30), window(4, recency: 40), window(5, recency: 50)]
+        let candidates = windows.map { WindowLayoutCandidate(window: $0.id.window, recency: $0.recency, stackOrder: 0) }
+        var reads: [UInt32] = []
+        let selected = WindowLayoutPlanner.snapshot(anchor: anchor, candidates: candidates,
+            displays: snapshot([]).displays, desktop: 0, selection: .allNormal,
+            preferredCompanion: previous.id.window, read: { candidate in
+                reads.append(candidate.window.windowID)
+                return .window(windows.first { $0.id.window == candidate.window }!)
+            })
+        #expect(reads == [2, 5])
+        let result = WindowLayoutPlanner.plan(snapshot: selected, anchorID: anchor.id.window,
+            request: request(.left), selection: .allNormal, preferredCompanion: previous.id.window)
+        guard case .ready(let plan) = result else { Issue.record("Previous window should be selected"); return }
+        #expect(plan.peers.map(\.id.window.windowID) == [2, 5])
+    }
+
+    @Test func unavailableOrFixedPreviousWindowFallsBackToEligibleRecentWindows() {
+        let anchor = window(1, frame: target(.left))
+        let previous = window(2, recency: 1, resizable: false)
+        let windows = [previous, window(3, recency: 30), window(4, recency: 40), window(5, recency: 50)]
+        let candidates = windows.map { WindowLayoutCandidate(window: $0.id.window, recency: $0.recency, stackOrder: 0) }
+        let selected = WindowLayoutPlanner.snapshot(anchor: anchor, candidates: candidates,
+            displays: snapshot([]).displays, desktop: 0, selection: .allNormal,
+            preferredCompanion: previous.id.window, read: { candidate in
+                .window(windows.first { $0.id.window == candidate.window }!)
+            })
+        #expect(selected.complete && selected.windows.map(\.id.window.windowID) == [1, 5, 4])
+        let absent = WindowLayoutPlanner.plan(snapshot: snapshot([anchor] + Array(windows.dropFirst())),
+            anchorID: anchor.id.window, request: request(.left), selection: .allNormal,
+            preferredCompanion: previous.id.window)
+        guard case .ready(let plan) = absent else { Issue.record("Missing preferred window should not block snapping"); return }
+        #expect(plan.peers.map(\.id.window.windowID) == [5, 4])
+    }
+
+    @Test func windowCapPersistsAndClampsInvalidSavedValues() throws {
         let suite = "WindowLayoutCapTests.\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
@@ -700,6 +1057,85 @@ struct WindowLayoutTests {
         #expect(WindowLayoutSettings.maximumWindows(in: defaults) == 2)
         defaults.set(100, forKey: WindowLayoutSettings.maximumWindowsKey)
         #expect(WindowLayoutSettings.maximumWindows(in: defaults) == 8)
+    }
+
+    @Test func snapModeDefaultsToLegacyAndPersistsTheCurrentChoice() throws {
+        let suite = "WindowSnapModeTests.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        #expect(WindowLayoutSettings.mode(in: defaults) == .legacy)
+        defaults.set(WindowSnapMode.current.rawValue, forKey: WindowLayoutSettings.modeKey)
+        #expect(WindowLayoutSettings.mode(in: defaults) == .current)
+        defaults.set("unknown", forKey: WindowLayoutSettings.modeKey)
+        #expect(WindowLayoutSettings.mode(in: defaults) == .legacy)
+        defaults.set(WindowSnapMode.legacy.rawValue, forKey: WindowLayoutSettings.modeKey)
+        #expect(WindowLayoutSettings.mode(in: defaults) == .legacy)
+    }
+
+    @Test(arguments: [SidebarSnapTarget.left, .right, .top, .bottom])
+    func reportedMinimumExpandsEitherPreviewAreaBeforeTheSingleResize(_ snap: SidebarSnapTarget) throws {
+        let horizontal = snap == .left || snap == .right
+        let needed = horizontal ? CGSize(width: area.width / 2 + 40, height: 200)
+                                : CGSize(width: 320, height: area.height / 2 + 40)
+        for constrainedAnchor in [true, false] {
+            let anchor = window(1, minimum: constrainedAnchor ? needed : .zero)
+            let peer = window(2, minimum: constrainedAnchor ? .zero : needed)
+            let state = snapshot([anchor, peer])
+            let selected = try #require(WindowLayoutPlanner.preparedPlan(snapshot: state, anchor: anchor,
+                request: request(snap), destination: scope, display: state.displays[0],
+                settings: WindowSnapSettings(enabled: true, selection: .mostRecent, maximumWindows: 4, mode: .current),
+                generation: 0))
+            let plan = selected.plan
+            #expect(selected.fallbackReason == nil && plan.peers.count == 1)
+            let a = try #require(plan.frames[anchor.id]), b = try #require(plan.frames[peer.id])
+            let expanded = constrainedAnchor ? a : b
+            #expect(horizontal ? expanded.width >= needed.width : expanded.height >= needed.height)
+            #expect(a.union(b) == area && !WindowLayoutPlanner.overlaps(a, b))
+            #expect(constrainedAnchor ? (horizontal ? b.width < area.width / 2 : b.height < area.height / 2)
+                                     : (horizontal ? a.width < area.width / 2 : a.height < area.height / 2))
+            var live = [anchor.id: anchor, peer.id: peer]
+            var sizes: [WindowLayoutIdentity: Int] = [:]
+            let outcome = WindowLayoutExecutor.applyPrepared(plan, canContinue: { true }, read: { live[$0.id] },
+                write: { window, frame in
+                    let placement = SidebarPlacementRequest(frame: frame, workArea: area, resize: true, desktopGeneration: 0)
+                    return SidebarPlacementWriter.apply(placement, canContinue: { true }, readFrame: { live[window.id]?.frame },
+                        writePosition: { origin in
+                            guard var rect = live[window.id]?.frame else { return false }
+                            rect.origin = origin; live[window.id] = moved(window, to: rect); return true
+                        }, writeSize: { size in
+                            guard var rect = live[window.id]?.frame else { return false }
+                            sizes[window.id, default: 0] += 1
+                            rect.size = size; live[window.id] = moved(window, to: rect); return true
+                        }, singleAttempt: true, wait: {})
+                })
+            #expect(outcome.reason == nil && sizes[anchor.id] == 1 && sizes[peer.id] == 1)
+            #expect(outcome.achieved[anchor.id]?.frame == a && outcome.achieved[peer.id]?.frame == b)
+        }
+    }
+
+    @Test(arguments: [SidebarSnapTarget.left, .right, .top, .bottom])
+    func acceptedSideSizeMovesTheSharedSplitWithoutRetryingTheDefault(_ snap: SidebarSnapTarget) throws {
+        let horizontal = snap == .left || snap == .right
+        let size = horizontal ? CGSize(width: 900, height: area.height) : CGSize(width: area.width, height: 600)
+        let achieved = SidebarPlacementGeometry.snapFrame(snap, size: size, inAX: area)
+        let anchor = window(1, frame: achieved) // AX minimum absent; only verified achieved size reveals it.
+        let peer = window(2)
+        let result = WindowLayoutPlanner.plan(snapshot: snapshot([anchor, peer]), anchorID: anchor.id.window,
+            request: request(snap), achievedFrame: achieved)
+        guard case .ready(let plan) = result else { Issue.record("Accepted side snap should be planned"); return }
+        let a = try #require(plan.frames[anchor.id]), b = try #require(plan.frames[peer.id])
+        #expect(a == achieved)
+        #expect(a.union(b) == area && !WindowLayoutPlanner.overlaps(a, b))
+        var live = Dictionary(uniqueKeysWithValues: plan.windows.map { ($0.id, $0) })
+        var anchorWrites = 0
+        let applied = WindowLayoutExecutor.apply(plan, canContinue: { true }, read: { live[$0] },
+            write: { window, frame, _ in
+                if window.id == anchor.id { anchorWrites += 1 }
+                live[window.id] = moved(window, to: frame)
+                return .placed(frame, adjusted: false)
+            }, clock: { 0 })
+        guard case .applied = applied else { Issue.record("Accepted side layout should complete"); return }
+        #expect(anchorWrites == 0)
     }
 
     @Test func lateCompletionCannotOverrideANewerUserAction() {

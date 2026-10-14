@@ -98,8 +98,6 @@ struct PreferencesGeneralView: View {
                     Text("Left handed (1, ..., 9, 0)").tag("leftHanded")
                 }
                 .pickerStyle(.menu)
-            } footer: {
-                Text("Number order sets the order in which numbers are displayed in the menubar")
             }
         }
         .formStyle(.grouped)

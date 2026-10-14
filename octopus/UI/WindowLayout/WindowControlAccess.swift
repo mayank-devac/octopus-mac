@@ -30,7 +30,7 @@ enum WindowControlRead {
     var window: WindowLayoutWindow? { if case .window(let window) = self { return window }; return nil }
 }
 
-enum WindowFrameWritePolicy { case crossDisplayPlacement, sameDisplayAdjustment }
+enum WindowFrameWritePolicy { case crossDisplayPlacement, sameDisplayAdjustment, preparedSnap }
 
 // Queue ownership and handle generations stay with the reader; native layout rules have one boundary.
 final class WindowControlAccess: @unchecked Sendable {
@@ -185,7 +185,7 @@ final class WindowControlAccess: @unchecked Sendable {
     func write(_ expected: WindowLayoutWindow, frame: CGRect, workArea: CGRect,
                destination: WindowLayoutScope, displays: [WindowLayoutDisplay], budget: WindowControlBudget,
                policy: WindowFrameWritePolicy, resize: Bool = true,
-               requireFocused: Bool = false) -> SidebarPlacementResult {
+               requireFocused: Bool = false, snap: SidebarSnapTarget? = nil) -> SidebarPlacementResult {
         dispatchPrecondition(condition: .onQueue(queue))
         guard budget.isCurrent, scopeIsVisible(destination, displays: displays),
               let current = read(expected.id.window, displays: displays, budget: budget, expected: expected).window,
@@ -202,13 +202,16 @@ final class WindowControlAccess: @unchecked Sendable {
                       visibleScope(on: expected.scope.displayID, budget: budget) == expected.scope,
                       visibleScope(on: destination.displayID, budget: budget) == destination else { return false }
             }
-            if policy == .sameDisplayAdjustment { return live.scope == destination }
+            if policy == .sameDisplayAdjustment || (policy == .preparedSnap && expected.scope == destination) {
+                return live.scope == destination
+            }
             // Native membership/frame can settle separately during the explicitly requested visible-display move.
             return [expected.scope.displayID, destination.displayID].contains(live.scope.displayID)
                 && [expected.scope.spaceID, destination.spaceID].contains(live.scope.spaceID)
         }
         let request = SidebarPlacementRequest(frame: frame, workArea: workArea, resize: resize,
-            desktopGeneration: 0, crossesDisplay: policy == .crossDisplayPlacement)
+            desktopGeneration: 0, snap: snap,
+            crossesDisplay: policy == .crossDisplayPlacement || (policy == .preparedSnap && expected.scope.displayID != destination.displayID))
         var writeResults: [String] = []
         var nativeFailure: AXError?
         var blocked = false
@@ -225,7 +228,7 @@ final class WindowControlAccess: @unchecked Sendable {
             if error != .success { nativeFailure = error }
             return error == .success
         }
-        let policyName = policy == .crossDisplayPlacement ? "cross-display" : "same-display"
+        let policyName = policy == .preparedSnap ? "single-snap" : (policy == .crossDisplayPlacement ? "cross-display" : "same-display")
         let startedAt = budget.clock()
         logger.debug("Resize start window=\(expected.id.window.windowID, privacy: .public) policy=\(policyName, privacy: .public) start=\(String(describing: current.frame), privacy: .public) requested=\(String(describing: frame), privacy: .public) minimum=\(String(describing: expected.minimum), privacy: .public) minimumReported=\(expected.minimumReported, privacy: .public)")
         var result = Self.withoutEnhancedUserInterface(pid: expected.id.window.pid) {
@@ -237,7 +240,11 @@ final class WindowControlAccess: @unchecked Sendable {
                 }, writeSize: { size in
                     var size = size
                     return set(kAXSizeAttribute, value: AXValueCreate(.cgSize, &size), label: "size")
-                }, acceptStableMismatch: false)
+                }, acceptStableMismatch: false, singleAttempt: policy == .preparedSnap,
+                hasLanded: {
+                    guard SidebarPlacementGeometry.isValid($0) else { return false }
+                    return self.read(expected.id.window, displays: displays, budget: budget, expected: expected).window?.scope == destination
+                })
         }
         if blocked { result = .cancelled }
         else if nativeFailure != nil { result = .failed("The app rejected this size or position adjustment.") }

@@ -155,13 +155,6 @@ struct PreferencesSidebarView: View {
                 .help("Current display shows only windows belonging to the display where this sidebar appears. Show windows still controls which desktops are included.")
                 Toggle("Show menu for apps with one window", isOn: setting(\.showSingleWindowMenu))
                     .disabled(!editingEnabled)
-            } footer: {
-                Text("Groups windows by desktop with separators. Each menu shows only that desktop’s windows. Finder appears only when open. "
-                     + (configuration.displayScope == .currentDisplay
-                        ? "Current display lists windows belonging to this sidebar’s display; apps without windows are omitted. "
-                        : "Apps without windows appear last. ")
-                     + "In full screen, the sidebar stays at the screen edge. Compact keeps its number strip visible. Mac Notch opens a horizontal app bar below a real or virtual top-centre notch.")
-
             }
             .disabled(!enabled)
 

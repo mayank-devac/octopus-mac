@@ -6,6 +6,16 @@ struct SidebarDragTests {
     private let screen = CGRect(x: -1440, y: 120, width: 1440, height: 900)
     private let area = CGRect(x: -1440, y: 160, width: 1440, height: 830)
 
+    @Test func dividerModifierHonoursCornerShortcutsAndIgnoresUnrelatedFlags() {
+        let corners = SidebarCornerSnapShortcut.defaultModifiers
+        #expect(SidebarDividerShortcut.isPressed(.option, cornerModifiers: corners))
+        #expect(SidebarDividerShortcut.isPressed([.option, .capsLock], cornerModifiers: corners))
+        #expect(!SidebarDividerShortcut.isPressed([], cornerModifiers: corners))
+        #expect(!SidebarDividerShortcut.isPressed(corners, cornerModifiers: corners))
+        #expect(!SidebarDividerShortcut.isPressed([.option, .command], cornerModifiers: corners))
+        #expect(!SidebarDividerShortcut.isPressed(.option, cornerModifiers: .option))
+    }
+
     @Test func stationaryCornerPreviewChangesWithModifierPressAndRelease() throws {
         let chord = SidebarCornerSnapShortcut.defaultModifiers
         let points: [(CGPoint, SidebarSnapTarget)] = [
@@ -429,6 +439,27 @@ struct SidebarDragTests {
         #expect(result == .placed(request.frame, adjusted: false))
     }
 
+    @Test(arguments: [SidebarSnapTarget.left, .right, .top, .bottom])
+    func appLimitedSideSnapKeepsItsOutsideEdge(_ snap: SidebarSnapTarget) {
+        let area = CGRect(x: -1200, y: 80, width: 1200, height: 800)
+        let horizontal = snap == .left || snap == .right
+        let requestedSize = horizontal ? CGSize(width: 600, height: 800) : CGSize(width: 1200, height: 400)
+        let acceptedSize = horizontal ? CGSize(width: 700, height: 800) : CGSize(width: 1200, height: 500)
+        let request = SidebarPlacementRequest(
+            frame: SidebarPlacementGeometry.snapFrame(snap, size: requestedSize, inAX: area),
+            workArea: area, resize: true, desktopGeneration: 1, snap: snap)
+        var frame = area
+        let result = SidebarPlacementWriter.apply(request, canContinue: { true }, readFrame: { frame },
+            writePosition: { frame.origin = $0; return true }, writeSize: { _ in frame.size = acceptedSize; return true }, wait: {})
+        let expected = SidebarPlacementGeometry.snapFrame(snap, size: acceptedSize, inAX: area)
+        #expect(result == .placed(expected, adjusted: true))
+        #expect(area.contains(frame))
+        if snap == .left { #expect(frame.minX == area.minX) }
+        if snap == .right { #expect(frame.maxX == area.maxX) }
+        if snap == .top { #expect(frame.minY == area.minY) }
+        if snap == .bottom { #expect(frame.maxY == area.maxY) }
+    }
+
     @Test func nativeSizeFailureIsNotReportedAsAnAppMinimum() {
         let request = request()
         var frame = CGRect(x: 700, y: 20, width: 600, height: 500)
@@ -467,6 +498,112 @@ struct SidebarDragTests {
         let result = SidebarPlacementWriter.apply(request, canContinue: { true }, readFrame: { .zero },
             writePosition: { _ in writes += 1; return true }, writeSize: { _ in writes += 1; return true })
         #expect(writes == 0 && result.message != nil)
+    }
+
+    @Test(arguments: [SidebarSnapTarget.left, .right, .top, .bottom, .topLeft, .topRight, .bottomLeft, .bottomRight])
+    func singleAttemptKeepsClampedSizeWithAtMostOneEdgeCorrection(_ snap: SidebarSnapTarget) {
+        let desired = SidebarPlacementGeometry.snapFrame(snap,
+            size: CGSize(width: 500, height: 350), inAX: area)
+        let placement = SidebarPlacementRequest(frame: desired, workArea: area, resize: true, desktopGeneration: 1, snap: snap)
+        var frame = CGRect(x: area.minX + 20, y: area.minY + 20, width: 400, height: 300)
+        let accepted = CGSize(width: 800, height: 550)
+        var sizes = 0, positions = 0
+        let result = SidebarPlacementWriter.apply(placement, canContinue: { true }, readFrame: { frame },
+            writePosition: { positions += 1; frame.origin = $0; return true },
+            writeSize: { _ in sizes += 1; frame.size = accepted; return true }, singleAttempt: true, wait: {})
+        let expected = SidebarPlacementGeometry.snapFrame(snap, size: accepted, inAX: area)
+        #expect(result == .placed(expected, adjusted: true))
+        #expect(sizes == 1 && positions <= 2)
+        #expect(area.contains(frame))
+    }
+
+    @Test func singleAttemptWaitsThroughRepeatedOldSizesWithoutRetrying() {
+        let placement = request()
+        var frame = CGRect(origin: placement.frame.origin, size: CGSize(width: 700, height: 700))
+        var pending: CGSize?
+        var reads = 0, sizes = 0, positions = 0
+        let result = SidebarPlacementWriter.apply(placement, canContinue: { true }, readFrame: {
+            reads += 1
+            if reads >= 6, let pending { frame.size = pending }
+            return frame
+        }, writePosition: { positions += 1; frame.origin = $0; return true },
+            writeSize: { sizes += 1; pending = $0; return true }, singleAttempt: true, wait: {})
+        #expect(result == .placed(placement.frame, adjusted: false))
+        #expect(sizes == 1 && positions == 0 && reads == 6)
+    }
+
+    @Test func singleAttemptDoesNotAcceptUnchangedOldSizeAsAConfirmedClamp() {
+        let placement = request()
+        let old = CGRect(origin: placement.frame.origin, size: CGSize(width: 700, height: 700))
+        var sizes = 0, positions = 0
+        let result = SidebarPlacementWriter.apply(placement, canContinue: { true }, readFrame: { old },
+            writePosition: { _ in positions += 1; return true },
+            writeSize: { _ in sizes += 1; return true }, singleAttempt: true, wait: {})
+        guard case .failed = result else { Issue.record("Unchanged old sizes are unconfirmed"); return }
+        #expect(sizes == 1 && positions == 0)
+    }
+
+    @Test func singleAttemptConfirmsCrossDisplayLandingBeforeItsOnlySizeWrite() {
+        let placement = SidebarPlacementRequest(frame: area, workArea: area, resize: true,
+            desktopGeneration: 1, crossesDisplay: true)
+        var frame = CGRect(x: 200, y: 200, width: 400, height: 300)
+        var pending: CGPoint?
+        var reads = 0, sizes = 0, positions = 0
+        let result = SidebarPlacementWriter.apply(placement, canContinue: { true }, readFrame: {
+            reads += 1
+            if reads >= 4, let pending { frame.origin = pending }
+            return frame
+        }, writePosition: { positions += 1; pending = $0; return true }, writeSize: {
+            #expect(positions == 1 && reads >= 4)
+            #expect(area.contains(CGPoint(x: frame.midX, y: frame.midY)))
+            sizes += 1
+            frame.size = $0
+            return true
+        }, singleAttempt: true, wait: {})
+        #expect(result == .placed(area, adjusted: false))
+        #expect(sizes == 1 && positions == 1)
+    }
+
+    @Test func singleAttemptNeverResizesAfterFailedLandingOrCancellation() {
+        let placement = SidebarPlacementRequest(frame: area, workArea: area, resize: true,
+            desktopGeneration: 1, crossesDisplay: true)
+        var sizes = 0, positions = 0
+        let result = SidebarPlacementWriter.apply(placement, canContinue: { true },
+            readFrame: { CGRect(x: 200, y: 200, width: 400, height: 300) },
+            writePosition: { _ in positions += 1; return true }, writeSize: { _ in sizes += 1; return true },
+            singleAttempt: true, wait: {})
+        guard case .failed = result else { Issue.record("Unconfirmed landing must stop"); return }
+        #expect(sizes == 0 && positions == 1)
+        let cancelled = SidebarPlacementWriter.apply(placement, canContinue: { false }, readFrame: { area },
+            writePosition: { _ in positions += 1; return true }, writeSize: { _ in sizes += 1; return true },
+            singleAttempt: true, wait: {})
+        #expect(cancelled == .cancelled && sizes == 0 && positions == 1)
+    }
+
+    @Test func singleAttemptSkipsAllWritesForAnAlreadyMatchingFrame() {
+        let placement = request()
+        var writes = 0
+        let result = SidebarPlacementWriter.apply(placement, canContinue: { true }, readFrame: { placement.frame },
+            writePosition: { _ in writes += 1; return true }, writeSize: { _ in writes += 1; return true },
+            singleAttempt: true, wait: {})
+        #expect(result == .placed(placement.frame, adjusted: false) && writes == 0)
+    }
+
+    @Test func singleAttemptDoesNotAlignOverAChangedFrameAfterSettling() {
+        let placement = SidebarPlacementRequest(frame: request().frame, workArea: request().workArea,
+            resize: true, desktopGeneration: 1, snap: .right)
+        var frame = CGRect(x: 20, y: 20, width: 400, height: 500)
+        var waits = 0, positions = 0, sizes = 0
+        let external = CGRect(x: 50, y: 30, width: 800, height: 700)
+        let result = SidebarPlacementWriter.apply(placement, canContinue: { true }, readFrame: { frame },
+            writePosition: { positions += 1; frame.origin = $0; return true },
+            writeSize: { _ in sizes += 1; frame.size = CGSize(width: 800, height: 700); return true },
+            singleAttempt: true, wait: {
+                waits += 1
+                if waits == SidebarPlacementWriter.maximumSettlePolls { frame = external }
+            })
+        guard case .failed = result else { Issue.record("A changed final frame must stop alignment"); return }
+        #expect(frame == external && positions == 1 && sizes == 1)
     }
 
     private func request(resize: Bool = true) -> SidebarPlacementRequest {

@@ -1,10 +1,17 @@
 import Foundation
 
+enum WindowSnapMode: String, CaseIterable {
+    case legacy, current
+
+    static func saved(_ value: String?) -> Self { value.flatMap(Self.init(rawValue:)) ?? .legacy }
+    var title: String { self == .legacy ? "Legacy (default)" : "Current (Beta)" }
+}
+
 enum WindowLayoutSelection: String, CaseIterable {
     case mostRecent, allNormal
 
     static func saved(_ value: String?) -> Self { value.flatMap(Self.init(rawValue:)) ?? .mostRecent }
-    var title: String { self == .mostRecent ? "Most recently used other window" : "All other normal windows" }
+    var title: String { self == .mostRecent ? "Most recently used window" : "All windows (limited)" }
 }
 
 enum VisibleDisplayMoveSize: String, CaseIterable {
@@ -16,6 +23,7 @@ enum VisibleDisplayMoveSize: String, CaseIterable {
 
 // Neighbour adjustment follows accepted Octopus snaps; normal window movement is unchanged.
 enum WindowLayoutSettings {
+    static let modeKey = "windowSnapMode"
     static let enabledKey = "windowLayoutEnabled"
     static let selectionKey = "windowLayoutSelection"
     static let moveSizeKey = "visibleDisplayMoveSize"
@@ -36,6 +44,9 @@ enum WindowLayoutSettings {
 
     static func enabled(in defaults: UserDefaults = .standard) -> Bool {
         defaults.object(forKey: enabledKey) == nil || defaults.bool(forKey: enabledKey)
+    }
+    static func mode(in defaults: UserDefaults = .standard) -> WindowSnapMode {
+        .saved(defaults.string(forKey: modeKey))
     }
     static func selection(in defaults: UserDefaults = .standard) -> WindowLayoutSelection {
         .saved(defaults.string(forKey: selectionKey))
