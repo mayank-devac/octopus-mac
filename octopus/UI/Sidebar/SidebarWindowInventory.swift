@@ -706,7 +706,16 @@ final class SidebarWindowInventory: ObservableObject {
         let application = entries.first(where: { $0.pid == pid })?.application.runningApplication
         let desktop = desktopGeneration
         let systemFullScreenPID = NSApp.currentSystemPresentationOptions.contains(.fullScreen) ? frontmostPID : nil
+        let preserveFrontmost = WindowLayoutSettings.enabled() && WindowLayoutSettings.selection() == .allNormal
         reader.queue.async { [weak self, reader] in
+            let preferredCompanion: SidebarWindowID?
+            if case .place(_, let request) = action, let snap = request.snap, snap != .maximize,
+               preserveFrontmost, let frontmostPID {
+                // One bounded lookup before placement/focus; no full window inventory scan.
+                let budget = WindowControlBudget(deadline: ProcessInfo.processInfo.systemUptime + 0.1,
+                    canContinue: { token.isCurrent })
+                preferredCompanion = reader.windowControlAccess.focusedWindowID(pid: frontmostPID, budget: budget)
+            } else { preferredCompanion = nil }
             let result = reader.perform(action, desktop: desktop, token: token,
                 systemFullScreenPID: systemFullScreenPID, application: application)
             DispatchQueue.main.async {
@@ -727,10 +736,12 @@ final class SidebarWindowInventory: ObservableObject {
                     self.onPlacementResult?(result)
                     if case .placed(let achieved, let adjusted) = result,
                        case .place(let id, let request) = action, let snap = request.snap,
-                       !adjusted || (snap.isCorner && SidebarPlacementGeometry.matches(achieved,
-                        SidebarPlacementGeometry.cornerFrame(snap, size: achieved.size, inAX: request.workArea))) {
+                       !adjusted || (snap != .maximize && request.workArea.contains(achieved)
+                        && SidebarPlacementGeometry.matches(achieved,
+                            SidebarPlacementGeometry.snapFrame(snap, size: achieved.size, inAX: request.workArea))) {
                         NotificationCenter.default.post(name: WindowLayoutController.completedSnapNotification,
-                            object: WindowLayoutCompletedSnap(window: id, request: request, startedAt: startedAt, achievedFrame: achieved))
+                            object: WindowLayoutCompletedSnap(window: id, request: request, startedAt: startedAt,
+                                achievedFrame: achieved, preferredCompanion: preferredCompanion))
                     }
                     let shouldFocus: Bool
                     if case .placed = result { shouldFocus = true }
@@ -1249,7 +1260,8 @@ final class SidebarWindowReader: @unchecked Sendable {
     // CG/Space data narrows candidates; only selected normal AX windows pay for metadata reads.
     // Known non-normal surfaces are skipped, while an unknown provider failure keeps the snapshot incomplete.
     func layoutSnapshot(displays: [WindowLayoutDisplay], desktop: Int, snap: WindowLayoutCompletedSnap,
-                        selection: WindowLayoutSelection, budget: WindowControlBudget) -> WindowLayoutSnapshot {
+                        selection: WindowLayoutSelection, maximumWindows: Int, budget: WindowControlBudget,
+                        preparingFor scope: WindowLayoutScope? = nil) -> WindowLayoutSnapshot {
         dispatchPrecondition(condition: .onQueue(queue))
         func unavailable(_ reason: String) -> WindowLayoutSnapshot {
             WindowLayoutSnapshot(windows: [], displays: displays, complete: false, desktopGeneration: desktop, failureReason: reason)
@@ -1265,7 +1277,8 @@ final class SidebarWindowReader: @unchecked Sendable {
         guard SidebarPlacementGeometry.matches(anchor.frame, snap.verifiedFrame) else {
             return unavailable("The snapped window is still changing size or position.")
         }
-        guard let destination = displays.first(where: { $0.id == anchor.scope.displayID }),
+        let destinationScope = scope ?? anchor.scope
+        guard let destination = displays.first(where: { $0.id == destinationScope.displayID }),
               SidebarPlacementGeometry.matches(destination.workArea, snap.request.workArea) else {
             return unavailable("The snapped window's destination display changed.")
         }
@@ -1285,7 +1298,7 @@ final class SidebarWindowReader: @unchecked Sendable {
                 let intersection = display.frame.intersection(frame)
                 return (display.id, intersection.isNull ? 0 : intersection.width * intersection.height)
             }
-            guard overlaps.max(by: { $0.1 < $1.1 })?.0 == anchor.scope.displayID else { continue }
+            guard overlaps.max(by: { $0.1 < $1.1 })?.0 == destinationScope.displayID else { continue }
             let id = SidebarWindowID(pid: app.processIdentifier, windowID: number.uint32Value)
             guard id != snap.window else { continue }
             visible.append((id, order))
@@ -1294,11 +1307,12 @@ final class SidebarWindowReader: @unchecked Sendable {
         let membership = spaceReader.read(windowIDs: Set(visible.map { $0.0.windowID }), catalog: catalog)
         guard budget.isCurrent else { return unavailable("Window preparation took too long.") }
         let candidates = visible.compactMap { id, order -> WindowLayoutCandidate? in
-            guard let spaces = membership[id.windowID], spaces.count == 1, spaces[0].id == anchor.scope.spaceID else { return nil }
+            guard let spaces = membership[id.windowID], spaces.count == 1, spaces[0].id == destinationScope.spaceID else { return nil }
             return WindowLayoutCandidate(window: id, recency: recency[id] ?? 0, stackOrder: order)
         }
         return WindowLayoutPlanner.snapshot(anchor: anchor, candidates: candidates, displays: displays,
-            desktop: desktop, selection: selection, read: { candidate in
+            desktop: desktop, selection: selection, maximumWindows: maximumWindows,
+            preferredCompanion: snap.preferredCompanion, destination: scope, read: { candidate in
                 switch self.windowControlAccess.read(candidate.window, displays: displays, budget: budget,
                     recency: candidate.recency, stackOrder: candidate.stackOrder) {
                 case .window(let window): return .window(window)

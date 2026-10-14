@@ -89,6 +89,48 @@ struct WindowLayoutPlan {
     var windows: [WindowLayoutWindow] { [anchor] + peers }
 }
 
+struct WindowSnapSettings: Equatable {
+    let enabled: Bool
+    let selection: WindowLayoutSelection
+    let maximumWindows: Int
+    var mode: WindowSnapMode = .legacy
+
+    static func current() -> Self {
+        Self(enabled: WindowLayoutSettings.enabled(), selection: WindowLayoutSettings.selection(),
+             maximumWindows: WindowLayoutSettings.maximumWindows(), mode: WindowLayoutSettings.mode())
+    }
+}
+
+// Original frames/scopes are retained independently of the displayed destination frames.
+struct WindowLayoutPreparedSnap {
+    let plan: WindowLayoutPlan
+    let request: SidebarPlacementRequest
+    let displays: [WindowLayoutDisplay]
+    let settings: WindowSnapSettings
+    let generation: Int
+    let frontmostPID: pid_t?
+    let frontmostWindow: SidebarWindowID?
+    let fallbackReason: String?
+
+    func isCurrent(generation: Int, settings: WindowSnapSettings,
+                   displays: [WindowLayoutDisplay], frontmostPID: pid_t?) -> Bool {
+        self.generation == generation && self.settings == settings
+            && self.frontmostPID == frontmostPID && displaysMatch(displays)
+    }
+
+    func displaysMatch(_ current: [WindowLayoutDisplay]) -> Bool {
+        displays.count == current.count && displays.allSatisfy { old in
+            current.contains { $0.id == old.id && $0.frame == old.frame && $0.workArea == old.workArea && $0.scale == old.scale }
+        }
+    }
+}
+
+struct WindowLayoutSnapResult {
+    // Only setter results confirmed by live readback enter this list. It can describe a partial commit.
+    var achieved: [WindowLayoutIdentity: WindowLayoutWindow] = [:]
+    var reason: String?
+}
+
 enum WindowLayoutPlanningResult {
     case ready(WindowLayoutPlan)
     case rejected(String)
@@ -100,6 +142,8 @@ struct WindowLayoutCompletedSnap {
     let request: SidebarPlacementRequest
     let startedAt: TimeInterval
     var achievedFrame: CGRect? = nil
+    // Captured before placement changes focus; never substitute the newly snapped window.
+    var preferredCompanion: SidebarWindowID? = nil
 
     var verifiedFrame: CGRect { achievedFrame ?? request.frame }
 

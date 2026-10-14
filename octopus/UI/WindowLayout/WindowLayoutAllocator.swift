@@ -5,6 +5,11 @@ struct WindowLayoutSizeConstraint: Equatable {
     var minimum: CGSize
     var maximum: CGSize
 
+    // Read-only previews use app-reported bounds, never bounds inferred from a single old resize.
+    static func reported(for window: WindowLayoutWindow, workArea: CGRect) -> Self {
+        initial(for: window, workArea: workArea)
+    }
+
     static func initial(for window: WindowLayoutWindow, workArea: CGRect,
                         learned: WindowLayoutSizeConstraint? = nil) -> Self {
         let readable = WindowLayoutSettings.readabilityMinimum

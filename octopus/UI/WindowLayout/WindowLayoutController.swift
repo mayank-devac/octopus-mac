@@ -16,14 +16,17 @@ final class WindowLayoutController: ObservableObject {
     private var workspaceObservers: [NSObjectProtocol] = []
     private var pending: DispatchWorkItem?
     private var token: WindowLayoutBatchToken?
+    private var snapPreparation: WindowLayoutBatchToken?
     private var inputMonitor: Any?
     private var localInputMonitor: Any?
     private var generation = 0
     private var latestAction: TimeInterval = 0
     private var enabled = false
     private var selection = WindowLayoutSelection.mostRecent
+    private var maximumWindows = WindowLayoutSettings.defaultMaximumWindows
+    private var snapMode = WindowSnapMode.legacy
     private var trackingRefreshQueued = false
-    private var undo: (plan: WindowLayoutPlan, achieved: [WindowLayoutIdentity: CGRect])?
+    private var undo: (plan: WindowLayoutPlan, achieved: [WindowLayoutIdentity: CGRect], participants: Set<WindowLayoutIdentity>?)?
     private var pairUndo: WindowPairUndoRecord?
     private struct LearnedConstraint {
         let scope: WindowLayoutScope
@@ -45,16 +48,16 @@ final class WindowLayoutController: ObservableObject {
         })
         observers.append(center.addObserver(forName: Self.userActionNotification, object: nil, queue: .main) { [weak self] note in
             let startedAt = note.object as? TimeInterval ?? ProcessInfo.processInfo.systemUptime
-            Task { @MainActor in
+            MainActor.assumeIsolated {
                 self?.latestAction = max(self?.latestAction ?? 0, startedAt)
                 self?.cancel()
             }
         })
         observers.append(center.addObserver(forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { [weak self] _ in
-            Task { @MainActor in self?.cancel(); self?.learnedConstraints.removeAll() }
+            MainActor.assumeIsolated { self?.cancel(); self?.learnedConstraints.removeAll() }
         })
         observers.append(center.addObserver(forName: UserDefaults.didChangeNotification, object: nil, queue: .main) { [weak self] _ in
-            Task { @MainActor in self?.applySettings() }
+            MainActor.assumeIsolated { self?.applySettings() }
         })
         let workspace = NSWorkspace.shared.notificationCenter
         workspaceObservers.append(workspace.addObserver(forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main) { [weak self] _ in
@@ -66,7 +69,7 @@ final class WindowLayoutController: ObservableObject {
         for name in [NSWorkspace.activeSpaceDidChangeNotification, NSWorkspace.didWakeNotification,
                      NSWorkspace.didLaunchApplicationNotification, NSWorkspace.didTerminateApplicationNotification] {
             workspaceObservers.append(workspace.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
-                Task { @MainActor in
+                MainActor.assumeIsolated {
                     self?.cancel()
                     self?.learnedConstraints.removeAll()
                     self?.refreshTracking()
@@ -79,13 +82,19 @@ final class WindowLayoutController: ObservableObject {
     private func applySettings() {
         let next = WindowLayoutSettings.enabled()
         let nextSelection = WindowLayoutSettings.selection()
-        guard next != enabled || nextSelection != selection else { return }
+        let nextMaximumWindows = WindowLayoutSettings.maximumWindows()
+        let nextMode = WindowLayoutSettings.mode()
+        let trackingChanged = next != enabled || nextSelection != selection
+        guard next != enabled || nextSelection != selection || nextMaximumWindows != maximumWindows || nextMode != snapMode else { return }
         enabled = next
         selection = nextSelection
+        maximumWindows = nextMaximumWindows
+        snapMode = nextMode
         cancel()
         status = ""
-        if next { refreshTracking() }
-        else { reader.queue.async { [reader] in reader.removeObservers() } }
+        if next {
+            if trackingChanged { refreshTracking() }
+        } else { reader.queue.async { [reader] in reader.removeObservers() } }
     }
 
     // Baseline discovery only records focus; it never rearranges existing windows on launch.
@@ -108,7 +117,7 @@ final class WindowLayoutController: ObservableObject {
     }
 
     private func schedule(_ snap: WindowLayoutCompletedSnap) {
-        guard enabled, snap.request.snap != .maximize, snap.isCurrent(after: latestAction) else { return }
+        guard enabled, snapMode == .legacy, snap.request.snap != .maximize, snap.isCurrent(after: latestAction) else { return }
         if snap.request.snap?.isCorner == true && selection == .mostRecent { return }
         cancel()
         // The native writer already confirmed its frame. Prepare companions on the next turn.
@@ -130,6 +139,129 @@ final class WindowLayoutController: ObservableObject {
             DispatchQueue.main.async { completion(prepared) }
         }
         return token
+    }
+
+    @discardableResult func prepareSnap(window: SidebarWindowID, request: SidebarPlacementRequest,
+                         completion: @escaping (WindowLayoutPreparedSnap?) -> Void) -> WindowLayoutBatchToken {
+        snapPreparation?.cancel()
+        let displays = WindowLayoutDisplay.connected()
+        let settings = WindowSnapSettings.current()
+        let revision = generation
+        let batch = WindowLayoutBatchToken(frontmostPID: NSWorkspace.shared.frontmostApplication?.processIdentifier)
+        snapPreparation = batch
+        // Queueing, candidate reads and allocation share this bounded read-only budget.
+        let budget = WindowControlBudget(deadline: ProcessInfo.processInfo.systemUptime + 0.8,
+            canContinue: { !batch.isCancelled && NSWorkspace.shared.frontmostApplication?.processIdentifier == batch.frontmostPID })
+        reader.queue.async { [weak self, reader] in
+            let access = reader.windowControlAccess
+            let foregroundWindow = batch.frontmostPID.flatMap { access.focusedWindowID(pid: $0, budget: budget) }
+            var prepared: WindowLayoutPreparedSnap?
+            if let display = displays.first(where: { SidebarPlacementGeometry.matches($0.workArea, request.workArea) }),
+               let scope = access.visibleScope(on: display.id, budget: budget),
+               let anchor = access.read(window, displays: displays, budget: budget).window {
+                var snapshot: WindowLayoutSnapshot?
+                var preferred: SidebarWindowID?
+                if settings.enabled && !(request.snap?.isCorner == true && settings.selection == .mostRecent) {
+                    preferred = foregroundWindow
+                    let snap = WindowLayoutCompletedSnap(window: window, request: request,
+                        startedAt: ProcessInfo.processInfo.systemUptime, achievedFrame: anchor.frame, preferredCompanion: preferred)
+                    snapshot = reader.layoutSnapshot(displays: displays, desktop: revision, snap: snap,
+                        selection: settings.selection, maximumWindows: settings.maximumWindows, budget: budget, preparingFor: scope)
+                }
+                // A slow companion cannot block a primary window already read successfully.
+                // Keep its original snapshot; commit will revalidate it under a fresh write budget.
+                if !budget.isCurrent { snapshot = nil }
+                if !batch.isCancelled, AXIsProcessTrusted(),
+                   NSWorkspace.shared.frontmostApplication?.processIdentifier == batch.frontmostPID,
+                   let selected = WindowLayoutPlanner.preparedPlan(snapshot: snapshot, anchor: anchor,
+                    request: request, destination: scope, display: display, settings: settings,
+                    generation: revision, preferredCompanion: preferred) {
+                    prepared = WindowLayoutPreparedSnap(plan: selected.plan, request: request, displays: displays,
+                        settings: settings, generation: revision, frontmostPID: batch.frontmostPID,
+                        frontmostWindow: foregroundWindow,
+                        fallbackReason: selected.fallbackReason)
+                }
+            }
+            let result = prepared
+            DispatchQueue.main.async {
+                guard let self, self.snapPreparation === batch else { completion(nil); return }
+                guard !batch.isCancelled, self.generation == revision,
+                      WindowSnapSettings.current() == settings else {
+                    self.snapPreparation = nil
+                    completion(nil)
+                    return
+                }
+                // Keep the ready token so a Desktop/screen/settings change invalidates the visible preview too.
+                if result == nil { self.snapPreparation = nil }
+                completion(result)
+            }
+        }
+        return batch
+    }
+
+    // No legacy completedSnap notification is emitted: this operation already includes its companions.
+    func commitSnap(_ prepared: WindowLayoutPreparedSnap) {
+        let displays = WindowLayoutDisplay.connected()
+        guard prepared.settings.mode == .current,
+              prepared.isCurrent(generation: generation, settings: .current(), displays: displays,
+              frontmostPID: NSWorkspace.shared.frontmostApplication?.processIdentifier), AXIsProcessTrusted() else {
+            report("The preview changed; no windows were moved. Drag again.")
+            return
+        }
+        cancel()
+        latestAction = ProcessInfo.processInfo.systemUptime
+        let batch = WindowLayoutBatchToken(frontmostPID: prepared.frontmostPID)
+        token = batch
+        watchInput(batch)
+        let plan = prepared.plan
+        let budget = WindowControlBudget(deadline: ProcessInfo.processInfo.systemUptime + 4,
+            canContinue: { !batch.isCancelled && NSWorkspace.shared.frontmostApplication?.processIdentifier == batch.frontmostPID })
+        reader.queue.async { [weak self, reader] in
+            let access = reader.windowControlAccess
+            let foregroundUnchanged = prepared.frontmostWindow.map {
+                access.focusedWindowID(pid: $0.pid, budget: budget) == $0
+            } ?? true
+            let outcome = foregroundUnchanged ? WindowLayoutExecutor.applyPrepared(plan, canContinue: { budget.isCurrent },
+                read: { access.read($0.id.window, displays: displays, budget: budget).window },
+                write: { window, frame in
+                    access.write(window, frame: frame, workArea: plan.workArea, destination: plan.scope,
+                        displays: displays, budget: budget, policy: .preparedSnap,
+                        snap: window.id == plan.anchor.id ? plan.snap : nil)
+                }) : WindowLayoutSnapResult(reason: "The focused window changed; no windows were moved. Drag again.")
+            let focusCandidate: WindowLayoutWindow?
+            if let achieved = outcome.achieved[plan.anchor.id], budget.isCurrent,
+               prepared.frontmostWindow.map({ access.focusedWindowID(pid: $0.pid, budget: budget) == $0 }) ?? true,
+               let live = access.read(achieved.id.window, displays: displays, budget: budget, expected: achieved).window,
+               live.id == achieved.id, live.scope == achieved.scope, live.eligible,
+               SidebarPlacementGeometry.matches(live.frame, achieved.frame) { focusCandidate = live }
+            else { focusCandidate = nil }
+            DispatchQueue.main.async {
+                guard let self, self.token === batch else { return }
+                guard !batch.isCancelled else { self.finishInput(); self.token = nil; return }
+                // Undo only verified changed companions; it never returns the dragged window to another display.
+                let achievedPeers = Dictionary(uniqueKeysWithValues: plan.peers.compactMap { original -> (WindowLayoutIdentity, CGRect)? in
+                    guard let actual = outcome.achieved[original.id],
+                          !SidebarPlacementGeometry.matches(actual.frame, original.frame) else { return nil }
+                    return (original.id, actual.frame)
+                })
+                if !achievedPeers.isEmpty {
+                    self.undo = (plan, achievedPeers, Set(achievedPeers.keys))
+                    self.canUndo = true
+                }
+                if let reason = outcome.reason { self.report(reason) }
+                else if let reason = prepared.fallbackReason { self.report(reason) }
+                else { self.status = "Snapped \(outcome.achieved.count) window(s) with one size request each." }
+                guard let anchor = focusCandidate, AXIsProcessTrusted(),
+                      NSWorkspace.shared.frontmostApplication?.processIdentifier == batch.frontmostPID else {
+                    self.finishInput(); self.token = nil; return
+                }
+                access.focusConfirmed(anchor, token: batch) { [weak self] in
+                    guard let self, self.token === batch else { return }
+                    self.finishInput()
+                    self.token = nil
+                }
+            }
+        }
     }
 
     // An icon pair is an explicit two-window command, independent of automatic companion settings.
@@ -186,13 +318,14 @@ final class WindowLayoutController: ObservableObject {
     // Snapshot and execute share one deadline. Only current results can update Undo or learned limits.
     private func adjust(_ snap: WindowLayoutCompletedSnap) {
         pending = nil
-        guard enabled, AXIsProcessTrusted() else { return }
+        guard enabled, snapMode == .legacy, AXIsProcessTrusted() else { return }
         let requestGeneration = generation
         let batch = WindowLayoutBatchToken(frontmostPID: NSWorkspace.shared.frontmostApplication?.processIdentifier)
         token = batch
         watchInput(batch)
         let displays = WindowLayoutDisplay.connected()
         let selection = self.selection
+        let maximumWindows = self.maximumWindows
         let logger = self.logger
         let knownConstraints = learnedConstraints
         let cacheLifetime = Self.constraintCacheLifetime
@@ -208,7 +341,7 @@ final class WindowLayoutController: ObservableObject {
                 return
             }
             let snapshot = reader.layoutSnapshot(displays: displays, desktop: requestGeneration,
-                snap: snap, selection: selection, budget: budget)
+                snap: snap, selection: selection, maximumWindows: maximumWindows, budget: budget)
             let applicable = Dictionary(uniqueKeysWithValues: snapshot.windows.compactMap { window -> (WindowLayoutIdentity, WindowLayoutSizeConstraint)? in
                 guard let record = knownConstraints[window.id], record.scope == window.scope,
                       SidebarPlacementGeometry.matches(record.workArea, snap.request.workArea),
@@ -221,7 +354,8 @@ final class WindowLayoutController: ObservableObject {
             })
             let planning: WindowLayoutPlanningResult = ProcessInfo.processInfo.systemUptime < deadline
                 ? WindowLayoutPlanner.plan(snapshot: snapshot, anchorID: snap.window, request: snap.request,
-                    selection: selection, learned: applicable, achievedFrame: snap.achievedFrame)
+                    selection: selection, maximumWindows: maximumWindows, preferredCompanion: snap.preferredCompanion,
+                    learned: applicable, achievedFrame: snap.achievedFrame)
                 : .rejected("Window preparation took too long; your snap stays in place.")
             var result: WindowLayoutBatchResult?
             var plan: WindowLayoutPlan?
@@ -256,7 +390,7 @@ final class WindowLayoutController: ObservableObject {
                     guard let plan, let result else { return }
                     switch result {
                     case .applied(let actual):
-                        self.undo = (plan, actual)
+                        self.undo = (plan, actual, nil)
                         self.canUndo = true
                         self.status = "Arranged \(plan.windows.count) windows around their size limits."
                         self.logger.notice("Adjusted \(plan.peers.count, privacy: .public) peers, display \(plan.scope.displayID, privacy: .public), Desktop \(plan.scope.spaceID, privacy: .public), anchor \(String(describing: plan.anchor.frame), privacy: .public), actual \(String(describing: actual), privacy: .public)")
@@ -265,7 +399,7 @@ final class WindowLayoutController: ObservableObject {
                            plan.windows.contains(where: { window in
                                progress[window.id].map { !SidebarPlacementGeometry.matches($0, window.frame) } == true
                            }) {
-                            self.undo = (plan, progress)
+                            self.undo = (plan, progress, nil)
                             self.canUndo = true
                         }
                         self.report(reason)
@@ -329,7 +463,7 @@ final class WindowLayoutController: ObservableObject {
                 write: { window, frame, _ in
                     access.write(window, frame: frame, workArea: undo.plan.workArea,
                         destination: undo.plan.scope, displays: displays, budget: budget, policy: .sameDisplayAdjustment)
-                }, deadline: deadline)
+                }, deadline: deadline, participants: undo.participants)
             DispatchQueue.main.async {
                 guard let self, self.token === batch else { return }
                 self.finishInput()
@@ -401,6 +535,8 @@ final class WindowLayoutController: ObservableObject {
 
     private func cancel() {
         generation += 1
+        snapPreparation?.cancel()
+        snapPreparation = nil
         pending?.cancel()
         pending = nil
         token?.cancel()

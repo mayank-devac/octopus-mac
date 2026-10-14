@@ -1,14 +1,24 @@
 import SwiftUI
 
 struct PreferencesWindowLayoutView: View {
+    @AppStorage(WindowLayoutSettings.modeKey) private var mode = WindowSnapMode.legacy.rawValue
     @AppStorage(WindowLayoutSettings.enabledKey) private var enabled = true
     @AppStorage(WindowLayoutSettings.selectionKey) private var selection = WindowLayoutSelection.mostRecent.rawValue
+    @AppStorage(WindowLayoutSettings.maximumWindowsKey) private var maximumWindows = WindowLayoutSettings.defaultMaximumWindows
     @AppStorage(WindowLayoutSettings.moveSizeKey) private var moveSize = VisibleDisplayMoveSize.fullScreen.rawValue
     @EnvironmentObject private var controller: WindowLayoutController
 
     var body: some View {
         Form {
             Section {
+                Picker("Snap behaviour", selection: $mode) {
+                    ForEach(WindowSnapMode.allCases, id: \.rawValue) { choice in Text(choice.title).tag(choice.rawValue) }
+                }
+                .pickerStyle(.menu)
+                Text(mode == WindowSnapMode.current.rawValue
+                    ? "Current shows the selected layout before release and requests each window size once. If an app refuses, its accepted size stays and further adjustment stops."
+                    : "Legacy shows the dragged window’s target, then adjusts the other windows after release. It can retry resizing and shift the layout to fit app limits.")
+                    .foregroundStyle(.secondary)
                 Toggle("Adjust windows when snapping", isOn: $enabled)
                     .help("Arrange the selected normal windows beside the snapped window. The split may shift to fit app size limits.")
                 Picker("Adjust", selection: $selection) {
@@ -16,7 +26,14 @@ struct PreferencesWindowLayoutView: View {
                 }
                 .pickerStyle(.menu)
                 .disabled(!enabled)
-                Text("The selected windows share the remaining area; Octopus can move the split so an app fits its minimum size. Corner snaps adjust companions only when at least two are selected.")
+                if selection == WindowLayoutSelection.allNormal.rawValue {
+                    Stepper("Maximum windows per snap: \(WindowLayoutSettings.normalizedMaximumWindows(maximumWindows))",
+                            value: $maximumWindows, in: WindowLayoutSettings.maximumWindowsRange)
+                        .disabled(!enabled)
+                    Text("Includes the snapped window, the window you were using before the snap, then other recently used windows on this display and Desktop. Older windows stay in place and may be covered by the selected layout.")
+                        .foregroundStyle(.secondary)
+                }
+                Text("Dragging shows a preview; windows resize after you release. The selected windows share the remaining area; Octopus can move the split so an app fits its minimum size. Corner snaps adjust companions only when at least two are selected.")
                     .foregroundStyle(.secondary)
             }
             Section {
@@ -37,7 +54,9 @@ struct PreferencesWindowLayoutView: View {
             Section {
                 Button("Undo last adjustment") { controller.undoAdjustment() }
                     .disabled(!controller.canUndo)
-                    .help("Undo a pair restores both unchanged windows on their original visible Desktops. Undo an edge layout restores the snapped window and companions if they have not changed.")
+                    .help(mode == WindowSnapMode.current.rawValue
+                        ? "Undo restores verified companions and keeps the dragged window snapped. Undo a pair restores both unchanged windows on their original visible Desktops."
+                        : "Undo an edge layout restores the snapped window and companions if they have not changed. Undo a pair restores both unchanged windows on their original visible Desktops.")
                 if !controller.status.isEmpty { Text(controller.status).foregroundStyle(.secondary) }
             }
         }

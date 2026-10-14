@@ -6,6 +6,65 @@ enum WindowLayoutBatchResult {
 }
 
 enum WindowLayoutExecutor {
+    // Commit exactly the previewed targets, dragged window first. Never learn/reallocate/retry here.
+    static func applyPrepared(_ plan: WindowLayoutPlan, canContinue: () -> Bool,
+                              read: (WindowLayoutWindow) -> WindowLayoutWindow?,
+                              write: (WindowLayoutWindow, CGRect) -> SidebarPlacementResult) -> WindowLayoutSnapResult {
+        var result = WindowLayoutSnapResult()
+        func stop(_ reason: String) -> WindowLayoutSnapResult {
+            result.reason = reason
+            return result
+        }
+        let windows = plan.windows
+        guard Set(windows.map(\.id)).count == windows.count, plan.frames.count == windows.count,
+              windows.allSatisfy({ original in
+                  guard canContinue(), let live = read(original) else { return false }
+                  return live.id == original.id && live.scope == original.scope && live.eligible
+                      && live.minimum == original.minimum && live.minimumReported == original.minimumReported
+                      && SidebarPlacementGeometry.matches(live.frame, original.frame)
+              }) else { return stop("The preview is stale; no windows were changed. Drag again.") }
+
+        for original in windows {
+            guard canContinue(), let target = plan.frames[original.id], let live = read(original),
+                  live.id == original.id, live.scope == original.scope, live.eligible,
+                  live.minimum == original.minimum, live.minimumReported == original.minimumReported,
+                  SidebarPlacementGeometry.matches(live.frame, original.frame) else {
+                return stop("A window changed; the remaining windows were left untouched.")
+            }
+            let placed: SidebarPlacementResult
+            if live.scope == plan.scope && SidebarPlacementGeometry.matches(live.frame, target) {
+                placed = .placed(live.frame, adjusted: false)
+            } else { placed = write(live, target) }
+            switch placed {
+            case .cancelled: return stop("Snap interrupted; achieved positions were kept.")
+            case .failed(let reason): return stop(reason)
+            case .placed(let frame, _):
+                guard canContinue(), let actual = read(original), actual.id == original.id,
+                      actual.scope == plan.scope, actual.eligible,
+                      SidebarPlacementGeometry.matches(actual.frame, frame) else {
+                    return stop("The resulting window state is unconfirmed; remaining windows were left untouched.")
+                }
+                result.achieved[original.id] = actual
+                guard SidebarPlacementGeometry.matches(actual.frame, target) else {
+                    return stop("The app accepted a different size or position. It was kept; remaining windows were left untouched.")
+                }
+            }
+        }
+        // A later setter must not conceal an external change to an earlier participant.
+        guard windows.allSatisfy({ original in
+            guard canContinue(), let expected = result.achieved[original.id], let live = read(original) else { return false }
+            return live.id == expected.id && live.scope == expected.scope && live.eligible
+                && SidebarPlacementGeometry.matches(live.frame, expected.frame)
+        }) else { return stop("The layout changed before confirmation; achieved positions were kept.") }
+        if plan.peers.count > 0 {
+            let frames = windows.compactMap { result.achieved[$0.id]?.frame }
+            guard frames.enumerated().allSatisfy({ index, frame in
+                !frames.dropFirst(index + 1).contains { WindowLayoutPlanner.overlaps(frame, $0) }
+            }) else { return stop("The apps did not confirm a non-overlapping layout.") }
+        }
+        return result
+    }
+
     // Learn an app's hidden size limit only from its verified post-write frame, then redistribute.
     static func apply(_ plan: WindowLayoutPlan, canContinue: () -> Bool,
                       read: (WindowLayoutIdentity) -> WindowLayoutWindow?,
@@ -125,10 +184,11 @@ enum WindowLayoutExecutor {
                         read: (WindowLayoutIdentity) -> WindowLayoutWindow?,
                         write: (WindowLayoutWindow, CGRect, TimeInterval) -> SidebarPlacementResult,
                         clock: () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
-                        deadline requestedDeadline: TimeInterval? = nil) -> WindowLayoutBatchResult {
+                        deadline requestedDeadline: TimeInterval? = nil,
+                        participants: Set<WindowLayoutIdentity>? = nil) -> WindowLayoutBatchResult {
         let deadline = requestedDeadline ?? clock() + 4
-        let order = plan.peers + [plan.anchor]
-        guard achieved.count == order.count, order.allSatisfy({ original in
+        let order = (plan.peers + [plan.anchor]).filter { participants?.contains($0.id) ?? true }
+        guard !order.isEmpty, achieved.count == order.count, order.allSatisfy({ original in
             guard canContinue(), clock() < deadline,
                   let live = read(original.id), let frame = achieved[original.id] else { return false }
             return live.id == original.id && live.scope == plan.scope && live.eligible
