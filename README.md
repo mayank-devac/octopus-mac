@@ -30,7 +30,7 @@
 Octopus is a macOS window switcher and window-management app. This repository is
 Mayank Baral's modified version of the original Octopus by Xander Gouws and Omar Hayat.
 
-Source code: [mayank-devac/octopus-mac](https://github.com/mayank-devac/octopus-mac).
+download beta : [octopus-dist](https://github.com/mayank-devac/octopus-dist/releases).
 
 ## See Octopus in action
 
