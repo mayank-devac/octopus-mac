@@ -4,7 +4,7 @@ enum WindowSnapMode: String, CaseIterable {
     case legacy, current
 
     static func saved(_ value: String?) -> Self { value.flatMap(Self.init(rawValue:)) ?? .legacy }
-    var title: String { self == .legacy ? "Legacy (default)" : "Current" }
+    var title: String { self == .legacy ? "Legacy (default)" : "Current (Beta)" }
 }
 
 enum WindowLayoutSelection: String, CaseIterable {

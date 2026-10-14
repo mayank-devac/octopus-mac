@@ -189,14 +189,7 @@ struct ProfileDetailView: View {
                         profile.profileNumber = oldValue
                     }
                 }
-            } footer: {
-                if let number = profile.profileNumber {
-                    Text("\(modifierManager.profileModifierSymbols)\(number)")
-                        .foregroundStyle(.tertiary)
-                } else {
-                    Text("No shortcut assigned")
-                        .foregroundStyle(.tertiary)
-                }
+                .help(profile.profileNumber.map { "\(modifierManager.profileModifierSymbols)\($0)" } ?? "No shortcut assigned")
             }
             
             Section("Application Bindings") {

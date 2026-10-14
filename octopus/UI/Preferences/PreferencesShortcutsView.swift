@@ -122,16 +122,10 @@ struct PreferencesShortcutsView: View {
     var body: some View {
         Form {
             Section {
-                VStack(alignment: .leading, spacing: 16) {
-                    Text("Use the selection boxes below to customize modifier keys for switching and binding apps, and profile switching.\n\nTo disable an action, deselect all modifier checkboxes in that row.")
-                        .font(.body)
-                        .foregroundColor(.secondary)
-
-                    Button("Reset keyboard modifiers") {
-                        showingResetConfirmation = true
-                    }
-                    .buttonStyle(.bordered)
+                Button("Reset keyboard modifiers") {
+                    showingResetConfirmation = true
                 }
+                .buttonStyle(.bordered)
             }
 
             Section {
@@ -189,15 +183,11 @@ struct PreferencesShortcutsView: View {
                     }
                     .padding(.top, 4)
                 }
-            } footer: {
-                Text("⌃ Control  •  ⌥ Option  •  ⇧ Shift  •  ⌘ Command")
             }
 
             Section {
                 Toggle("Use numpad digits for shortcuts", isOn: $modifierManager.numpadShortcutsEnabled)
                     .toggleStyle(.checkbox)
-            } footer: {
-                Text("Also use numpad 0–9 for app and profile shortcuts. These combinations may conflict with other apps.")
             }
 
             Section {
@@ -216,8 +206,6 @@ struct PreferencesShortcutsView: View {
                 }
             } header: {
                 Text("Move focused window between monitors")
-            } footer: {
-                Text("Default: Control + Shift + arrows. Moves on key release to the next monitor’s visible desktop, wrapping at either end. Order is left to right, then top to bottom when stacked. Uses your monitor-move size setting. Global shortcuts can conflict with other apps. Full-screen windows and dialogs are excluded.")
             }
 
             Section {
@@ -294,15 +282,13 @@ struct PreferencesShortcutsView: View {
                     .accessibilityLabel("Disable sidebar movement shortcut")
                 }
                 .help("Start scrolling over the sidebar, then keep holding the selected modifiers to continue moving it anywhere. Release a selected modifier to finish. If macOS Accessibility Zoom uses the same gesture, choose a different modifier.")
+                .background {
+                    PreferencesFormSizeReader { height in
+                        if formHeight == nil || abs((formHeight ?? 0) - height) > 0.5 { formHeight = height }
+                    }
+                }
             } header: {
                 Text("Mouse shortcuts")
-            } footer: {
-                Text("Click and drag shortcuts work on sidebar app icons only. Inactive apps focus first. Click Record, then click that button with your chosen mouse button; modifier keys are optional. Escape cancels. Hide and minimise must use different shortcuts. To move the sidebar, hold the selected modifiers and turn the wheel over it. Clearing all modifiers disables movement.")
-                    .background {
-                        PreferencesFormSizeReader { height in
-                            if formHeight == nil || abs((formHeight ?? 0) - height) > 0.5 { formHeight = height }
-                        }
-                    }
             }
 
         }
