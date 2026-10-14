@@ -22,6 +22,7 @@ final class WindowLayoutController: ObservableObject {
     private var latestAction: TimeInterval = 0
     private var enabled = false
     private var selection = WindowLayoutSelection.mostRecent
+    private var maximumWindows = WindowLayoutSettings.defaultMaximumWindows
     private var trackingRefreshQueued = false
     private var undo: (plan: WindowLayoutPlan, achieved: [WindowLayoutIdentity: CGRect])?
     private var pairUndo: WindowPairUndoRecord?
@@ -79,9 +80,11 @@ final class WindowLayoutController: ObservableObject {
     private func applySettings() {
         let next = WindowLayoutSettings.enabled()
         let nextSelection = WindowLayoutSettings.selection()
-        guard next != enabled || nextSelection != selection else { return }
+        let nextMaximumWindows = WindowLayoutSettings.maximumWindows()
+        guard next != enabled || nextSelection != selection || nextMaximumWindows != maximumWindows else { return }
         enabled = next
         selection = nextSelection
+        maximumWindows = nextMaximumWindows
         cancel()
         status = ""
         if next { refreshTracking() }
@@ -193,6 +196,7 @@ final class WindowLayoutController: ObservableObject {
         watchInput(batch)
         let displays = WindowLayoutDisplay.connected()
         let selection = self.selection
+        let maximumWindows = self.maximumWindows
         let logger = self.logger
         let knownConstraints = learnedConstraints
         let cacheLifetime = Self.constraintCacheLifetime
@@ -208,7 +212,7 @@ final class WindowLayoutController: ObservableObject {
                 return
             }
             let snapshot = reader.layoutSnapshot(displays: displays, desktop: requestGeneration,
-                snap: snap, selection: selection, budget: budget)
+                snap: snap, selection: selection, maximumWindows: maximumWindows, budget: budget)
             let applicable = Dictionary(uniqueKeysWithValues: snapshot.windows.compactMap { window -> (WindowLayoutIdentity, WindowLayoutSizeConstraint)? in
                 guard let record = knownConstraints[window.id], record.scope == window.scope,
                       SidebarPlacementGeometry.matches(record.workArea, snap.request.workArea),
@@ -221,7 +225,7 @@ final class WindowLayoutController: ObservableObject {
             })
             let planning: WindowLayoutPlanningResult = ProcessInfo.processInfo.systemUptime < deadline
                 ? WindowLayoutPlanner.plan(snapshot: snapshot, anchorID: snap.window, request: snap.request,
-                    selection: selection, learned: applicable, achievedFrame: snap.achievedFrame)
+                    selection: selection, maximumWindows: maximumWindows, learned: applicable, achievedFrame: snap.achievedFrame)
                 : .rejected("Window preparation took too long; your snap stays in place.")
             var result: WindowLayoutBatchResult?
             var plan: WindowLayoutPlan?

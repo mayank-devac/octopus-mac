@@ -22,12 +22,14 @@ enum WindowLayoutPlanner {
     // Only selected candidates incur Accessibility metadata reads. Frames are still read live.
     static func snapshot(anchor: WindowLayoutWindow, candidates: [WindowLayoutCandidate],
                          displays: [WindowLayoutDisplay], desktop: Int, selection: WindowLayoutSelection,
+                         maximumWindows: Int = WindowLayoutSettings.defaultMaximumWindows,
                          read: (WindowLayoutCandidate) -> WindowLayoutCandidateResolution) -> WindowLayoutSnapshot {
         let ordered = candidates.sorted { a, b in
             if a.recency != b.recency { return a.recency > b.recency }
             if a.stackOrder != b.stackOrder { return a.stackOrder < b.stackOrder }
             return a.window.windowID < b.window.windowID
         }
+        let limit = WindowLayoutSettings.normalizedMaximumWindows(maximumWindows)
         var windows = [anchor]
         var complete = true
         for candidate in ordered where candidate.window != anchor.id.window {
@@ -38,7 +40,7 @@ enum WindowLayoutPlanner {
             }
             guard window.visible, !window.blocked else { continue }
             windows.append(window)
-            if selection == .mostRecent { break }
+            if selection == .mostRecent || windows.count >= limit { break }
         }
         return WindowLayoutSnapshot(windows: windows, displays: displays, complete: complete, desktopGeneration: desktop)
     }
@@ -58,6 +60,7 @@ enum WindowLayoutPlanner {
     // its dividing line can move only when a reported or recently observed app bound requires it.
     static func plan(snapshot: WindowLayoutSnapshot, anchorID: SidebarWindowID,
                      request: SidebarPlacementRequest, selection: WindowLayoutSelection = .mostRecent,
+                     maximumWindows: Int = WindowLayoutSettings.defaultMaximumWindows,
                      learned: [WindowLayoutIdentity: WindowLayoutSizeConstraint] = [:],
                      achievedFrame: CGRect? = nil) -> WindowLayoutPlanningResult {
         if !snapshot.complete { return .rejected(snapshot.failureReason ?? "An open window could not be verified. Your snap stays in place.") }
@@ -76,7 +79,8 @@ enum WindowLayoutPlanner {
             if a.stackOrder != b.stackOrder { return a.stackOrder < b.stackOrder }
             return a.id.window.windowID < b.id.window.windowID
         }
-        let selected = selection == .mostRecent ? Array(ordered.prefix(1)) : ordered
+        let companionLimit = selection == .mostRecent ? 1 : WindowLayoutSettings.normalizedMaximumWindows(maximumWindows) - 1
+        let selected = Array(ordered.prefix(companionLimit))
         // One selected companion stays untouched. Recent mode therefore never rearranges corners.
         if snap.isCorner && selected.count < 2 { return .noPeer }
         guard !selected.isEmpty else { return .noPeer }

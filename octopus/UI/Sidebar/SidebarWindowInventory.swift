@@ -1249,7 +1249,7 @@ final class SidebarWindowReader: @unchecked Sendable {
     // CG/Space data narrows candidates; only selected normal AX windows pay for metadata reads.
     // Known non-normal surfaces are skipped, while an unknown provider failure keeps the snapshot incomplete.
     func layoutSnapshot(displays: [WindowLayoutDisplay], desktop: Int, snap: WindowLayoutCompletedSnap,
-                        selection: WindowLayoutSelection, budget: WindowControlBudget) -> WindowLayoutSnapshot {
+                        selection: WindowLayoutSelection, maximumWindows: Int, budget: WindowControlBudget) -> WindowLayoutSnapshot {
         dispatchPrecondition(condition: .onQueue(queue))
         func unavailable(_ reason: String) -> WindowLayoutSnapshot {
             WindowLayoutSnapshot(windows: [], displays: displays, complete: false, desktopGeneration: desktop, failureReason: reason)
@@ -1298,7 +1298,7 @@ final class SidebarWindowReader: @unchecked Sendable {
             return WindowLayoutCandidate(window: id, recency: recency[id] ?? 0, stackOrder: order)
         }
         return WindowLayoutPlanner.snapshot(anchor: anchor, candidates: candidates, displays: displays,
-            desktop: desktop, selection: selection, read: { candidate in
+            desktop: desktop, selection: selection, maximumWindows: maximumWindows, read: { candidate in
                 switch self.windowControlAccess.read(candidate.window, displays: displays, budget: budget,
                     recency: candidate.recency, stackOrder: candidate.stackOrder) {
                 case .window(let window): return .window(window)

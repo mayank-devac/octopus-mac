@@ -166,10 +166,11 @@ struct WindowLayoutTests {
     }
 
     private func ready(_ snap: SidebarSnapTarget = .left, peers: [WindowLayoutWindow]? = nil,
-                       selection: WindowLayoutSelection = .mostRecent) throws -> WindowLayoutPlan {
+                       selection: WindowLayoutSelection = .mostRecent,
+                       maximumWindows: Int = WindowLayoutSettings.defaultMaximumWindows) throws -> WindowLayoutPlan {
         let anchor = window(1, frame: target(snap), recency: 99)
         let result = WindowLayoutPlanner.plan(snapshot: snapshot([anchor] + (peers ?? [window(2)])),
-            anchorID: anchor.id.window, request: request(snap), selection: selection)
+            anchorID: anchor.id.window, request: request(snap), selection: selection, maximumWindows: maximumWindows)
         guard case .ready(let plan) = result else { Issue.record("Fixture should produce a ready plan"); throw FixtureError.notReady }
         return plan
     }
@@ -244,7 +245,7 @@ struct WindowLayoutTests {
 
     @Test func largerCornerGroupsFillAreaAndTryNearbyPopulationsForLimits() throws {
         let peers = (2...7).map { window(UInt32($0), recency: UInt64(10 - $0), minimum: CGSize(width: 320, height: 240)) }
-        let plan = try ready(.topRight, peers: peers, selection: .allNormal)
+        let plan = try ready(.topRight, peers: peers, selection: .allNormal, maximumWindows: 7)
         let frames = plan.windows.map { plan.frames[$0.id]! }
         #expect(frames.reduce(CGFloat(0)) { $0 + $1.width * $1.height } == area.width * area.height)
         for (index, frame) in frames.enumerated() {
@@ -256,7 +257,7 @@ struct WindowLayoutTests {
         let constrained = try ready(.topRight,
             peers: [window(2, recency: 9, minimum: CGSize(width: 900, height: 550)),
                     window(3, recency: 8, minimum: CGSize(width: 320, height: 450)),
-                    window(4, recency: 7)], selection: .allNormal)
+                    window(4, recency: 7)], selection: .allNormal, maximumWindows: 4)
         #expect(constrained.frames[window(2).id]?.height == 900)
         #expect((constrained.frames[window(3).id]?.height ?? 0) >= 450)
     }
@@ -369,7 +370,7 @@ struct WindowLayoutTests {
                      window(3, minimum: CGSize(width: 400, height: 200)),
                      window(4, minimum: CGSize(width: 400, height: 200)),
                      window(5, minimum: CGSize(width: 400, height: 200))]
-        let plan = try ready(.left, peers: peers, selection: .allNormal)
+        let plan = try ready(.left, peers: peers, selection: .allNormal, maximumWindows: 5)
         let tall = try #require(plan.frames[peers[0].id])
         #expect(tall.height == area.height)
         #expect(peers.dropFirst().allSatisfy { plan.frames[$0.id]?.minX == tall.maxX })
@@ -408,9 +409,11 @@ struct WindowLayoutTests {
             let result = WindowLayoutPlanner.plan(snapshot: snapshot([anchor, peer]), anchorID: anchor.id.window, request: request(.left))
             guard case .rejected = result else { Issue.record("Ineligible or oversized peer must reject"); continue }
         }
-        let crowded = WindowLayoutPlanner.plan(snapshot: snapshot([anchor] + (2...21).map { window(UInt32($0)) }),
-            anchorID: anchor.id.window, request: request(.left), selection: .allNormal)
-        guard case .rejected = crowded else { Issue.record("Readability shortage must reject"); return }
+        // Seven companions need more total area than the display provides, even at the largest cap.
+        let crowded = WindowLayoutPlanner.plan(snapshot: snapshot([anchor] + (2...8).map {
+            window(UInt32($0), minimum: CGSize(width: 500, height: 400))
+        }), anchorID: anchor.id.window, request: request(.left), selection: .allNormal, maximumWindows: 8)
+        guard case .rejected = crowded else { Issue.record("Selected windows that cannot fit must reject"); return }
         let impossible = WindowLayoutPlanner.plan(snapshot: snapshot([
             window(1, frame: target(.top), minimum: CGSize(width: 320, height: 500)),
             window(2, minimum: CGSize(width: 320, height: 600))]),
@@ -662,6 +665,41 @@ struct WindowLayoutTests {
         #expect(WindowLayoutSettings.selection(in: defaults) == .mostRecent)
         defaults.set(WindowLayoutSelection.allNormal.rawValue, forKey: WindowLayoutSettings.selectionKey)
         #expect(WindowLayoutSettings.selection(in: defaults) == .allNormal)
+    }
+
+    @Test func defaultWindowCapReadsAndPlansOnlyTwoRecentCompanions() throws {
+        let anchor = window(1, frame: target(.left))
+        let candidates = (2...101).map { number in
+            WindowLayoutCandidate(window: window(UInt32(number)).id.window,
+                recency: UInt64(number), stackOrder: number)
+        }
+        var reads: [UInt32] = []
+        let selected = WindowLayoutPlanner.snapshot(anchor: anchor, candidates: candidates,
+            displays: snapshot([]).displays, desktop: 0, selection: .allNormal, read: { candidate in
+                reads.append(candidate.window.windowID)
+                return .window(window(candidate.window.windowID, recency: candidate.recency))
+            })
+        #expect(selected.complete && reads == [101, 100])
+        #expect(selected.windows.map(\.id.window.windowID) == [1, 101, 100])
+        let planned = WindowLayoutPlanner.plan(snapshot: snapshot([anchor, window(2, recency: 2),
+            window(3, recency: 3), window(4, recency: 4)]), anchorID: anchor.id.window,
+            request: request(.left), selection: .allNormal)
+        guard case .ready(let plan) = planned else { Issue.record("Capped layout should be ready"); return }
+        #expect(plan.peers.map(\.id.window.windowID) == [4, 3])
+        #expect(plan.frames[window(2).id] == nil)
+    }
+
+    @Test func windowCapDefaultsToThreeAndPreservesSavedValues() throws {
+        let suite = "WindowLayoutCapTests.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        #expect(WindowLayoutSettings.maximumWindows(in: defaults) == 3)
+        defaults.set(6, forKey: WindowLayoutSettings.maximumWindowsKey)
+        #expect(WindowLayoutSettings.maximumWindows(in: defaults) == 6)
+        defaults.set(-10, forKey: WindowLayoutSettings.maximumWindowsKey)
+        #expect(WindowLayoutSettings.maximumWindows(in: defaults) == 2)
+        defaults.set(100, forKey: WindowLayoutSettings.maximumWindowsKey)
+        #expect(WindowLayoutSettings.maximumWindows(in: defaults) == 8)
     }
 
     @Test func lateCompletionCannotOverrideANewerUserAction() {

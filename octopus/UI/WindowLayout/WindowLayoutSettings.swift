@@ -19,6 +19,19 @@ enum WindowLayoutSettings {
     static let enabledKey = "windowLayoutEnabled"
     static let selectionKey = "windowLayoutSelection"
     static let moveSizeKey = "visibleDisplayMoveSize"
+    static let maximumWindowsKey = "windowLayoutMaximumWindows"
+    static let defaultMaximumWindows = 3
+    static let maximumWindowsRange = 2...8
+
+    static func normalizedMaximumWindows(_ value: Int) -> Int {
+        min(maximumWindowsRange.upperBound, max(maximumWindowsRange.lowerBound, value))
+    }
+
+    static func maximumWindows(in defaults: UserDefaults = .standard) -> Int {
+        guard defaults.object(forKey: maximumWindowsKey) != nil else { return defaultMaximumWindows }
+        return normalizedMaximumWindows(defaults.integer(forKey: maximumWindowsKey))
+    }
+
     static let readabilityMinimum = CGSize(width: 320, height: 200)
 
     static func enabled(in defaults: UserDefaults = .standard) -> Bool {

@@ -4,6 +4,7 @@ struct PreferencesWindowLayoutView: View {
     @AppStorage(WindowLayoutSettings.enabledKey) private var enabled = true
     @AppStorage(WindowLayoutSettings.selectionKey) private var selection = WindowLayoutSelection.mostRecent.rawValue
     @AppStorage(WindowLayoutSettings.moveSizeKey) private var moveSize = VisibleDisplayMoveSize.fullScreen.rawValue
+    @AppStorage(WindowLayoutSettings.maximumWindowsKey) private var maximumWindows = WindowLayoutSettings.defaultMaximumWindows
     @EnvironmentObject private var controller: WindowLayoutController
 
     var body: some View {
@@ -16,6 +17,13 @@ struct PreferencesWindowLayoutView: View {
                 }
                 .pickerStyle(.menu)
                 .disabled(!enabled)
+                if selection == WindowLayoutSelection.allNormal.rawValue {
+                    Stepper("Maximum windows per snap: \(WindowLayoutSettings.normalizedMaximumWindows(maximumWindows))",
+                            value: $maximumWindows, in: WindowLayoutSettings.maximumWindowsRange)
+                        .disabled(!enabled)
+                    Text("Includes the snapped window and the most recently used other windows on this display and Desktop. Older windows stay in place and may be covered by the selected layout.")
+                        .foregroundStyle(.secondary)
+                }
                 Text("The selected windows share the remaining area; Octopus can move the split so an app fits its minimum size. Corner snaps adjust companions only when at least two are selected.")
                     .foregroundStyle(.secondary)
             }
