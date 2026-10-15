@@ -218,17 +218,20 @@ final class WindowControlAccess: @unchecked Sendable {
     func write(_ expected: WindowLayoutWindow, frame: CGRect, workArea: CGRect,
                destination: WindowLayoutScope, displays: [WindowLayoutDisplay], budget: WindowControlBudget,
                policy: WindowFrameWritePolicy, resize: Bool = true,
-               requireFocused: Bool = false, snap: SidebarSnapTarget? = nil) -> SidebarPlacementResult {
+               requireFocused: Bool = false, snap: SidebarSnapTarget? = nil,
+               allowCovered: Bool = false) -> SidebarPlacementResult {
         dispatchPrecondition(condition: .onQueue(queue))
         guard budget.isCurrent, scopeIsVisible(destination, displays: displays),
-              let current = read(expected.id.window, displays: displays, budget: budget, expected: expected).window,
+              let current = read(expected.id.window, displays: displays, budget: budget,
+                expected: expected, forFocus: allowCovered).window,
               current.scope == expected.scope, current.movable, (!resize || current.canResize),
               SidebarPlacementGeometry.matches(current.frame, expected.frame) else { return .cancelled }
         guard case .resolved(let handle) = resolve(expected.id.window, budget), handle.id == expected.id else { return .cancelled }
         // Recheck immediately before each setter; an app can close, show a sheet or change Desktop mid-write.
         func permitted() -> Bool {
             guard budget.isCurrent, scopeIsVisible(destination, displays: displays),
-                  let live = read(expected.id.window, displays: displays, budget: budget, expected: expected).window,
+                  let live = read(expected.id.window, displays: displays, budget: budget,
+                    expected: expected, forFocus: allowCovered).window,
                   live.movable, (!resize || live.canResize) else { return false }
             if requireFocused {
                 guard focusedWindowID(pid: expected.id.window.pid, budget: budget) == expected.id.window,
@@ -276,7 +279,8 @@ final class WindowControlAccess: @unchecked Sendable {
                 }, acceptStableMismatch: false, singleAttempt: policy == .preparedSnap,
                 hasLanded: {
                     guard SidebarPlacementGeometry.isValid($0) else { return false }
-                    return self.read(expected.id.window, displays: displays, budget: budget, expected: expected).window?.scope == destination
+                    return self.read(expected.id.window, displays: displays, budget: budget,
+                        expected: expected, forFocus: allowCovered).window?.scope == destination
                 })
         }
         if blocked { result = .cancelled }

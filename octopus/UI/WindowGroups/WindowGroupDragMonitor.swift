@@ -14,6 +14,7 @@ final class WindowGroupDragMonitor {
     var onCancel: () -> Void = {}
     var onInput: () -> Void = {}
     var onRelease: () -> Void = {}
+    var onGeometryChange: () -> Void = {}
     private var monitor: Any?
     private var localMonitor: Any?
     private var source: WindowGroupSurface?
@@ -53,6 +54,7 @@ final class WindowGroupDragMonitor {
             let now = ProcessInfo.processInfo.systemUptime
             guard now - lastUpdate >= 0.04 else { return }
             lastUpdate = now
+            onGeometryChange()
             update(at: Self.pointer(), now: now)
         case .leftMouseUp:
             let point = Self.pointer()
@@ -160,6 +162,18 @@ final class WindowGroupDragMonitor {
               (record[kCGWindowIsOnscreen as String] as? Bool) == true,
               let surface = decode(record), surface.id == id else { return nil }
         return surface
+    }
+
+    static func frontmostWindow(pid: pid_t) -> SidebarWindowID? {
+        guard let records = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID)
+            as? [[String: Any]] else { return nil }
+        // The first normal surface of the active app must be a group member.
+        // Another window or a sheet of the same app leaves its own shortcut alone.
+        guard let first = records.first(where: {
+            ($0[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value == pid
+                && ($0[kCGWindowLayer as String] as? NSNumber)?.intValue == 0
+        }) else { return nil }
+        return decode(first)?.id
     }
 
     static func surface(at point: CGPoint, excluding: Set<SidebarWindowID>) -> WindowGroupSurface? {

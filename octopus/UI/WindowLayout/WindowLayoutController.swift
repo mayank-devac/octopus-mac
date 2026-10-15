@@ -9,8 +9,9 @@ final class WindowLayoutController: ObservableObject {
 
     @Published private(set) var status = ""
     @Published private(set) var canUndo = false
-    // Group members are managed together and cannot be automatic snap companions.
-    var tabGroupedWindows: () -> Set<SidebarWindowID> = { [] }
+    // Only inactive tabs are excluded; the active window represents its group.
+    var tabSnapExclusions: (SidebarWindowID) -> Set<SidebarWindowID> = { _ in [] }
+    var tabGroupMinimums: () -> [SidebarWindowID: CGSize] = { [:] }
     var onPairLayoutAttempted: (SidebarWindowID, SidebarWindowID) -> Void = { _, _ in }
     private let reader = SidebarWindowReader(onChange: {}, tracksFrontmostFocus: true)
     private let feedback = WindowPlacementFeedback()
@@ -122,7 +123,6 @@ final class WindowLayoutController: ObservableObject {
 
     private func schedule(_ snap: WindowLayoutCompletedSnap) {
         guard enabled, snapMode == .legacy, snap.request.snap != .maximize, snap.isCurrent(after: latestAction) else { return }
-        guard !tabGroupedWindows().contains(snap.window) else { return }
         if snap.request.snap?.isCorner == true && selection == .mostRecent { return }
         cancel()
         // The native writer already confirmed its frame. Prepare companions on the next turn.
@@ -151,7 +151,8 @@ final class WindowLayoutController: ObservableObject {
         snapPreparation?.cancel()
         let displays = WindowLayoutDisplay.connected()
         let settings = WindowSnapSettings.current()
-        let grouped = tabGroupedWindows()
+        let grouped = tabSnapExclusions(window)
+        let groupMinimums = tabGroupMinimums()
         let revision = generation
         let batch = WindowLayoutBatchToken(frontmostPID: NSWorkspace.shared.frontmostApplication?.processIdentifier)
         snapPreparation = batch
@@ -164,16 +165,18 @@ final class WindowLayoutController: ObservableObject {
             var prepared: WindowLayoutPreparedSnap?
             if let display = displays.first(where: { SidebarPlacementGeometry.matches($0.workArea, request.workArea) }),
                let scope = access.visibleScope(on: display.id, budget: budget),
-               let anchor = access.read(window, displays: displays, budget: budget).window {
+               let nativeAnchor = access.read(window, displays: displays, budget: budget).window {
+                let anchor = Self.respectingTabMinimum(nativeAnchor, minimums: groupMinimums)
                 var snapshot: WindowLayoutSnapshot?
                 var preferred: SidebarWindowID?
-                if settings.enabled && !grouped.contains(window) && !(request.snap?.isCorner == true && settings.selection == .mostRecent) {
+                if settings.enabled && !(request.snap?.isCorner == true && settings.selection == .mostRecent) {
                     preferred = foregroundWindow
                     let snap = WindowLayoutCompletedSnap(window: window, request: request,
                         startedAt: ProcessInfo.processInfo.systemUptime, achievedFrame: anchor.frame, preferredCompanion: preferred)
                     snapshot = reader.layoutSnapshot(displays: displays, desktop: revision, snap: snap,
                         selection: settings.selection, maximumWindows: settings.maximumWindows, budget: budget, preparingFor: scope,
                         excluding: grouped)
+                    if let native = snapshot { snapshot = Self.respectingTabMinimum(native, minimums: groupMinimums) }
                 }
                 // A slow companion cannot block a primary window already read successfully.
                 // Keep its original snapshot; commit will revalidate it under a fresh write budget.
@@ -221,6 +224,7 @@ final class WindowLayoutController: ObservableObject {
         token = batch
         watchInput(batch)
         let plan = prepared.plan
+        let groupMinimums = tabGroupMinimums()
         let activity = WindowTabPlacementActivity()
         tabPlacement = activity
         NotificationCenter.default.post(name: WindowTabPlacementActivity.began, object: activity)
@@ -232,7 +236,11 @@ final class WindowLayoutController: ObservableObject {
                 access.focusedWindowID(pid: $0.pid, budget: budget) == $0
             } ?? true
             let outcome = foregroundUnchanged ? WindowLayoutExecutor.applyPrepared(plan, canContinue: { budget.isCurrent },
-                read: { access.read($0.id.window, displays: displays, budget: budget).window },
+                read: { window in
+                    access.read(window.id.window, displays: displays, budget: budget).window.map {
+                        Self.respectingTabMinimum($0, minimums: groupMinimums)
+                    }
+                },
                 write: { window, frame in
                     access.write(window, frame: frame, workArea: plan.workArea, destination: plan.scope,
                         displays: displays, budget: budget, policy: .preparedSnap,
@@ -337,10 +345,14 @@ final class WindowLayoutController: ObservableObject {
         let batch = WindowLayoutBatchToken(frontmostPID: NSWorkspace.shared.frontmostApplication?.processIdentifier)
         token = batch
         watchInput(batch)
+        let activity = WindowTabPlacementActivity()
+        tabPlacement = activity
+        NotificationCenter.default.post(name: WindowTabPlacementActivity.began, object: activity)
         let displays = WindowLayoutDisplay.connected()
         let selection = self.selection
         let maximumWindows = self.maximumWindows
-        let grouped = tabGroupedWindows()
+        let grouped = tabSnapExclusions(snap.window)
+        let groupMinimums = tabGroupMinimums()
         let logger = self.logger
         let knownConstraints = learnedConstraints
         let cacheLifetime = Self.constraintCacheLifetime
@@ -355,8 +367,9 @@ final class WindowLayoutController: ObservableObject {
                 }
                 return
             }
-            let snapshot = reader.layoutSnapshot(displays: displays, desktop: requestGeneration,
+            let nativeSnapshot = reader.layoutSnapshot(displays: displays, desktop: requestGeneration,
                 snap: snap, selection: selection, maximumWindows: maximumWindows, budget: budget, excluding: grouped)
+            let snapshot = Self.respectingTabMinimum(nativeSnapshot, minimums: groupMinimums)
             let applicable = Dictionary(uniqueKeysWithValues: snapshot.windows.compactMap { window -> (WindowLayoutIdentity, WindowLayoutSizeConstraint)? in
                 guard let record = knownConstraints[window.id], record.scope == window.scope,
                       SidebarPlacementGeometry.matches(record.workArea, snap.request.workArea),
@@ -422,6 +435,26 @@ final class WindowLayoutController: ObservableObject {
                 }
             }
         }
+    }
+
+    // Give the representative the largest known minimum in its group. A hidden tab
+    // must not make the planner promise a size it is already known to reject.
+    nonisolated static func respectingTabMinimum(_ window: WindowLayoutWindow,
+                                                minimums: [SidebarWindowID: CGSize]) -> WindowLayoutWindow {
+        guard let minimum = minimums[window.id.window] else { return window }
+        return WindowLayoutWindow(id: window.id, scope: window.scope, frame: window.frame,
+            minimum: CGSize(width: max(window.minimum.width, minimum.width),
+                            height: max(window.minimum.height, minimum.height)),
+            minimumReported: window.minimumReported, canMove: window.canMove, canResize: window.canResize,
+            hidden: window.hidden, minimized: window.minimized, blocked: window.blocked,
+            recency: window.recency, stackOrder: window.stackOrder)
+    }
+
+    nonisolated private static func respectingTabMinimum(_ snapshot: WindowLayoutSnapshot,
+                                                        minimums: [SidebarWindowID: CGSize]) -> WindowLayoutSnapshot {
+        WindowLayoutSnapshot(windows: snapshot.windows.map { respectingTabMinimum($0, minimums: minimums) },
+            displays: snapshot.displays, complete: snapshot.complete, desktopGeneration: snapshot.desktopGeneration,
+            failureReason: snapshot.failureReason)
     }
 
     // Bridge pure layout operations directly to native access; the writer receives the executor's exact live snapshot.

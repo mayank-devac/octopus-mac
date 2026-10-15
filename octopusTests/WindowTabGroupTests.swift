@@ -100,6 +100,117 @@ struct WindowTabGroupTests {
         #expect(result.windows.allSatisfy { $0.frame == shared })
     }
 
+    @Test(arguments: [pid_t(42), pid_t(44)])
+    func addingAThirdWindowRetainsBothExistingMembers(_ pid: pid_t) {
+        let existing = [window(1), window(2, pid: 43)]
+        let joining = window(3, pid: pid, frame: shared.offsetBy(dx: 300, dy: 100))
+        var live = Dictionary(uniqueKeysWithValues: (existing + [joining]).map { ($0.id, $0) })
+        var writes: [WindowLayoutIdentity] = []
+        let result = WindowTabGroupService.align(existing + [joining], to: shared, scope: scope,
+            canContinue: { true }, read: { live[$0.id] }, write: { window, frame in
+                writes.append(window.id)
+                live[window.id] = moved(window, to: frame)
+                return .placed(frame, adjusted: false)
+            })
+        #expect(result.reason == nil)
+        #expect(result.windows.map(\.id) == (existing + [joining]).map(\.id))
+        #expect(writes == [joining.id])
+    }
+
+    @Test func stripGeometryFollowsMovedAndSnappedFramesAndProtectsTrafficLights() {
+        let work = CGRect(x: -1200, y: 0, width: 1200, height: 900)
+        let moved = CGRect(x: -1000, y: 100, width: 500, height: 600)
+        let strip = WindowTabGeometry.stripFrame(window: moved, workArea: work)
+        #expect(strip == CGRect(x: moved.minX, y: moved.minY - 30, width: moved.width, height: 30))
+        let snapped = CGRect(x: work.midX, y: work.minY, width: work.width / 2, height: work.height)
+        let top = WindowTabGeometry.stripFrame(window: snapped, workArea: work)
+        #expect(top.minY == snapped.minY && top.minX == snapped.minX + 80)
+        #expect(top.maxX == snapped.maxX && top.width == snapped.width - 80)
+    }
+
+    @Test func groupMovePreviewKeepsItsSizeAndStaysOnTheCurrentDisplay() {
+        let area = CGRect(x: -1200, y: 0, width: 1200, height: 900)
+        let original = CGRect(x: -900, y: 100, width: 700, height: 500)
+        var gesture = WindowTabMoveGesture(frame: original, pointer: CGPoint(x: -800, y: 80), workArea: area)
+        gesture.update(pointer: CGPoint(x: -798, y: 81))
+        #expect(!gesture.moved && gesture.frame == original)
+        gesture.update(pointer: CGPoint(x: 500, y: -300))
+        #expect(gesture.moved && area.contains(gesture.frame))
+        #expect(gesture.frame.size == original.size)
+        #expect(gesture.frame.origin == CGPoint(x: -700, y: 0))
+    }
+
+    @Test func movingAGroupPlacesItsSelectedWindowFirstAndReturnsTheOriginalMemberOrder() {
+        let members = [window(1), window(2, pid: 43)]
+        let frame = shared.offsetBy(dx: 120, dy: 80)
+        var live = Dictionary(uniqueKeysWithValues: members.map { ($0.id, $0) })
+        var writes: [WindowLayoutIdentity] = []
+        let result = WindowTabGroupService.move(members, selected: members[1].id, from: shared, to: frame, scope: scope,
+            canContinue: { true }, read: { live[$0.id] }, write: { window, target in
+                writes.append(window.id)
+                live[window.id] = moved(window, to: target)
+                return .placed(target, adjusted: false)
+            })
+        #expect(result.reason == nil)
+        #expect(writes == [members[1].id, members[0].id])
+        #expect(result.windows.map(\.id) == members.map(\.id))
+        #expect(result.windows.allSatisfy { $0.frame == frame })
+    }
+
+    @Test func staleOrCancelledGroupMovesNeverContinueWithAnotherWindow() {
+        let members = [window(1), window(2, pid: 43)]
+        let target = shared.offsetBy(dx: 100, dy: 0)
+        var writes = 0
+        let stale = WindowTabGroupService.move(members, selected: members[0].id,
+            from: shared.offsetBy(dx: 20, dy: 0), to: target, scope: scope,
+            canContinue: { true }, read: { $0 }, write: { _, frame in writes += 1; return .placed(frame, adjusted: false) })
+        #expect(stale.reason != nil && !stale.placementFailed && writes == 0)
+        var current = members[0], cancelled = false
+        let interrupted = WindowTabGroupService.move(members, selected: members[0].id,
+            from: shared, to: target, scope: scope, canContinue: { !cancelled },
+            read: { $0.id == current.id ? current : $0 }, write: { window, frame in
+                writes += 1
+                current = moved(window, to: frame)
+                cancelled = true
+                return .placed(frame, adjusted: false)
+            })
+        #expect(interrupted.reason != nil && !interrupted.placementFailed && writes == 1)
+    }
+
+    @Test func tabShortcutWrapsAcrossExactWindowsIncludingTheSameApp() {
+        let members = [window(1), window(2), window(3, pid: 43)]
+        let group = WindowTabGroup(id: UUID(), members: members.map {
+            WindowTabMember(window: $0, originalFrame: shared, title: "Document")
+        }, selected: members[0].id, frame: shared, scope: scope)
+        #expect(group.neighbour(of: members[0].id, direction: 1) == members[1].id)
+        #expect(group.neighbour(of: members[0].id, direction: -1) == members[2].id)
+        #expect(group.neighbour(of: members[2].id, direction: 1) == members[0].id)
+        #expect(group.neighbour(of: window(9).id, direction: 1) == nil)
+        #expect(WindowTabShortcut.direction(keyCode: 48, modifiers: .control) == 1)
+        #expect(WindowTabShortcut.direction(keyCode: 48, modifiers: [.control, .shift]) == -1)
+        #expect(WindowTabShortcut.direction(keyCode: 48, modifiers: [.control, .option]) == nil)
+        #expect(WindowTabShortcut.direction(keyCode: 48, modifiers: .command) == nil)
+        #expect(WindowTabShortcut.direction(keyCode: 49, modifiers: .control) == nil)
+    }
+
+    @Test func tabShortcutPassesThroughOutsideGroupsAndConsumesOnlyOneSwitchPerPress() {
+        var session = WindowTabShortcutSession()
+        let ungrouped = session.route(.keyDown, keyCode: 48, modifiers: .control, repeating: false, window: nil)
+        #expect(ungrouped == .pass)
+        let window = SidebarWindowID(pid: 43, windowID: 2)
+        let first = session.route(.keyDown, keyCode: 48, modifiers: .control, repeating: false, window: window)
+        #expect(first == .cycle(window, 1))
+        let repeatKey = session.route(.keyDown, keyCode: 48, modifiers: .control, repeating: true, window: nil)
+        #expect(repeatKey == .consume)
+        let release = session.route(.keyUp, keyCode: 48, modifiers: [], repeating: false, window: nil)
+        #expect(release == .consume && !session.capturedTab)
+        let next = session.route(.keyDown, keyCode: 48, modifiers: [.control, .shift], repeating: false, window: window)
+        #expect(next == .cycle(window, -1))
+        session.cancel()
+        let cancelledRelease = session.route(.keyUp, keyCode: 48, modifiers: [], repeating: false, window: nil)
+        #expect(cancelledRelease == .pass)
+    }
+
     @Test func groupingRejectsDialogsSizeLimitsAndOtherDesktopsBeforeAnyWrite() {
         let target = window(1)
         let rejected = [window(2, blocked: true), window(2, minimum: CGSize(width: 800, height: 200)),
@@ -109,6 +220,7 @@ struct WindowTabGroupTests {
             let result = WindowTabGroupService.align([target, source], to: shared, scope: scope,
                 canContinue: { true }, read: { $0 }, write: { _, frame in writes += 1; return .placed(frame, adjusted: false) })
             #expect(result.reason != nil)
+            #expect(result.placementFailed == (source.minimum.width > shared.width))
             #expect(writes == 0)
         }
     }
@@ -123,6 +235,7 @@ struct WindowTabGroupTests {
                 canContinue: { true }, read: { $0.id == source.id ? replacement : $0 },
                 write: { _, frame in writes += 1; return .placed(frame, adjusted: false) })
             #expect(result.reason != nil)
+            #expect(!result.placementFailed)
             #expect(writes == 0)
         }
     }
@@ -140,6 +253,7 @@ struct WindowTabGroupTests {
                 return .placed(frame, adjusted: false)
             })
         #expect(result.reason != nil)
+        #expect(result.placementFailed)
         #expect(writes == [target.id, source.id])
         #expect(live[target.id]?.frame == shared)
         #expect(live[source.id]?.frame == source.frame)
@@ -271,10 +385,24 @@ struct WindowTabGroupTests {
             return view.subviews.flatMap { buttons(in: $0) }
         }
         let content = try #require(panel.contentView)
+        let grip = try #require(content.subviews.last)
+        #expect(grip.toolTip == "Drag to move the grouped windows")
+        #expect(content.hitTest(CGPoint(x: 14, y: 14)) === grip)
         let tabs = buttons(in: content)
         #expect(tabs.count == 2)
         #expect(tabs[0].state == .on && tabs[1].state == .off)
         #expect(!panel.canBecomeKey && panel.level == .normal)
+        let close = try #require(tabs[0].subviews.compactMap { $0 as? NSButton }.first)
+        #expect(close.image != nil)
+        #expect(tabs[0].bounds.contains(close.frame))
+        let tabContainer = try #require(tabs[0].superview)
+        let closeHitPoint = tabs[0].convert(CGPoint(x: close.frame.midX, y: close.frame.midY), to: tabContainer)
+        #expect(tabs[0].hitTest(closeHitPoint) === close)
+        #expect(close.accessibilityIdentifier() == "window-tab-close-\(first.id.window.pid)-\(first.id.window.windowID)")
+        close.performClick(nil)
+        #expect(closed == first.id && selected == nil)
+        #expect(group.members.count == 2) // A close request alone never removes membership.
+        closed = nil
         tabs[1].performClick(nil)
         #expect(selected == second.id)
         let menu = try #require(tabs[1].menu)
@@ -296,5 +424,8 @@ struct WindowTabGroupTests {
         panel.show(group, workArea: CGRect(x: 0, y: 0, width: 1600, height: 1200))
         let scroll = try #require(content.subviews.first as? NSScrollView)
         #expect(scroll.contentView.bounds.minX > 0)
+        let expectedStrip = WindowTabGeometry.stripFrame(window: group.frame,
+            workArea: CGRect(x: 0, y: 0, width: 1600, height: 1200))
+        #expect(panel.frame == SidebarPlacementGeometry.flip(expectedStrip, primaryTop: NSScreen.screens.first?.frame.maxY ?? 0))
     }
 }

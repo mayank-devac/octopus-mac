@@ -78,7 +78,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         windowManager = PreferencesController()
         
         NSApp.setActivationPolicy(.accessory)
-        windowLayoutController.tabGroupedWindows = { [weak self] in self?.windowTabGroupController.groupedWindows ?? [] }
+        windowLayoutController.tabSnapExclusions = { [weak self] source in
+            self?.windowTabGroupController.snapExclusions(for: source) ?? []
+        }
+        windowLayoutController.tabGroupMinimums = { [weak self] in self?.windowTabGroupController.groupMinimums ?? [:] }
         windowLayoutController.onPairLayoutAttempted = { [weak self] source, target in
             self?.windowTabGroupController.separateForSideDrop(source: source, target: target)
         }

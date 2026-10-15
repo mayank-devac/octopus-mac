@@ -165,6 +165,56 @@ struct WindowLayoutTests {
             complete: complete, desktopGeneration: 0)
     }
 
+    @Test func anUnrelatedSnapUsesTheActiveTabAndHonoursTheWholeGroupsMinimum() throws {
+        let source = window(1, recency: 99)
+        let active = window(2, recency: 8)
+        let inactive = window(3, recency: 100, minimum: CGSize(width: 800, height: 400))
+        let group = WindowTabGroup(id: UUID(), members: [active, inactive].map {
+            WindowTabMember(window: $0, originalFrame: $0.frame, title: "Document")
+        }, selected: active.id, frame: area, scope: scope)
+        #expect(group.inactiveWindows == [inactive.id.window])
+        #expect(group.snapExclusions(for: inactive.id.window) == [active.id.window])
+        #expect(group.snapExclusions(for: active.id.window) == [inactive.id.window])
+        let minimums = [active.id.window: group.minimum]
+        let excluded = group.snapExclusions(for: source.id.window)
+        let participants = [source, active, inactive].filter { !excluded.contains($0.id.window) }
+            .map { WindowLayoutController.respectingTabMinimum($0, minimums: minimums) }
+        let state = snapshot(participants)
+        let prepared = try #require(WindowLayoutPlanner.preparedPlan(snapshot: state, anchor: source,
+            request: request(.left), destination: scope, display: state.displays[0],
+            settings: WindowSnapSettings(enabled: true, selection: .mostRecent, maximumWindows: 4), generation: 0))
+        #expect(prepared.plan.peers.map(\.id) == [active.id])
+        let groupFrame = try #require(prepared.plan.frames[active.id])
+        #expect(groupFrame.width >= 800)
+        var live = [source.id: source, active.id: active, inactive.id: inactive]
+        var writes: [WindowLayoutIdentity] = []
+        let result = WindowLayoutExecutor.applyPrepared(prepared.plan, canContinue: { true }, read: { expected in
+            live[expected.id].map { WindowLayoutController.respectingTabMinimum($0, minimums: minimums) }
+        }, write: { window, frame in
+            guard let original = live[window.id] else { return .cancelled }
+            writes.append(window.id)
+            live[window.id] = pairMoved(original, frame: frame, scope: scope)
+            return .placed(frame, adjusted: false)
+        })
+        #expect(result.reason == nil)
+        #expect(writes == [source.id, active.id])
+        #expect(live[inactive.id]?.frame == inactive.frame)
+        #expect(group.members.count == 2)
+        // After release the group controller aligns its retained members to the
+        // representative, without including the unrelated snapped window.
+        let snappedActive = try #require(live[active.id])
+        let followed = WindowTabGroupService.align([snappedActive, inactive], to: groupFrame, scope: scope,
+            canContinue: { true }, read: { live[$0.id] }, write: { window, frame in
+                writes.append(window.id)
+                live[window.id] = pairMoved(window, frame: frame, scope: scope)
+                return .placed(frame, adjusted: false)
+            })
+        #expect(followed.reason == nil)
+        #expect(writes == [source.id, active.id, inactive.id])
+        #expect(followed.windows.allSatisfy { $0.frame == groupFrame })
+        #expect(live[source.id]?.frame == prepared.plan.frames[source.id])
+    }
+
     private func ready(_ snap: SidebarSnapTarget = .left, peers: [WindowLayoutWindow]? = nil,
                        selection: WindowLayoutSelection = .mostRecent,
                        maximumWindows: Int = WindowLayoutSettings.defaultMaximumWindows) throws -> WindowLayoutPlan {

@@ -225,10 +225,27 @@ The sidebar sits along a screen edge and lists your apps and their windows:
   groups. Pair Undo restores window positions, not previous tab membership.
 - Use the top strip to switch windows. Each tab shows the app icon and window name;
   windows from the same app remain separate tabs.
+  Drop another window onto a member's centre to add it to the existing group.
+- Drag the **≡ grip** or empty space on the strip to move the whole group within
+  its current display. The strip previews the position; the real windows move
+  after release. Escape cancels. Dragging an individual tab still moves it out.
+- Press **Control+Tab** for the next grouped window or **Control+Shift+Tab** for
+  the previous one. The order wraps at the ends. Ordinary app windows retain
+  their own shortcuts; conflicting Octopus bindings take priority. Holding Tab
+  switches once per press, and presses during an unfinished switch are ignored.
 - Drag a tab out onto the same display, or right-click **Move out**, to separate it.
-  Right-click **Close window** uses the app's normal close action and save prompts.
-- Moving or resizing the active window aligns the other members after the gesture.
+  Each tab's **X**, or right-click **Close window**, uses the app's normal close action
+  and save prompts. Cancelling a save prompt keeps the window and its tab.
+- Moving, resizing or snapping the active window aligns the other members after the gesture.
+  The strip follows the real window's position and width during the gesture.
+  An unrelated window can snap beside a group; only the active member participates
+  in automatic companion selection, then the remaining tabs follow it.
   No background windows are resized while the mouse is held down.
+  Known member size limits are used during snap planning. If an app refuses the
+  final shared size, Octopus reports the failure and removes that group's strip;
+  it leaves the real windows accessible and does not retry or force the resize.
+  A stale read or cancelled arrangement keeps membership and waits for a new
+  window change, rather than removing the strip or repeatedly trying the layout.
 - Full-screen windows, fixed-size windows, and windows with open dialogs cannot join.
   Minimising or entering full screen separates that member. Moving a member to a
   different display or Desktop separates it when its new scope can be verified.

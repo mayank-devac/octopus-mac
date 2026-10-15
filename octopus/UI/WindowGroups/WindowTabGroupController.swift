@@ -16,6 +16,7 @@ final class WindowTabGroupController {
         Task { @MainActor in self?.scheduleRefresh() }
     })
     private let drag = WindowGroupDragMonitor()
+    private let keyboard = WindowTabGroupKeyboardMonitor()
     private let feedback = WindowPlacementFeedback()
     private var groups: [UUID: WindowTabGroup] = [:]
     private var panels: [UUID: WindowTabStripPanel] = [:]
@@ -33,9 +34,16 @@ final class WindowTabGroupController {
     private var revision = 0
     private var running = false
     private var nativePlacements: Set<UUID> = []
+    private var movingGroup: UUID?
 
-    var groupedWindows: Set<SidebarWindowID> {
-        Set(groups.values.flatMap { $0.members.map(\.window.id.window) })
+    func snapExclusions(for source: SidebarWindowID) -> Set<SidebarWindowID> {
+        groups.values.reduce(into: []) { $0.formUnion($1.snapExclusions(for: source)) }
+    }
+
+    var groupMinimums: [SidebarWindowID: CGSize] {
+        Dictionary(uniqueKeysWithValues: groups.values.flatMap { group in
+            group.members.map { ($0.window.id.window, group.minimum) }
+        })
     }
 
     func separateForSideDrop(source: SidebarWindowID, target: SidebarWindowID) {
@@ -53,6 +61,16 @@ final class WindowTabGroupController {
     func start() {
         guard !running else { return }
         running = true
+        keyboard.sourceWindow = { [weak self] in
+            guard let self, self.running, WindowLayoutSettings.tabGroupingEnabled(),
+                  NSEvent.pressedMouseButtons & 1 == 0,
+                  let pid = NSWorkspace.shared.frontmostApplication?.processIdentifier,
+                  pid != ProcessInfo.processInfo.processIdentifier,
+                  let window = WindowGroupDragMonitor.frontmostWindow(pid: pid),
+                  self.group(containing: window) != nil else { return nil }
+            return window
+        }
+        keyboard.onSwitch = { [weak self] window, direction in self?.cycle(from: window, direction: direction) }
         drag.enabled = { [weak self] in self?.running == true && WindowLayoutSettings.tabGroupingEnabled() }
         drag.excludedWindows = { [weak self] source in
             Set(self?.group(containing: source)?.members.map(\.window.id.window) ?? [source])
@@ -63,15 +81,22 @@ final class WindowTabGroupController {
         drag.commit = { [weak self] source, target in self?.commit(source: source, target: target) }
         drag.onCancel = { [weak self] in self?.cancelHover() }
         drag.onInput = { [weak self] in
+            self?.cancelRefresh()
             self?.cancelOperation()
             self?.panels.values.forEach { $0.cancelDrag() }
+            self?.scheduleRefresh()
         }
         drag.onRelease = { [weak self] in self?.scheduleRefresh() }
+        drag.onGeometryChange = { [weak self] in self?.scheduleRefresh() }
         drag.start()
         let center = NotificationCenter.default
         observers.append(center.addObserver(forName: WindowTabPlacementActivity.began, object: nil, queue: .main) { [weak self] note in
             guard let activity = note.object as? WindowTabPlacementActivity else { return }
-            MainActor.assumeIsolated { _ = self?.nativePlacements.insert(activity.id) }
+            MainActor.assumeIsolated {
+                self?.cancelRefresh()
+                self?.cancelOperation()
+                _ = self?.nativePlacements.insert(activity.id)
+            }
         })
         observers.append(center.addObserver(forName: WindowTabPlacementActivity.ended, object: nil, queue: .main) { [weak self] note in
             guard let activity = note.object as? WindowTabPlacementActivity else { return }
@@ -121,14 +146,19 @@ final class WindowTabGroupController {
         sidebarFocus = nil
         operation?.cancel()
         operation = nil
+        movingGroup = nil
         revision += 1
     }
 
-    private func beginOperation(cancelLayouts: Bool = true) -> WindowLayoutBatchToken {
+    private func cancelRefresh() {
         refreshToken?.cancel()
         refreshToken = nil
         refreshWork?.cancel()
         refreshWork = nil
+    }
+
+    private func beginOperation(cancelLayouts: Bool = true) -> WindowLayoutBatchToken {
+        cancelRefresh()
         cancelOperation()
         cancelHover()
         if cancelLayouts {
@@ -169,7 +199,11 @@ final class WindowTabGroupController {
                                  token: WindowLayoutBatchToken, completion: @escaping (Preparation?) -> Void) {
         guard running, WindowLayoutSettings.tabGroupingEnabled(), source != target else { completion(nil); return }
         let targetGroup = group(containing: target)
+        guard targetGroup?.members.contains(where: { $0.window.id.window == source }) != true else {
+            completion(nil); return
+        }
         let previousSource = group(containing: source)?.members.first { $0.window.id.window == source }
+        let previousTarget = targetGroup?.members.first { $0.window.id.window == target }
         let nativeBudget = budget(for: token, seconds: 1)
         let displays = WindowLayoutDisplay.connected()
         let currentRevision = revision
@@ -177,19 +211,21 @@ final class WindowTabGroupController {
             let access = reader.windowControlAccess
             var drop: Preparation?
             if let a = access.read(source, displays: displays, budget: nativeBudget).window,
-               let b = access.read(target, displays: displays, budget: nativeBudget).window,
+               let b = access.read(target, displays: displays, budget: nativeBudget,
+                expected: previousTarget?.window, forFocus: targetGroup != nil).window,
                a.eligible, b.eligible, a.scope == b.scope,
                let display = displays.first(where: { $0.id == b.scope.displayID }) {
                 var members: [WindowTabMember] = []
                 let identities = targetGroup?.members.map(\.window.id) ?? [b.id]
                 for identity in identities {
-                    let candidate = identity == b.id ? b : access.read(identity.window, displays: displays, budget: nativeBudget).window
+                    let old = targetGroup?.members.first { $0.window.id == identity }
+                    let candidate = identity == b.id ? b : access.read(identity.window, displays: displays,
+                        budget: nativeBudget, expected: old?.window, forFocus: true).window
                     guard nativeBudget.isCurrent,
                           let live = candidate,
                           live.id == identity, live.eligible, live.scope == b.scope else { members.removeAll(); break }
-                    let old = targetGroup?.members.first { $0.window.id == identity }
                     members.append(WindowTabMember(window: live, originalFrame: old?.originalFrame ?? live.frame,
-                        title: access.tabTitle(identity, budget: nativeBudget) ?? old?.title ?? ""))
+                        title: old?.title ?? access.tabTitle(identity, budget: nativeBudget) ?? ""))
                 }
                 let frame = targetGroup == nil ? WindowTabGeometry.groupFrame(target: b.frame, workArea: display.workArea) : b.frame
                 if !members.isEmpty, WindowTabGeometry.fits(frame, windows: members.map(\.window) + [a], scope: b.scope) {
@@ -281,6 +317,89 @@ final class WindowTabGroupController {
         }
     }
 
+    private func cycle(from window: SidebarWindowID, direction: Int) {
+        guard running, operation == nil, nativePlacements.isEmpty,
+              WindowLayoutSettings.tabGroupingEnabled(),
+              let group = group(containing: window),
+              let member = group.members.first(where: { $0.window.id.window == window }),
+              let next = group.neighbour(of: member.window.id, direction: direction),
+              NSWorkspace.shared.frontmostApplication?.processIdentifier == window.pid else { return }
+        let token = beginOperation()
+        let displays = WindowLayoutDisplay.connected()
+        let nativeBudget = budget(for: token, seconds: 1)
+        reader.queue.async { [weak self, reader] in
+            let access = reader.windowControlAccess
+            let current = access.read(window, displays: displays, budget: nativeBudget, expected: member.window, forFocus: true).window
+            let ready = current?.eligible == true && current?.scope == group.scope
+                && access.focusedWindowID(pid: window.pid, budget: nativeBudget) == window
+            DispatchQueue.main.async {
+                guard let self, self.operation === token, !token.isCancelled else { return }
+                guard ready, nativeBudget.isCurrent else { self.finish(token); return }
+                self.select(next) // Reuse the exact-window sidebar focus path.
+            }
+        }
+    }
+
+    private func beginGroupMove(_ id: UUID) -> Bool {
+        guard running, WindowLayoutSettings.tabGroupingEnabled(), nativePlacements.isEmpty,
+              groups[id]?.active?.window.eligible == true else { return false }
+        cancelRefresh()
+        cancelOperation()
+        drag.cancel()
+        NotificationCenter.default.post(name: WindowLayoutController.userActionNotification,
+            object: ProcessInfo.processInfo.systemUptime)
+        return true
+    }
+
+    private func moveGroup(_ id: UUID, from original: CGRect, to frame: CGRect) {
+        guard running, WindowLayoutSettings.tabGroupingEnabled(), NSEvent.pressedMouseButtons & 1 == 0,
+              let group = groups[id] else { scheduleRefresh(); return }
+        let token = beginOperation()
+        movingGroup = id
+        let currentRevision = revision
+        let displays = WindowLayoutDisplay.connected()
+        let originalBudget = budget(for: token)
+        let nativeBudget = WindowControlBudget(deadline: originalBudget.deadline, canContinue: {
+            originalBudget.isCurrent && NSEvent.pressedMouseButtons & 1 == 0
+        })
+        reader.queue.async { [weak self, reader] in
+            let access = reader.windowControlAccess
+            var windows: [WindowLayoutWindow] = []
+            for member in group.members {
+                guard nativeBudget.isCurrent,
+                      let live = access.read(member.window.id.window, displays: displays, budget: nativeBudget,
+                        expected: member.window, forFocus: true).window,
+                      live.id == member.window.id, live.eligible, live.scope == group.scope else { break }
+                windows.append(live)
+            }
+            let result = windows.count == group.members.count
+                ? WindowTabGroupService.move(windows, selected: group.selected, from: original, to: frame,
+                    scope: group.scope, displays: displays, access: access, budget: nativeBudget)
+                : WindowTabAlignmentResult(reason: "The group changed during the drag; remaining windows were left untouched.")
+            DispatchQueue.main.async {
+                guard let self, self.operation === token, !token.isCancelled, self.revision == currentRevision else { return }
+                self.movingGroup = nil
+                if let reason = result.reason {
+                    if result.placementFailed {
+                        self.groups.removeValue(forKey: id)
+                        self.panels.removeValue(forKey: id)?.close()
+                        self.revision += 1
+                        self.updateObservation()
+                    }
+                    self.finish(token, reason: reason, refresh: false)
+                    return
+                }
+                guard var current = self.groups[id], result.windows.count == current.members.count,
+                      let active = result.windows.first(where: { $0.id == group.selected }) else { self.finish(token); return }
+                for index in current.members.indices { current.members[index].window = result.windows[index] }
+                current.frame = active.frame
+                self.groups[id] = current
+                self.showPanel(current)
+                self.focus(active, token: token)
+            }
+        }
+    }
+
     private func focus(_ window: WindowLayoutWindow, token: WindowLayoutBatchToken, closing: Bool = false) {
         guard operation === token, !token.isCancelled,
               NSWorkspace.shared.frontmostApplication?.processIdentifier == token.frontmostPID else { finish(token); return }
@@ -327,14 +446,14 @@ final class WindowTabGroupController {
         reader.queue.async { [weak self, reader] in
             let access = reader.windowControlAccess
             var actual: WindowLayoutWindow?
-            if let current = access.read(identity.window, displays: displays, budget: nativeBudget, expected: member.window).window,
+            if let current = access.read(identity.window, displays: displays, budget: nativeBudget, expected: member.window, forFocus: true).window,
                current.id == identity, current.eligible, current.scope == group.scope,
                let display = displays.first(where: { $0.id == current.scope.displayID }),
                point == nil || display.frame.contains(point!) {
                 let frame = WindowTabGeometry.detachedFrame(original: member.originalFrame, at: point, workArea: display.workArea)
                 if case .placed(let achieved, _) = access.write(current, frame: frame, workArea: display.workArea,
-                    destination: current.scope, displays: displays, budget: nativeBudget, policy: .preparedSnap),
-                   let live = access.read(identity.window, displays: displays, budget: nativeBudget, expected: current).window,
+                    destination: current.scope, displays: displays, budget: nativeBudget, policy: .preparedSnap, allowCovered: true),
+                   let live = access.read(identity.window, displays: displays, budget: nativeBudget, expected: current, forFocus: true).window,
                    live.id == identity, live.eligible, live.scope == current.scope,
                    display.workArea.contains(live.frame), SidebarPlacementGeometry.matches(live.frame, achieved) { actual = live }
             }
@@ -351,11 +470,13 @@ final class WindowTabGroupController {
         }
     }
 
-    private func finish(_ token: WindowLayoutBatchToken, reason: String? = nil) {
+    private func finish(_ token: WindowLayoutBatchToken, reason: String? = nil, refresh: Bool = true) {
         guard operation === token else { return }
         operation = nil
+        movingGroup = nil
         if let reason { feedback.showFeedback(reason) }
-        scheduleRefresh()
+        if refresh { scheduleRefresh() }
+        else { refreshAgain = false; refreshPanelGeometry() }
     }
 
     private func removeMembership(_ identity: WindowLayoutIdentity) {
@@ -369,6 +490,8 @@ final class WindowTabGroupController {
     }
 
     private func updateObservation() {
+        if groups.isEmpty { keyboard.stop() }
+        else if !keyboard.start() { feedback.showFeedback("Tab shortcuts are unavailable. Check Stack King's Accessibility permission.") }
         let identities = groups.values.flatMap { $0.members.map(\.window.id) }
         let nativeBudget = WindowControlBudget(deadline: ProcessInfo.processInfo.systemUptime + 2, canContinue: { true })
         reader.queue.async { [reader] in reader.observeTabWindows(identities, budget: nativeBudget) }
@@ -377,15 +500,11 @@ final class WindowTabGroupController {
     private func scheduleRefresh() {
         guard running, !groups.isEmpty else { return }
         guard AXIsProcessTrusted() else { dissolveAll(); return }
+        if panels.values.contains(where: { $0.isDraggingGroup }) { refreshAgain = true; return }
+        // Read only CG geometry here, so the strip follows snaps even while AX work is pending.
+        refreshPanelGeometry()
         if operation != nil || refreshing || !nativePlacements.isEmpty { refreshAgain = true; return }
         if NSEvent.pressedMouseButtons & 1 != 0 {
-            // Follow the actual window during a native drag; no AX scans or peer writes.
-            for group in groups.values {
-                guard let active = group.active, let surface = WindowGroupDragMonitor.surface(id: active.window.id.window) else { continue }
-                var displayed = group
-                displayed.frame = surface.frame
-                showPanel(displayed)
-            }
             refreshAgain = true
             return
         }
@@ -395,9 +514,20 @@ final class WindowTabGroupController {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.08, execute: work)
     }
 
+    private func refreshPanelGeometry() {
+        for group in groups.values {
+            guard group.id != movingGroup, let active = group.active, active.window.eligible,
+                  let surface = WindowGroupDragMonitor.surface(id: active.window.id.window) else { continue }
+            var displayed = group
+            displayed.frame = surface.frame
+            showPanel(displayed)
+        }
+    }
+
     private func refreshNative() {
         refreshWork = nil
         guard running, !groups.isEmpty, operation == nil, nativePlacements.isEmpty else { return }
+        guard NSEvent.pressedMouseButtons & 1 == 0 else { scheduleRefresh(); return }
         refreshing = true
         refreshAgain = false
         let saved = Array(groups.values)
@@ -417,7 +547,8 @@ final class WindowTabGroupController {
                 switch access.tabPresence(member.window.id, budget: nativeBudget) {
                 case .missing, .separated: missing.append(member.window.id)
                 case .present:
-                    if let window = access.read(member.window.id.window, displays: displays, budget: nativeBudget, expected: member.window).window {
+                    if let window = access.read(member.window.id.window, displays: displays, budget: nativeBudget,
+                        expected: member.window, forFocus: true).window {
                         live[member.window.id] = window
                         titles[member.window.id] = access.tabTitle(member.window.id, budget: nativeBudget)
                     }
@@ -430,7 +561,8 @@ final class WindowTabGroupController {
                 guard let self else { return }
                 self.refreshing = false
                 if self.refreshToken === refresh { self.refreshToken = nil }
-                guard self.running, self.revision == currentRevision, self.operation == nil, self.nativePlacements.isEmpty else {
+                guard !refresh.isCancelled, self.running, self.revision == currentRevision,
+                      self.operation == nil, self.nativePlacements.isEmpty, NSEvent.pressedMouseButtons & 1 == 0 else {
                     self.scheduleRefresh(); return
                 }
                 for identity in absent { self.removeMembership(identity) }
@@ -474,16 +606,30 @@ final class WindowTabGroupController {
     }
 
     private func synchronize(_ id: UUID) {
-        guard let group = groups[id], group.members.count > 1, operation == nil else { return }
+        guard let group = groups[id], group.members.count > 1, operation == nil,
+              NSEvent.pressedMouseButtons & 1 == 0 else { return }
         let token = beginOperation(cancelLayouts: false)
-        let nativeBudget = budget(for: token)
+        let originalBudget = budget(for: token)
+        let nativeBudget = WindowControlBudget(deadline: originalBudget.deadline, canContinue: {
+            originalBudget.isCurrent && NSEvent.pressedMouseButtons & 1 == 0
+        })
         let displays = WindowLayoutDisplay.connected()
         reader.queue.async { [weak self, reader] in
             let result = WindowTabGroupService.align(group.members.map(\.window), to: group.frame, scope: group.scope,
                 displays: displays, access: reader.windowControlAccess, budget: nativeBudget)
             DispatchQueue.main.async {
                 guard let self, self.operation === token, !token.isCancelled else { return }
+                guard NSEvent.pressedMouseButtons & 1 == 0,
+                      NSWorkspace.shared.frontmostApplication?.processIdentifier == token.frontmostPID else {
+                    self.finish(token); return
+                }
                 if let reason = result.reason {
+                    guard result.placementFailed else {
+                        // Stale reads and cancellations do not mean an app refused a resize.
+                        // Wait for the next native change instead of dissolving or retrying.
+                        self.finish(token, reason: reason, refresh: false)
+                        return
+                    }
                     // A refused resize cannot become an endless notification/write loop.
                     // Leave every real window accessible and dissolve this group.
                     self.groups.removeValue(forKey: id)
@@ -511,6 +657,9 @@ final class WindowTabGroupController {
             panel.onSelect = { [weak self] in self?.select($0) }
             panel.onDetach = { [weak self] in self?.detach($0, at: $1) }
             panel.onClose = { [weak self] in self?.select($0, closing: true) }
+            panel.onMoveStart = { [weak self] in self?.beginGroupMove(group.id) == true }
+            panel.onMove = { [weak self] original, frame in self?.moveGroup(group.id, from: original, to: frame) }
+            panel.onMoveCancel = { [weak self] in self?.scheduleRefresh() }
             panels[group.id] = panel
         }
         panel.show(group, workArea: display.workArea)
@@ -521,6 +670,7 @@ final class WindowTabGroupController {
     }
 
     private func dissolveAll() {
+        keyboard.stop()
         drag.cancel()
         cancelOperation()
         refreshWork?.cancel()
@@ -528,7 +678,7 @@ final class WindowTabGroupController {
         refreshToken?.cancel()
         refreshToken = nil
         groups.removeAll()
-        panels.values.forEach { $0.close() }
+        panels.values.forEach { $0.cancelDrag(); $0.close() }
         panels.removeAll()
         nativePlacements.removeAll()
         reader.queue.async { [reader] in reader.removeObservers() }

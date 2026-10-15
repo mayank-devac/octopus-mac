@@ -3,11 +3,48 @@ import AppKit
 struct WindowTabAlignmentResult {
     var windows: [WindowLayoutWindow] = []
     var reason: String?
+    var placementFailed = false
 }
 
 // One native boundary for group alignment. No app hiding, minimising, offscreen
 // parking, automatic retries, or speculative rollback of another app's changes.
 enum WindowTabGroupService {
+    static func move(_ expected: [WindowLayoutWindow], selected: WindowLayoutIdentity,
+                     from original: CGRect, to frame: CGRect, scope: WindowLayoutScope,
+                     displays: [WindowLayoutDisplay], access: WindowControlAccess,
+                     budget: WindowControlBudget) -> WindowTabAlignmentResult {
+        guard let display = displays.first(where: { $0.id == scope.displayID }), display.workArea.contains(frame) else {
+            return WindowTabAlignmentResult(reason: "Move the group within its current display.")
+        }
+        return move(expected, selected: selected, from: original, to: frame, scope: scope,
+            canContinue: { budget.isCurrent },
+            read: { access.read($0.id.window, displays: displays, budget: budget, expected: $0, forFocus: true).window },
+            write: { window, requested in
+                access.write(window, frame: requested, workArea: display.workArea, destination: scope,
+                    displays: displays, budget: budget, policy: .preparedSnap, resize: false, allowCovered: true)
+            })
+    }
+
+    static func move(_ expected: [WindowLayoutWindow], selected: WindowLayoutIdentity,
+                     from original: CGRect, to frame: CGRect, scope: WindowLayoutScope,
+                     canContinue: () -> Bool, read: (WindowLayoutWindow) -> WindowLayoutWindow?,
+                     write: (WindowLayoutWindow, CGRect) -> SidebarPlacementResult) -> WindowTabAlignmentResult {
+        guard SidebarPlacementGeometry.matches(CGRect(origin: .zero, size: original.size), CGRect(origin: .zero, size: frame.size)),
+              let active = expected.first(where: { $0.id == selected }),
+              SidebarPlacementGeometry.matches(active.frame, original),
+              expected.allSatisfy({ SidebarPlacementGeometry.matches(CGRect(origin: .zero, size: $0.frame.size),
+                  CGRect(origin: .zero, size: frame.size)) }) else {
+            return WindowTabAlignmentResult(reason: "The group's windows changed during the drag. Drag again.")
+        }
+        // Move the selected member first, so a partial move never leaves the
+        // authoritative group frame behind its already-moved inactive tabs.
+        let ordered = [active] + expected.filter { $0.id != selected }
+        var result = align(ordered, to: frame, scope: scope, canContinue: canContinue, read: read, write: write)
+        let byID = Dictionary(uniqueKeysWithValues: result.windows.map { ($0.id, $0) })
+        result.windows = expected.compactMap { byID[$0.id] }
+        return result
+    }
+
     // AXRaise reports that the action was triggered. Confirm the actual focus and
     // stacking result, without sending another activation or raise command.
     static func confirmFocus(canContinue: () -> Bool, readConfirmed: () -> Bool,
@@ -36,10 +73,10 @@ enum WindowTabGroupService {
             return WindowTabAlignmentResult(reason: "The group's display changed.")
         }
         return align(expected, to: frame, scope: scope, canContinue: { budget.isCurrent },
-            read: { access.read($0.id.window, displays: displays, budget: budget, expected: $0).window },
+            read: { access.read($0.id.window, displays: displays, budget: budget, expected: $0, forFocus: true).window },
             write: { window, requested in
                 access.write(window, frame: requested, workArea: display.workArea, destination: scope,
-                    displays: displays, budget: budget, policy: .preparedSnap)
+                    displays: displays, budget: budget, policy: .preparedSnap, allowCovered: true)
             })
     }
 
@@ -56,7 +93,10 @@ enum WindowTabGroupService {
             live.append(current)
         }
         guard WindowTabGeometry.fits(frame, windows: live, scope: scope) else {
-            return WindowTabAlignmentResult(reason: "These windows cannot share this size or Desktop.")
+            // A known size conflict is permanent for this arrangement; a sheet or
+            // temporary unavailable window is not proof that the group must separate.
+            let sizeConflict = !live.isEmpty && live.allSatisfy { $0.eligible && $0.scope == scope }
+            return WindowTabAlignmentResult(reason: "These windows cannot share this size or Desktop.", placementFailed: sizeConflict)
         }
         var result = WindowTabAlignmentResult()
         for window in live {
@@ -66,7 +106,13 @@ enum WindowTabGroupService {
                 return result
             }
             if !SidebarPlacementGeometry.matches(window.frame, frame) {
-                guard case .placed(_, adjusted: false) = write(window, frame) else {
+                switch write(window, frame) {
+                case .placed(_, adjusted: false): break
+                case .cancelled:
+                    result.reason = "The tab arrangement was interrupted. Some windows may have moved."
+                    return result
+                case .failed(_), .placed(_, _):
+                    result.placementFailed = true
                     result.reason = "An app could not match the tab group's size. Some windows may have moved."
                     return result
                 }
