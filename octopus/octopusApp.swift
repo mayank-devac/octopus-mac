@@ -60,6 +60,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var windowManager: PreferencesController!
     private var sidebarController: SidebarController!
     let windowLayoutController = WindowLayoutController()
+    let windowTabGroupController = WindowTabGroupController()
     private var appearanceObserver: NSObjectProtocol?
     
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -77,8 +78,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         windowManager = PreferencesController()
         
         NSApp.setActivationPolicy(.accessory)
+        windowLayoutController.tabGroupedWindows = { [weak self] in self?.windowTabGroupController.groupedWindows ?? [] }
+        windowLayoutController.onPairLayoutAttempted = { [weak self] source, target in
+            self?.windowTabGroupController.separateForSideDrop(source: source, target: target)
+        }
         windowLayoutController.start()
+        windowTabGroupController.start()
         sidebarController = SidebarController(cycleController: cycleController)
+        windowTabGroupController.focusUsingSidebar = { [weak self] id, completion in
+            guard let sidebar = self?.sidebarController else { completion(false); return nil }
+            return sidebar.focusWindow(id, completion: completion)
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -86,6 +96,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         appearanceObserver = nil
         sidebarController?.stop()
         shortcutManager?.stop()
+        windowTabGroupController.stop()
         windowLayoutController.stop()
         AppDelegate.profileManager.saveNow()
     }

@@ -22,6 +22,13 @@ final class SidebarDragController: NSObject, NSDraggingSource {
     private var pairedPreviewPanel: NSPanel?
     private var pairTarget: SidebarIconPairTarget?
     private var pairDirection: PairDropDirection?
+    private var tabGroupTarget: SidebarIconPairTarget?
+    private var tabGroupPreparation: WindowTabGroupController.Preparation?
+    private var tabGroupToken: WindowLayoutBatchToken?
+    private var tabGroupDwell: DispatchWorkItem?
+    private var tabGroupGeneration = 0
+    private var tabGroupDwellReady = false
+    private var tabGroupPreparationFinished = false
     private var pairPreparation: WindowPairPreparation?
     private var pairPreparationToken: WindowLayoutBatchToken?
     private var pairPreparationGeneration = 0
@@ -60,6 +67,9 @@ final class SidebarDragController: NSObject, NSDraggingSource {
     var onPairHover: (SidebarIconPairTarget?, PairDropDirection?) -> Void = { _, _ in }
     var preparePair: ((SidebarWindowID, SidebarWindowID, @escaping (WindowPairPreparation?) -> Void) -> WindowLayoutBatchToken?)?
     var onPairDrop: ((WindowPairSnapRequest) -> Void)?
+    var onTabGroupHover: (SidebarIconPairTarget?) -> Void = { _ in }
+    var prepareTabGroup: ((SidebarWindowID, SidebarWindowID, @escaping (WindowTabGroupController.Preparation?) -> Void) -> WindowLayoutBatchToken?)?
+    var onTabGroupDrop: ((WindowTabGroupController.Preparation) -> Void)?
     var prepareSnap: ((SidebarWindowID, SidebarPlacementRequest, @escaping (WindowLayoutPreparedSnap?) -> Void) -> WindowLayoutBatchToken?)?
     var onSnapDrop: ((WindowLayoutPreparedSnap) -> Void)?
     var isActive: Bool { sessionID != nil }
@@ -269,17 +279,22 @@ final class SidebarDragController: NSObject, NSDraggingSource {
         // Resolve icon intent before the broad section callback can open a Desktop-transfer popup.
         if allowPairing, let source = windowID {
             switch SidebarIconPairDrop.resolve(at: point, source: source, sourceVisible: sourceIsVisible(source),
-                targets: pairTargetsProvider(), previousTarget: pairTarget?.window, previousDirection: pairDirection) {
+                targets: pairTargetsProvider(), previousTarget: pairTarget?.window, previousDirection: pairDirection,
+                tabGrouping: WindowLayoutSettings.tabGroupingEnabled()) {
+            case .tabs(let candidate):
+                return updateTabGroup(candidate, source: source, point: point)
             case .pair(let candidate, let direction):
+                clearTabGroup()
                 return updatePair(candidate, direction: direction, source: source, point: point)
             case .blocked:
+                clearTabGroup()
                 clearPair()
                 clearSnap()
                 previewPanel?.orderOut(nil)
                 // Keep the custom drag image under the pointer when it passes over its own icon.
                 showDragIcon(at: point)
                 return []
-            case .other: clearPair()
+            case .other: clearPair(); clearTabGroup()
             }
         }
         let destination = allowDesktopTransfer ? desktopDropTarget(point, transferTarget?.sourceDesktop) : nil
@@ -334,6 +349,9 @@ final class SidebarDragController: NSObject, NSDraggingSource {
     fileprivate func drop(at point: CGPoint) -> Bool {
         if dividerGesture != nil { return commitDivider(at: point) }
         guard update(at: point, scroll: false) == .private else {
+            if tabGroupTarget != nil {
+                showFeedback("Pause over the icon's centre until the tab preview appears. Both windows must be visible on the same display and Desktop.")
+            }
             if pairTarget != nil, pairDirection != nil {
                 showFeedback(pairPreparation == nil
                     ? "These windows could not be verified for pairing. Try again once both are visible."
@@ -342,6 +360,17 @@ final class SidebarDragController: NSObject, NSDraggingSource {
             return false
         }
         if dividerGesture != nil { return commitDivider(at: point) }
+        if tabGroupTarget != nil {
+            guard tabGroupDwellReady, let prepared = tabGroupPreparation, let onTabGroupDrop else {
+                showFeedback(tabGroupPreparationFinished && tabGroupPreparation == nil
+                    ? "These windows cannot form tabs. Both must be visible and resizable on the same display and Desktop."
+                    : "Wait for the tab preview before releasing. No windows were changed.")
+                return false
+            }
+            finish()
+            onTabGroupDrop(prepared)
+            return true
+        }
         if let pairTarget, let direction = pairDirection, pairPreparation != nil, let source = windowID, let onPairDrop {
             let request = WindowPairSnapRequest(source: source, target: pairTarget.window, direction: direction,
                 startedAt: ProcessInfo.processInfo.systemUptime)
@@ -400,6 +429,49 @@ final class SidebarDragController: NSObject, NSDraggingSource {
         content.needsDisplay = true
         panel.orderFrontRegardless()
         previewPanel = panel
+    }
+
+    private func updateTabGroup(_ candidate: SidebarIconPairTarget, source: SidebarWindowID, point: CGPoint) -> NSDragOperation {
+        clearPair()
+        clearSnap()
+        onDesktopHover?(nil)
+        previewPanel?.orderOut(nil)
+        showDragIcon(at: point)
+        onTabGroupHover(nil)
+        if tabGroupTarget?.window != candidate.window || tabGroupTarget?.ownerID != candidate.ownerID {
+            clearTabGroup()
+            tabGroupTarget = candidate
+            let revision = tabGroupGeneration
+            let session = sessionID
+            // Prepare while the user pauses, rather than adding another native-read wait
+            // after the pause. Only the ready state may show the blue target border.
+            tabGroupToken = prepareTabGroup?(source, candidate.window) { [weak self] prepared in
+                guard let self, self.isActive, self.sessionID == session, self.tabGroupGeneration == revision else { return }
+                self.tabGroupPreparation = prepared
+                self.tabGroupPreparationFinished = true
+                _ = self.update(at: NSEvent.mouseLocation, scroll: false)
+            }
+            let work = DispatchWorkItem { [weak self] in
+                guard let self, self.isActive, self.sessionID == session, self.tabGroupGeneration == revision,
+                      WindowLayoutSettings.tabGroupingEnabled(),
+                      case .tabs(let live) = SidebarIconPairDrop.resolve(at: NSEvent.mouseLocation, source: source,
+                        sourceVisible: self.sourceIsVisible(source), targets: self.pairTargetsProvider(),
+                        previousTarget: nil, previousDirection: nil, tabGrouping: true),
+                      live.window == candidate.window, live.ownerID == candidate.ownerID else { return }
+                self.tabGroupDwellReady = true
+                _ = self.update(at: NSEvent.mouseLocation, scroll: false)
+            }
+            tabGroupDwell = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + WindowTabGeometry.dwell, execute: work)
+        }
+        // Reserve the centre immediately so AppKit calls performDragOperation even
+        // for an early release. drop() decides readiness and explains a rejection.
+        guard tabGroupDwellReady, let prepared = tabGroupPreparation else { return .private }
+        onTabGroupHover(candidate)
+        let top = NSScreen.screens.first?.frame.maxY ?? 0
+        showPreview(frame: SidebarPlacementGeometry.flip(prepared.frame, primaryTop: top),
+            label: "Release to group as tabs · \(title) + \(candidate.title)", valid: true)
+        return .private
     }
 
     // A target change pays one bounded metadata read; pointer movement only updates pure geometry.
@@ -578,6 +650,20 @@ final class SidebarDragController: NSObject, NSDraggingSource {
         dragIconPanel?.alphaValue = 0.85
     }
 
+    private func clearTabGroup() {
+        guard tabGroupTarget != nil || tabGroupDwell != nil || tabGroupToken != nil else { return }
+        tabGroupGeneration += 1
+        tabGroupDwell?.cancel()
+        tabGroupDwell = nil
+        tabGroupToken?.cancel()
+        tabGroupToken = nil
+        tabGroupTarget = nil
+        tabGroupPreparation = nil
+        tabGroupDwellReady = false
+        tabGroupPreparationFinished = false
+        onTabGroupHover(nil)
+    }
+
     private func showDragIcon(at point: CGPoint) {
         guard let image = dragIcon else { return }
         let frame = CGRect(x: point.x - 20, y: point.y - 20, width: 40, height: 40)
@@ -603,6 +689,7 @@ final class SidebarDragController: NSObject, NSDraggingSource {
         globalModifierMonitor = nil
         placementRequest = nil
         sourceDisplay = nil
+        clearTabGroup()
         clearPair()
         clearSnap()
         generation += 1

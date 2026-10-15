@@ -1209,4 +1209,59 @@ struct WindowLayoutTests {
         #expect(result == .placed(desired, adjusted: false))
         #expect(sizes == 1 && positions == 1 && reads == 4)
     }
+
+    @Test @MainActor func foregroundRequestWaitsForActivationWithoutAnotherRequest() {
+        let center = NotificationCenter()
+        var frontmost: pid_t? = 42
+        var results: [Bool] = []
+        var requests = 0
+        let waiter = WindowForegroundActivationWaiter(targetPID: 43, initialPID: 42, center: center,
+            canContinue: { true }, frontmostPID: { frontmost }, completion: { results.append($0) })
+        waiter.start { requests += 1; return true }
+        #expect(results.isEmpty && requests == 1)
+        frontmost = 43
+        center.post(name: NSWorkspace.didActivateApplicationNotification, object: nil)
+        #expect(results == [true] && requests == 1)
+        center.post(name: NSWorkspace.didActivateApplicationNotification, object: nil)
+        #expect(results == [true])
+    }
+
+    @Test @MainActor func foregroundRequestStopsOnCancellationOtherActivationOrRejection() {
+        for reason in ["cancel", "other-app", "rejected"] {
+            let center = NotificationCenter()
+            var frontmost: pid_t? = 42
+            var allowed = true
+            var results: [Bool] = []
+            let waiter = WindowForegroundActivationWaiter(targetPID: 43, initialPID: 42, center: center,
+                canContinue: { allowed }, frontmostPID: { frontmost }, completion: { results.append($0) })
+            waiter.start { reason != "rejected" }
+            if reason == "cancel" { allowed = false; frontmost = 43 }
+            if reason == "other-app" { frontmost = 44 }
+            center.post(name: NSWorkspace.didActivateApplicationNotification, object: nil)
+            #expect(results == [false])
+            allowed = true
+            frontmost = 43
+            center.post(name: NSWorkspace.didActivateApplicationNotification, object: nil)
+            #expect(results == [false])
+        }
+    }
+
+    @Test @MainActor func foregroundRequestCompletesImmediatelyForAnActiveApp() {
+        var results: [Bool] = []
+        let waiter = WindowForegroundActivationWaiter(targetPID: 43, initialPID: 43, center: NotificationCenter(),
+            canContinue: { true }, frontmostPID: { 43 }, completion: { results.append($0) })
+        waiter.start { true }
+        #expect(results == [true])
+    }
+
+    @Test @MainActor func foregroundRequestExpiresWithoutRetryingActivation() async throws {
+        var requests = 0
+        var results: [Bool] = []
+        let waiter = WindowForegroundActivationWaiter(targetPID: 43, initialPID: 42, center: NotificationCenter(), timeout: 0.01,
+            canContinue: { true }, frontmostPID: { 42 }, completion: { results.append($0) })
+        waiter.start { requests += 1; return true }
+        try await Task.sleep(for: .milliseconds(40))
+        #expect(results == [false] && requests == 1)
+    }
+
 }

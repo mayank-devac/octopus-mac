@@ -22,6 +22,12 @@ struct PreferencesWindowLayoutView: View {
                 }
                 .pickerStyle(.menu)
                 .disabled(!enabled)
+                if enabled && selection == WindowLayoutSelection.mostRecent.rawValue {
+                    Text("Group windows as tabs: pause over another window's middle or another sidebar icon's centre, then release on the preview. Sidebar icon edges still snap windows side by side. Click a top tab to switch; drag it out or right-click to move it out or close it.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
                 if selection == WindowLayoutSelection.allNormal.rawValue {
                     Stepper("Maximum windows per snap: \(WindowLayoutSettings.normalizedMaximumWindows(maximumWindows))",
                             value: $maximumWindows, in: WindowLayoutSettings.maximumWindowsRange)

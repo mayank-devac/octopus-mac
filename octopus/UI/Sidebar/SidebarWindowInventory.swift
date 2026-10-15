@@ -95,13 +95,31 @@ final class SidebarPendingAction: @unchecked Sendable {
     private var focusStarted = false
     private var reopenDeadline: TimeInterval?
     let frontmostPID: pid_t?
+    let focusTarget: SidebarWindowID?
+    private var completion: ((Bool) -> Void)?
 
-    init(frontmostPID: pid_t?) { self.frontmostPID = frontmostPID }
+    init(frontmostPID: pid_t?, focusTarget: SidebarWindowID? = nil, completion: ((Bool) -> Void)? = nil) {
+        self.frontmostPID = frontmostPID
+        self.focusTarget = focusTarget
+        self.completion = completion
+    }
 
     func cancel() {
         lock.lock()
         cancelled = true
+        let callback = completion
+        completion = nil
         lock.unlock()
+        if let callback { DispatchQueue.main.async { callback(false) } }
+    }
+
+    @MainActor func completeFocus(_ succeeded: Bool) {
+        lock.lock()
+        let callback = completion
+        completion = nil
+        let accepted = succeeded && !cancelled
+        lock.unlock()
+        callback?(accepted)
     }
 
     var isCancelled: Bool {
@@ -586,8 +604,8 @@ final class SidebarWindowInventory: ObservableObject {
     }
 
     // Sidebar actions never use Window.focus(), whose keyboard fallback reopens apps.
-    func focus(_ id: SidebarWindowID) {
-        perform(.focus(id))
+    @discardableResult func focus(_ id: SidebarWindowID, completion: ((Bool) -> Void)? = nil) -> SidebarPendingAction? {
+        perform(.focus(id), completion: completion)
     }
 
     func hasPendingAction(for pid: pid_t) -> Bool { pendingActions[pid] != nil }
@@ -688,25 +706,44 @@ final class SidebarWindowInventory: ObservableObject {
         refreshAndUnlock(id.pid, token: token)
     }
 
-    func perform(_ action: SidebarWindowAction, frontmostPID: pid_t? = NSWorkspace.shared.frontmostApplication?.processIdentifier) {
+    @discardableResult func perform(_ action: SidebarWindowAction,
+                 frontmostPID: pid_t? = NSWorkspace.shared.frontmostApplication?.processIdentifier,
+                 completion: ((Bool) -> Void)? = nil) -> SidebarPendingAction? {
         let startedAt = ProcessInfo.processInfo.systemUptime
         NotificationCenter.default.post(name: WindowLayoutController.userActionNotification, object: startedAt)
         let pid = action.processIdentifier
         guard running, hasPermission else {
             if case .place = action { onPlacementResult?(.failed("Window control is unavailable.")) }
-            return
+            completion?(false)
+            return nil
+        }
+        let focusTarget: SidebarWindowID?
+        if case .focus(let id) = action { focusTarget = id } else { focusTarget = nil }
+        // Explicit focus can replace an older focus request, including its read-only
+        // inventory refresh. Minimise, placement and Desktop transfer retain their lock.
+        if focusTarget != nil, let previous = pendingActions[pid], previous.focusTarget != nil {
+            previous.cancel()
+            pendingActions[pid] = nil
+            foregroundFocus[pid] = nil
         }
         // Ignore a second action during the first action. The active token stays locked until
         // the resulting window state has been read and published to the sidebar.
         guard pendingActions[pid] == nil else {
-            return
+            completion?(false)
+            return nil
         }
-        let token = SidebarPendingAction(frontmostPID: frontmostPID)
+        let token = SidebarPendingAction(frontmostPID: frontmostPID, focusTarget: focusTarget, completion: completion)
         pendingActions[pid] = token
         let application = entries.first(where: { $0.pid == pid })?.application.runningApplication
         let desktop = desktopGeneration
         let systemFullScreenPID = NSApp.currentSystemPresentationOptions.contains(.fullScreen) ? frontmostPID : nil
         let preserveFrontmost = WindowLayoutSettings.enabled() && WindowLayoutSettings.selection() == .allNormal
+        let tabPlacement: WindowTabPlacementActivity?
+        if case .place = action {
+            let activity = WindowTabPlacementActivity()
+            tabPlacement = activity
+            NotificationCenter.default.post(name: WindowTabPlacementActivity.began, object: activity)
+        } else { tabPlacement = nil }
         reader.queue.async { [weak self, reader] in
             let preferredCompanion: SidebarWindowID?
             if case .place(_, let request) = action, let snap = request.snap, snap != .maximize,
@@ -719,6 +756,9 @@ final class SidebarWindowInventory: ObservableObject {
             let result = reader.perform(action, desktop: desktop, token: token,
                 systemFullScreenPID: systemFullScreenPID, application: application)
             DispatchQueue.main.async {
+                if let tabPlacement {
+                    NotificationCenter.default.post(name: WindowTabPlacementActivity.ended, object: tabPlacement)
+                }
                 guard let self, self.running, !token.isCancelled,
                       self.pendingActions[pid] === token,
                       desktop == self.desktopGeneration
@@ -760,6 +800,7 @@ final class SidebarWindowInventory: ObservableObject {
                 self.refreshAndUnlock(pid, token: token)
             }
         }
+        return token
     }
 
     private func requestSystemReopen(_ application: NSRunningApplication, token: SidebarPendingAction) {
@@ -845,12 +886,14 @@ final class SidebarWindowInventory: ObservableObject {
               NSWorkspace.shared.frontmostApplication?.processIdentifier == pid else { return }
         foregroundFocus[pid] = nil // Claim once, even if activation notifications repeat.
         reader.queue.async { [weak self, reader] in
-            reader.raiseForegroundWindow(request.id, token: request.token, expiresAt: request.expiresAt)
-            DispatchQueue.main.async { self?.refreshAndUnlock(pid, token: request.token) }
+            let raised = reader.raiseForegroundWindow(request.id, token: request.token, expiresAt: request.expiresAt)
+            DispatchQueue.main.async { self?.refreshAndUnlock(pid, token: request.token, focused: raised) }
         }
     }
 
-    private func refreshAndUnlock(_ pid: pid_t, token: SidebarPendingAction) {
+    private func refreshAndUnlock(_ pid: pid_t, token: SidebarPendingAction, focused: Bool = false) {
+        // Focus clients need the actual raise result, not a later inventory publication.
+        token.completeFocus(focused)
         guard running, pendingActions[pid] === token else { return }
         refresh { [weak self] in
             guard let self, self.pendingActions[pid] === token else { return }
@@ -1231,6 +1274,25 @@ final class SidebarWindowReader: @unchecked Sendable {
         recency = recency.filter { pids.contains($0.key.pid) }
     }
 
+    // A group controller owns this reader. Observe just its members rather than
+    // refreshing the complete sidebar inventory on every resize notification.
+    func observeTabWindows(_ identities: [WindowLayoutIdentity], budget: WindowControlBudget) {
+        dispatchPrecondition(condition: .onQueue(queue))
+        var windows: [pid_t: [AXUIElement]] = [:]
+        for identity in identities {
+            guard budget.isCurrent else { return }
+            if case .resolved(let handle) = resolveControlHandle(identity.window, budget: budget), handle.id == identity {
+                windows[identity.window.pid, default: []].append(handle.element)
+            }
+        }
+        for pid in Array(observers.keys) where windows[pid] == nil { removeObserver(pid) }
+        for (pid, elements) in windows {
+            guard budget.isCurrent, let app = NSRunningApplication(processIdentifier: pid),
+                  let element = Application(app).element else { continue }
+            observe(app: element, pid: pid, windows: elements)
+        }
+    }
+
     func recordFrontmostWindow(pid: pid_t) {
         dispatchPrecondition(condition: .onQueue(queue))
         guard tracksFrontmostFocus, let app = NSRunningApplication(processIdentifier: pid), !app.isTerminated,
@@ -1261,7 +1323,8 @@ final class SidebarWindowReader: @unchecked Sendable {
     // Known non-normal surfaces are skipped, while an unknown provider failure keeps the snapshot incomplete.
     func layoutSnapshot(displays: [WindowLayoutDisplay], desktop: Int, snap: WindowLayoutCompletedSnap,
                         selection: WindowLayoutSelection, maximumWindows: Int, budget: WindowControlBudget,
-                        preparingFor scope: WindowLayoutScope? = nil) -> WindowLayoutSnapshot {
+                        preparingFor scope: WindowLayoutScope? = nil,
+                        excluding excluded: Set<SidebarWindowID> = []) -> WindowLayoutSnapshot {
         dispatchPrecondition(condition: .onQueue(queue))
         func unavailable(_ reason: String) -> WindowLayoutSnapshot {
             WindowLayoutSnapshot(windows: [], displays: displays, complete: false, desktopGeneration: desktop, failureReason: reason)
@@ -1300,7 +1363,7 @@ final class SidebarWindowReader: @unchecked Sendable {
             }
             guard overlaps.max(by: { $0.1 < $1.1 })?.0 == destinationScope.displayID else { continue }
             let id = SidebarWindowID(pid: app.processIdentifier, windowID: number.uint32Value)
-            guard id != snap.window else { continue }
+            guard id != snap.window, !excluded.contains(id) else { continue }
             visible.append((id, order))
         }
         guard budget.isCurrent else { return unavailable("Window preparation took too long.") }
@@ -1583,18 +1646,20 @@ final class SidebarWindowReader: @unchecked Sendable {
         }
     }
 
-    func raiseForegroundWindow(_ id: SidebarWindowID, token: SidebarPendingAction, expiresAt: TimeInterval) {
+    @discardableResult func raiseForegroundWindow(_ id: SidebarWindowID, token: SidebarPendingAction, expiresAt: TimeInterval) -> Bool {
         dispatchPrecondition(condition: .onQueue(queue))
         guard token.canFinishFocus(on: id.pid),
               ProcessInfo.processInfo.systemUptime < expiresAt,
               NSWorkspace.shared.frontmostApplication?.processIdentifier == id.pid,
-              let known = validatedWindow(id), !known.application.isTerminated else { return }
+              let known = validatedWindow(id), !known.application.isTerminated else { return false }
         AXUIElementSetMessagingTimeout(known.element, 0.2)
         guard token.canFinishFocus(on: id.pid), ProcessInfo.processInfo.systemUptime < expiresAt,
-              NSWorkspace.shared.frontmostApplication?.processIdentifier == id.pid else { return }
+              NSWorkspace.shared.frontmostApplication?.processIdentifier == id.pid else { return false }
         if AXUIElementPerformAction(known.element, kAXRaiseAction as CFString) == .success {
             recordFocus(id)
+            return true
         }
+        return false
     }
 
     private func validatedWindow(_ id: SidebarWindowID) -> KnownWindow? {

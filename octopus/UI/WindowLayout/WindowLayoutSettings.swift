@@ -51,6 +51,9 @@ enum WindowLayoutSettings {
     static func selection(in defaults: UserDefaults = .standard) -> WindowLayoutSelection {
         .saved(defaults.string(forKey: selectionKey))
     }
+    static func tabGroupingEnabled(in defaults: UserDefaults = .standard) -> Bool {
+        enabled(in: defaults) && selection(in: defaults) == .mostRecent
+    }
     static func moveSize(in defaults: UserDefaults = .standard) -> VisibleDisplayMoveSize {
         .saved(defaults.string(forKey: moveSizeKey))
     }

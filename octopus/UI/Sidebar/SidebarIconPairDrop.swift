@@ -45,6 +45,7 @@ struct SidebarIconPairTarget {
 
 enum SidebarDropIntent {
     case pair(SidebarIconPairTarget, PairDropDirection?)
+    case tabs(SidebarIconPairTarget)
     case blocked
     case other
 }
@@ -53,10 +54,11 @@ enum SidebarDropIntent {
 enum SidebarIconPairDrop {
     static func resolve(at point: CGPoint, source: SidebarWindowID, sourceVisible: Bool,
                         targets: [SidebarIconPairTarget], previousTarget: SidebarWindowID?,
-                        previousDirection: PairDropDirection?) -> SidebarDropIntent {
+                        previousDirection: PairDropDirection?, tabGrouping: Bool = false) -> SidebarDropIntent {
         guard sourceVisible, let target = targets.first(where: { $0.frame.contains(point) }) else { return .other }
         if !target.isVisible { return target.reservesPairDrop || target.window == previousTarget ? .blocked : .other }
         guard target.window != source else { return .blocked }
+        if tabGrouping, WindowTabGeometry.centre(of: target.frame).contains(point) { return .tabs(target) }
         let previous = previousTarget == target.window ? previousDirection : nil
         return .pair(target, PairDropDirection.choose(at: point, in: target.frame, previous: previous))
     }

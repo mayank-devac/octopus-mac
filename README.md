@@ -127,6 +127,8 @@ switcher for macOS — and it has grown into a keyboard-and-mouse window manager
   (<kbd>Control</kbd> + <kbd>Option</kbd> + <kbd>Shift</kbd> by default)
 - Automatically adjust other windows after a snap — the most recently used other
   window, or all other normal windows — with Undo for the last adjustment
+- Group windows from different apps with a centre-hover drop, then switch using the
+  attached top tab strip; inactive windows remain stacked behind the selected tab
 - Move the focused window between monitors with <kbd>Control</kbd> + <kbd>Shift</kbd> +
   arrow keys (left/right, wrapping at either end, top-to-bottom when monitors are
   stacked), keeping original size or filling the screen
@@ -211,6 +213,28 @@ The sidebar sits along a screen edge and lists your apps and their windows:
   configurable in **Preferences → Window Layout**.
 - If an app refuses a size or position (fixed-size windows, minimum sizes, or
   non-overlapping constraints), Octopus keeps the window reachable and tells you why.
+
+### Tab groups
+- Enable **Adjust windows when snapping** and choose **Most recently used window**.
+- Drag a real window over the middle of another window on the same visible display
+  and Desktop. Hover for the highlight, then release to group them. The window under
+  the pointer is the target; ordinary edge snaps continue to work.
+- You can also drag one sidebar app icon onto another: pause in its centre to group
+  the two windows as tabs, or use its left/right/top/bottom edges for side-by-side snapping.
+  An accepted side-drop layout separates the two selected windows from existing tab
+  groups. Pair Undo restores window positions, not previous tab membership.
+- Use the top strip to switch windows. Each tab shows the app icon and window name;
+  windows from the same app remain separate tabs.
+- Drag a tab out onto the same display, or right-click **Move out**, to separate it.
+  Right-click **Close window** uses the app's normal close action and save prompts.
+- Moving or resizing the active window aligns the other members after the gesture.
+  No background windows are resized while the mouse is held down.
+- Full-screen windows, fixed-size windows, and windows with open dialogs cannot join.
+  Minimising or entering full screen separates that member. Moving a member to a
+  different display or Desktop separates it when its new scope can be verified.
+- Turning adjustment off, choosing **All windows**, changing display topology, or
+  quitting Octopus removes the strips and leaves the real windows accessible.
+  Groups are temporary and are not restored after relaunch.
 
 ### Moving windows between monitors and Desktops
 - Hold <kbd>Control</kbd> + <kbd>Shift</kbd> and press an arrow key to move the focused

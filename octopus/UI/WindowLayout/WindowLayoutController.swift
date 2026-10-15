@@ -9,6 +9,9 @@ final class WindowLayoutController: ObservableObject {
 
     @Published private(set) var status = ""
     @Published private(set) var canUndo = false
+    // Group members are managed together and cannot be automatic snap companions.
+    var tabGroupedWindows: () -> Set<SidebarWindowID> = { [] }
+    var onPairLayoutAttempted: (SidebarWindowID, SidebarWindowID) -> Void = { _, _ in }
     private let reader = SidebarWindowReader(onChange: {}, tracksFrontmostFocus: true)
     private let feedback = WindowPlacementFeedback()
     private let logger = Logger(subsystem: "com.mayank.octopus", category: "WindowLayout")
@@ -19,6 +22,7 @@ final class WindowLayoutController: ObservableObject {
     private var snapPreparation: WindowLayoutBatchToken?
     private var inputMonitor: Any?
     private var localInputMonitor: Any?
+    private var tabPlacement: WindowTabPlacementActivity?
     private var generation = 0
     private var latestAction: TimeInterval = 0
     private var enabled = false
@@ -118,6 +122,7 @@ final class WindowLayoutController: ObservableObject {
 
     private func schedule(_ snap: WindowLayoutCompletedSnap) {
         guard enabled, snapMode == .legacy, snap.request.snap != .maximize, snap.isCurrent(after: latestAction) else { return }
+        guard !tabGroupedWindows().contains(snap.window) else { return }
         if snap.request.snap?.isCorner == true && selection == .mostRecent { return }
         cancel()
         // The native writer already confirmed its frame. Prepare companions on the next turn.
@@ -146,6 +151,7 @@ final class WindowLayoutController: ObservableObject {
         snapPreparation?.cancel()
         let displays = WindowLayoutDisplay.connected()
         let settings = WindowSnapSettings.current()
+        let grouped = tabGroupedWindows()
         let revision = generation
         let batch = WindowLayoutBatchToken(frontmostPID: NSWorkspace.shared.frontmostApplication?.processIdentifier)
         snapPreparation = batch
@@ -161,12 +167,13 @@ final class WindowLayoutController: ObservableObject {
                let anchor = access.read(window, displays: displays, budget: budget).window {
                 var snapshot: WindowLayoutSnapshot?
                 var preferred: SidebarWindowID?
-                if settings.enabled && !(request.snap?.isCorner == true && settings.selection == .mostRecent) {
+                if settings.enabled && !grouped.contains(window) && !(request.snap?.isCorner == true && settings.selection == .mostRecent) {
                     preferred = foregroundWindow
                     let snap = WindowLayoutCompletedSnap(window: window, request: request,
                         startedAt: ProcessInfo.processInfo.systemUptime, achievedFrame: anchor.frame, preferredCompanion: preferred)
                     snapshot = reader.layoutSnapshot(displays: displays, desktop: revision, snap: snap,
-                        selection: settings.selection, maximumWindows: settings.maximumWindows, budget: budget, preparingFor: scope)
+                        selection: settings.selection, maximumWindows: settings.maximumWindows, budget: budget, preparingFor: scope,
+                        excluding: grouped)
                 }
                 // A slow companion cannot block a primary window already read successfully.
                 // Keep its original snapshot; commit will revalidate it under a fresh write budget.
@@ -214,6 +221,9 @@ final class WindowLayoutController: ObservableObject {
         token = batch
         watchInput(batch)
         let plan = prepared.plan
+        let activity = WindowTabPlacementActivity()
+        tabPlacement = activity
+        NotificationCenter.default.post(name: WindowTabPlacementActivity.began, object: activity)
         let budget = WindowControlBudget(deadline: ProcessInfo.processInfo.systemUptime + 4,
             canContinue: { !batch.isCancelled && NSWorkspace.shared.frontmostApplication?.processIdentifier == batch.frontmostPID })
         reader.queue.async { [weak self, reader] in
@@ -272,6 +282,9 @@ final class WindowLayoutController: ObservableObject {
         let batch = WindowLayoutBatchToken(frontmostPID: NSWorkspace.shared.frontmostApplication?.processIdentifier)
         token = batch
         watchInput(batch)
+        let activity = WindowTabPlacementActivity()
+        tabPlacement = activity
+        NotificationCenter.default.post(name: WindowTabPlacementActivity.began, object: activity)
         let displays = WindowLayoutDisplay.connected()
         let budget = WindowControlBudget(deadline: ProcessInfo.processInfo.systemUptime + 4,
             canContinue: { !batch.isCancelled && NSWorkspace.shared.frontmostApplication?.processIdentifier == batch.frontmostPID })
@@ -295,6 +308,7 @@ final class WindowLayoutController: ObservableObject {
             DispatchQueue.main.async {
                 guard let self, self.token === batch else { return }
                 guard !batch.isCancelled else { self.finishInput(); self.token = nil; return }
+                if plan != nil { self.onPairLayoutAttempted(request.source, request.target) }
                 switch outcome {
                 case .applied(let source, let target):
                     guard let plan else { self.finishInput(); self.token = nil; return }
@@ -326,6 +340,7 @@ final class WindowLayoutController: ObservableObject {
         let displays = WindowLayoutDisplay.connected()
         let selection = self.selection
         let maximumWindows = self.maximumWindows
+        let grouped = tabGroupedWindows()
         let logger = self.logger
         let knownConstraints = learnedConstraints
         let cacheLifetime = Self.constraintCacheLifetime
@@ -341,7 +356,7 @@ final class WindowLayoutController: ObservableObject {
                 return
             }
             let snapshot = reader.layoutSnapshot(displays: displays, desktop: requestGeneration,
-                snap: snap, selection: selection, maximumWindows: maximumWindows, budget: budget)
+                snap: snap, selection: selection, maximumWindows: maximumWindows, budget: budget, excluding: grouped)
             let applicable = Dictionary(uniqueKeysWithValues: snapshot.windows.compactMap { window -> (WindowLayoutIdentity, WindowLayoutSizeConstraint)? in
                 guard let record = knownConstraints[window.id], record.scope == window.scope,
                       SidebarPlacementGeometry.matches(record.workArea, snap.request.workArea),
@@ -521,6 +536,10 @@ final class WindowLayoutController: ObservableObject {
     }
 
     private func finishInput() {
+        if let tabPlacement {
+            NotificationCenter.default.post(name: WindowTabPlacementActivity.ended, object: tabPlacement)
+            self.tabPlacement = nil
+        }
         if let localInputMonitor { NSEvent.removeMonitor(localInputMonitor) }
         localInputMonitor = nil
         if let inputMonitor { NSEvent.removeMonitor(inputMonitor) }

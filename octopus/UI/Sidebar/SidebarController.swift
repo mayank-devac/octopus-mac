@@ -48,6 +48,9 @@ final class SidebarController {
                 controller.onPairHover = { [weak self] target, direction in
                     self?.displays.values.forEach { $0.showPairHighlight(target, direction: direction) }
                 }
+                controller.onTabGroupHover = { [weak self] target in
+                    self?.displays.values.forEach { $0.showTabGroupHighlight(target) }
+                }
                 controller.onPairDragState = { [weak self] active in
                     self?.displays.values.forEach { $0.freezePairCatalogue(active) }
                 }
@@ -65,12 +68,24 @@ final class SidebarController {
         displays.values.forEach { $0.stop() }
         displays.removeAll()
     }
+
+    func focusWindow(_ id: SidebarWindowID, completion: @escaping (Bool) -> Void) -> SidebarPendingAction? {
+        guard let owner = displays.values.first(where: { $0.containsWindow(id) }) else { completion(false); return nil }
+        return owner.focusWindow(id, completion: completion)
+    }
 }
 
 // Each display owns its panel, hover state and drag session. The window popup is shared.
 @MainActor
 private final class SidebarDisplayController {
     private let inventory = SidebarWindowInventory()
+    func containsWindow(_ id: SidebarWindowID) -> Bool {
+        inventory.entries.contains { $0.pid == id.pid && $0.windows.contains { $0.cgWindowID == id.windowID } }
+    }
+
+    func focusWindow(_ id: SidebarWindowID, completion: @escaping (Bool) -> Void) -> SidebarPendingAction? {
+        inventory.focus(id, completion: completion)
+    }
     private let viewState = SidebarViewState()
     private lazy var dragController = SidebarDragController(inventory: inventory)
     private let cycleController: CyclePanelController
@@ -82,6 +97,7 @@ private final class SidebarDisplayController {
     var otherDragActive: () -> Bool = { false }
     var pairTargetsProvider: () -> [SidebarIconPairTarget] = { [] }
     var onPairHover: (SidebarIconPairTarget?, PairDropDirection?) -> Void = { _, _ in }
+    var onTabGroupHover: (SidebarIconPairTarget?) -> Void = { _ in }
     var onPairDragState: (Bool) -> Void = { _ in }
     var onPairDragScroll: (CGPoint) -> Void = { _ in }
     var isDragging: Bool { dragController.isActive }
@@ -271,6 +287,12 @@ private final class SidebarDisplayController {
             return controller.preparePair(source: source, target: target, completion: completion)
         }
         dragController.onPairDrop = { request in AppDelegate.instance?.windowLayoutController.snapPair(request) }
+        dragController.onTabGroupHover = { [weak self] target in self?.onTabGroupHover(target) }
+        dragController.prepareTabGroup = { source, target, completion in
+            guard let controller = AppDelegate.instance?.windowTabGroupController else { completion(nil); return nil }
+            return controller.prepareTabs(source: source, target: target, completion: completion)
+        }
+        dragController.onTabGroupDrop = { prepared in AppDelegate.instance?.windowTabGroupController.commitTabs(prepared) }
         dragController.prepareSnap = { window, request, completion in
             guard let controller = AppDelegate.instance?.windowLayoutController else { completion(nil); return nil }
             return controller.prepareSnap(window: window, request: request, completion: completion)
@@ -366,6 +388,11 @@ private final class SidebarDisplayController {
         if viewState.pairDropEntryID != entry { viewState.pairDropEntryID = entry }
         let selected = entry == nil ? nil : direction
         if viewState.pairDropDirection != selected { viewState.pairDropDirection = selected }
+    }
+
+    func showTabGroupHighlight(_ target: SidebarIconPairTarget?) {
+        let entry = target?.ownerID == menuOwnerID ? target?.entryID : nil
+        if viewState.tabGroupDropEntryID != entry { viewState.tabGroupDropEntryID = entry }
     }
 
     func stop() {

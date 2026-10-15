@@ -10,6 +10,7 @@ final class SidebarViewState: ObservableObject {
     // Pair feedback is icon-specific, separate from a whole Desktop section's transfer highlight.
     @Published var pairDropEntryID: SidebarEntryID?
     @Published var pairDropDirection: PairDropDirection?
+    @Published var tabGroupDropEntryID: SidebarEntryID?
     @Published var monitors: [SidebarMonitor] = []
     @Published var configuration = SidebarConfiguration()
     @Published var isExpanded = false
@@ -360,12 +361,17 @@ struct SidebarView: View {
                 SidebarGeometryAnchor(id: entry.id, onAnchor: onIconAnchor).allowsHitTesting(false)
             }
             .overlay {
-                if state.pairDropEntryID == entry.id {
-                    SidebarPairBorder(direction: state.pairDropDirection)
+                if state.tabGroupDropEntryID == entry.id {
+                    SidebarIconDropBorder(direction: nil, isTabGroup: true)
+                        .padding(-3).allowsHitTesting(false)
+                } else if state.pairDropEntryID == entry.id {
+                    SidebarIconDropBorder(direction: state.pairDropDirection)
                         .padding(-3).allowsHitTesting(false)
                 }
             }
             .scaleEffect(scale(for: index))
+            // Move only the icon toward the compact strip; preserve label and column widths.
+            .offset(x: isCompact ? (state.side == .right ? 11 : -11) : 0)
             .frame(height: SidebarLayout.iconSlotHeight)
 
             Text(title)
@@ -505,26 +511,36 @@ struct SidebarNotchShape: Shape {
     }
 }
 
-// A quiet neutral outline identifies B; the thick segment shows where dragged A will land.
-private struct SidebarPairBorder: View {
+// One icon indicator: a centre tab badge or the chosen snap edge.
+private struct SidebarIconDropBorder: View {
     let direction: PairDropDirection?
+    var isTabGroup = false
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         ZStack {
             RoundedRectangle(cornerRadius: 7)
-                .stroke(Color.primary.opacity(colorScheme == .dark ? 0.32 : 0.22), lineWidth: 1.5)
-            GeometryReader { geometry in
-                Path { path in
-                    let w = geometry.size.width, h = geometry.size.height
-                    switch direction {
-                    case .left: path.move(to: CGPoint(x: 0, y: 5)); path.addLine(to: CGPoint(x: 0, y: h - 5))
-                    case .right: path.move(to: CGPoint(x: w, y: 5)); path.addLine(to: CGPoint(x: w, y: h - 5))
-                    case .top: path.move(to: CGPoint(x: 5, y: 0)); path.addLine(to: CGPoint(x: w - 5, y: 0))
-                    case .bottom: path.move(to: CGPoint(x: 5, y: h)); path.addLine(to: CGPoint(x: w - 5, y: h))
-                    case nil: break
-                    }
-                }.stroke(.red, style: StrokeStyle(lineWidth: 5, lineCap: .round))
+                .stroke(isTabGroup ? Color.accentColor : Color.primary.opacity(colorScheme == .dark ? 0.32 : 0.22),
+                        lineWidth: isTabGroup ? 2 : 1.5)
+            if isTabGroup {
+                Image(systemName: "rectangle.stack.fill")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(Color.accentColor)
+                    .padding(3)
+                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 4))
+            } else {
+                GeometryReader { geometry in
+                    Path { path in
+                        let w = geometry.size.width, h = geometry.size.height
+                        switch direction {
+                        case .left: path.move(to: CGPoint(x: 0, y: 5)); path.addLine(to: CGPoint(x: 0, y: h - 5))
+                        case .right: path.move(to: CGPoint(x: w, y: 5)); path.addLine(to: CGPoint(x: w, y: h - 5))
+                        case .top: path.move(to: CGPoint(x: 5, y: 0)); path.addLine(to: CGPoint(x: w - 5, y: 0))
+                        case .bottom: path.move(to: CGPoint(x: 5, y: h)); path.addLine(to: CGPoint(x: w - 5, y: h))
+                        case nil: break
+                        }
+                    }.stroke(.red, style: StrokeStyle(lineWidth: 5, lineCap: .round))
+                }
             }
         }
         .accessibilityHidden(true)

@@ -3,6 +3,37 @@ import Testing
 @testable import octopus
 
 struct SidebarIconPairDropTests {
+    @Test func centreGroupsInsteadOfKeepingAnEarlierSideWhenGroupingIsEnabled() {
+        let intent = SidebarIconPairDrop.resolve(at: CGPoint(x: 120, y: 220), source: source, sourceVisible: true,
+            targets: [icon(target)], previousTarget: target, previousDirection: .left, tabGrouping: true)
+        guard case .tabs(let chosen) = intent else { Issue.record("Centre must select tab grouping"); return }
+        #expect(chosen.window == target)
+        let legacy = SidebarIconPairDrop.resolve(at: CGPoint(x: 120, y: 220), source: source, sourceVisible: true,
+            targets: [icon(target)], previousTarget: target, previousDirection: .left, tabGrouping: false)
+        guard case .pair(_, let direction) = legacy else { Issue.record("Disabled grouping retains the pair route"); return }
+        #expect(direction == .left)
+    }
+
+    @Test func edgesKeepAllFourSnapDirectionsWithCentreGroupingEnabled() {
+        let points: [(CGPoint, PairDropDirection)] = [(CGPoint(x: 103, y: 220), .left),
+            (CGPoint(x: 137, y: 220), .right), (CGPoint(x: 120, y: 237), .top), (CGPoint(x: 120, y: 203), .bottom)]
+        for (point, expected) in points {
+            let intent = SidebarIconPairDrop.resolve(at: point, source: source, sourceVisible: true,
+                targets: [icon(target)], previousTarget: nil, previousDirection: nil, tabGrouping: true)
+            guard case .pair(let chosen, let direction) = intent else { Issue.record("An icon edge must keep side snapping"); continue }
+            #expect(chosen.window == target && direction == expected)
+        }
+    }
+
+    @Test func centreCannotGroupWithItselfOrFallThroughAReservedClosedIcon() {
+        let point = CGPoint(x: 120, y: 220)
+        let selfDrop = SidebarIconPairDrop.resolve(at: point, source: source, sourceVisible: true,
+            targets: [icon(source)], previousTarget: nil, previousDirection: nil, tabGrouping: true)
+        guard case .blocked = selfDrop else { Issue.record("Self grouping must be blocked"); return }
+        let closed = SidebarIconPairDrop.resolve(at: point, source: source, sourceVisible: true,
+            targets: [icon(target, visible: false, reserved: true)], previousTarget: nil, previousDirection: nil, tabGrouping: true)
+        guard case .blocked = closed else { Issue.record("A closed centre target must not become a Desktop transfer"); return }
+    }
     private let source = SidebarWindowID(pid: 42, windowID: 1)
     private let target = SidebarWindowID(pid: 43, windowID: 2)
     private let frame = CGRect(x: 100, y: 200, width: 40, height: 40)

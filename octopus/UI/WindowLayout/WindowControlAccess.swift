@@ -32,6 +32,8 @@ enum WindowControlRead {
 
 enum WindowFrameWritePolicy { case crossDisplayPlacement, sameDisplayAdjustment, preparedSnap }
 
+enum WindowTabPresence { case present, missing, separated, unknown }
+
 // Queue ownership and handle generations stay with the reader; native layout rules have one boundary.
 final class WindowControlAccess: @unchecked Sendable {
     let queue: DispatchQueue
@@ -92,31 +94,60 @@ final class WindowControlAccess: @unchecked Sendable {
         guard !token.isCancelled, let app = NSRunningApplication(processIdentifier: window.id.window.pid), !app.isTerminated else {
             completion(); return
         }
-        let accepted = SidebarFocusActivation.request(canContinue: { !token.isCancelled && !app.isTerminated },
-            yieldActivation: { NSApp.yieldActivation(to: app) }, activate: {
-                SidebarFocusActivation.activate(target: window.id.window,
-                    focusWindow: { SidebarWindowFocusRequest($0.pid, $0.windowID) }, activateApp: { app.activate(options: $0) })
-            })
-        guard accepted else { completion(); return }
         let displays = WindowLayoutDisplay.connected()
-        let deadline = ProcessInfo.processInfo.systemUptime + 1
-        queue.async { [weak self] in
-            defer { DispatchQueue.main.async(execute: completion) }
-            let budget = WindowControlBudget(deadline: deadline, canContinue: { !token.isCancelled })
-            guard let self, !token.isCancelled,
-                  NSWorkspace.shared.frontmostApplication?.processIdentifier == app.processIdentifier,
-                  let current = self.read(window.id.window, displays: displays, budget: budget, expected: window).window,
-                  current.eligible, current.scope == window.scope,
-                  SidebarPlacementGeometry.matches(current.frame, window.frame),
-                  case .resolved(let handle) = self.resolve(window.id.window, budget),
-                  handle.id == window.id, budget.isCurrent else { return }
-            _ = AXUIElementPerformAction(handle.element, kAXRaiseAction as CFString)
+        let deadline = ProcessInfo.processInfo.systemUptime + 2
+        let waiter = WindowForegroundActivationWaiter(targetPID: app.processIdentifier,
+            initialPID: NSWorkspace.shared.frontmostApplication?.processIdentifier,
+            center: NSWorkspace.shared.notificationCenter,
+            canContinue: { !token.isCancelled && !app.isTerminated },
+            frontmostPID: { NSWorkspace.shared.frontmostApplication?.processIdentifier }) { [weak self] activated in
+            guard activated, let self else { completion(); return }
+            self.queue.async { [weak self] in
+                defer { DispatchQueue.main.async(execute: completion) }
+                let budget = WindowControlBudget(deadline: deadline, canContinue: { !token.isCancelled })
+                guard let self, !token.isCancelled,
+                      NSWorkspace.shared.frontmostApplication?.processIdentifier == app.processIdentifier,
+                      let current = self.read(window.id.window, displays: displays, budget: budget, expected: window).window,
+                      current.eligible, current.scope == window.scope,
+                      SidebarPlacementGeometry.matches(current.frame, window.frame),
+                      case .resolved(let handle) = self.resolve(window.id.window, budget),
+                      handle.id == window.id, budget.isCurrent else { return }
+                _ = AXUIElementPerformAction(handle.element, kAXRaiseAction as CFString)
+            }
         }
+        // The existing sidebar path also raises only after didActivateApplication.
+        // An accepted activate() request alone is not proof that the app is frontmost.
+        waiter.start {
+            SidebarFocusActivation.request(canContinue: { !token.isCancelled && !app.isTerminated },
+                yieldActivation: { NSApp.yieldActivation(to: app) }, activate: {
+                    return SidebarFocusActivation.activate(target: window.id.window,
+                        focusWindow: { SidebarWindowFocusRequest($0.pid, $0.windowID) }, activateApp: { app.activate(options: $0) })
+                })
+        }
+    }
+
+    func tabIsInFront(_ window: SidebarWindowID, members: Set<SidebarWindowID>, budget: WindowControlBudget) -> Bool? {
+        dispatchPrecondition(condition: .onQueue(queue))
+        guard budget.isCurrent,
+              let records = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID)
+                as? [[String: Any]] else { return nil }
+        let ordered = records.compactMap { record -> SidebarWindowID? in
+            guard (record[kCGWindowLayer as String] as? NSNumber)?.intValue == 0,
+                  let pid = (record[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value,
+                  let number = (record[kCGWindowNumber as String] as? NSNumber)?.uint32Value else { return nil }
+            return SidebarWindowID(pid: pid, windowID: number)
+        }
+        return Self.frontmostTab(in: ordered, members: members) == window
+    }
+
+    static func frontmostTab(in ordered: [SidebarWindowID], members: Set<SidebarWindowID>) -> SidebarWindowID? {
+        ordered.first { members.contains($0) }
     }
 
     // Admit only the exact normal AX window on one visible Desktop; optional metadata absence is not a read error.
     func read(_ id: SidebarWindowID, displays: [WindowLayoutDisplay], budget: WindowControlBudget,
-              expected: WindowLayoutWindow? = nil, recency: UInt64 = 0, stackOrder: Int = Int.max) -> WindowControlRead {
+              expected: WindowLayoutWindow? = nil, recency: UInt64 = 0, stackOrder: Int = Int.max,
+              forFocus: Bool = false) -> WindowControlRead {
         dispatchPrecondition(condition: .onQueue(queue))
         guard budget.isCurrent else { return .failed("Window control was cancelled or timed out.") }
         let handle: WindowControlHandle
@@ -133,11 +164,13 @@ final class WindowControlAccess: @unchecked Sendable {
             return .failed("This window is no longer available.")
         }
         guard (owner[kCGWindowLayer as String] as? NSNumber)?.intValue == 0 else { return .excluded }
-        guard (owner[kCGWindowIsOnscreen as String] as? Bool) == true else { return .excluded }
+        // A focus request may need to reveal a covered window. Its native identity,
+        // normal role, ordinary visible Desktop and physical display are still verified below.
+        guard forFocus || (owner[kCGWindowIsOnscreen as String] as? Bool) == true else { return .excluded }
         AXUIElementSetMessagingTimeout(handle.element, Float(min(0.2, max(0.001, budget.deadline - budget.clock()))))
         let attributes = [kAXPositionAttribute, kAXSizeAttribute, kAXMinimizedAttribute,
                           "AXFullScreen", "AXModal", "AXSheets", kAXRoleAttribute, kAXSubroleAttribute]
-        guard let values = readAttributes(attributes, element: handle.element, budget: budget),
+        guard let values = readAttributes(attributes, element: handle.element, budget: budget, requiredIndices: [0, 1, 6]),
               let position = values[0].object, let size = values[1].object,
               let frame = AXUIElement.decodeWindowFrame(position: position, size: size),
               let minimized = values[2].optionalBool, let fullScreen = values[3].optionalBool,
@@ -273,17 +306,67 @@ final class WindowControlAccess: @unchecked Sendable {
         return result
     }
 
+    // Presence is separate from visibility: visiting another Desktop or hiding an app
+    // must not destroy its tab membership. Only positive native evidence removes a tab.
+    func tabPresence(_ identity: WindowLayoutIdentity, budget: WindowControlBudget) -> WindowTabPresence {
+        dispatchPrecondition(condition: .onQueue(queue))
+        guard budget.isCurrent else { return .unknown }
+        guard let app = NSRunningApplication(processIdentifier: identity.window.pid), !app.isTerminated else { return .missing }
+        switch resolve(identity.window, budget) {
+        case .excluded: return .missing
+        case .failed: return .unknown
+        case .resolved(let handle):
+            guard handle.id == identity else { return .missing }
+            var role: CFTypeRef?
+            let error = AXUIElementCopyAttributeValue(handle.element, kAXRoleAttribute as CFString, &role)
+            if error == .invalidUIElement { return .missing }
+            guard budget.isCurrent, error == .success else { return .unknown }
+            guard role as? String == kAXWindowRole as String else { return .missing }
+            guard let state = readAttributes([kAXMinimizedAttribute, "AXFullScreen"], element: handle.element, budget: budget),
+                  let minimized = state[0].optionalBool, let fullScreen = state[1].optionalBool else { return .unknown }
+            return minimized || fullScreen ? .separated : .present
+        }
+    }
+
+    func tabTitle(_ identity: WindowLayoutIdentity, budget: WindowControlBudget) -> String? {
+        dispatchPrecondition(condition: .onQueue(queue))
+        guard budget.isCurrent, case .resolved(let handle) = resolve(identity.window, budget),
+              handle.id == identity else { return nil }
+        let title: String? = handle.element.getAttributeValue(.title)
+        return title?.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    func closeTab(_ expected: WindowLayoutWindow, displays: [WindowLayoutDisplay], budget: WindowControlBudget) -> Bool {
+        dispatchPrecondition(condition: .onQueue(queue))
+        guard budget.isCurrent,
+              let current = read(expected.id.window, displays: displays, budget: budget, expected: expected).window,
+              current.id == expected.id, current.scope == expected.scope, current.movable,
+              case .resolved(let handle) = resolve(expected.id.window, budget), handle.id == expected.id,
+              let button: AXUIElement = handle.element.getAttributeValue(.closeButton),
+              let enabled: Bool = button.getAttributeValue(.enabled), enabled,
+              let owner: AXUIElement = button.getAttributeValue(.window), owner.getWindowID() == expected.id.window.windowID,
+              budget.isCurrent else { return false }
+        // Ask the app to close normally. It owns save prompts and decides whether it actually closes.
+        return AXUIElementPerformAction(button, kAXPressAction as CFString) == .success
+    }
+
+    static func decodeBulkAttributes(_ values: [AnyObject], expectedCount: Int,
+                                     requiredIndices: [Int]) -> [WindowAXAttributeValue]? {
+        guard values.count == expectedCount, requiredIndices.allSatisfy({ values.indices.contains($0) }) else { return nil }
+        let slots = values.map { WindowAXAttributeValue($0) }
+        if requiredIndices.contains(where: { if case .failed = slots[$0] { return true }; return false }) { return slots }
+        return requiredIndices.contains(where: { slots[$0].needsIndividualFallback }) ? nil : slots
+    }
+
     private func readAttributes(_ attributes: [String], element: AXUIElement,
-                                budget: WindowControlBudget) -> [WindowAXAttributeValue]? {
+                                budget: WindowControlBudget, requiredIndices: [Int] = []) -> [WindowAXAttributeValue]? {
         guard budget.isCurrent else { return nil }
         var array: CFArray?
         let result = AXUIElementCopyMultipleAttributeValues(element, attributes as CFArray,
             AXCopyMultipleAttributeOptions(rawValue: 0), &array)
         if result == .success, let values = array as? [AnyObject], values.count == attributes.count {
-            let slots = values.map { WindowAXAttributeValue($0) }
-            if [0, 1, 6].contains(where: { if case .failed = slots[$0] { return true }; return false }) { return slots }
             // Optional unsupported values have legitimate defaults; required geometry/role is resolved narrowly.
-            if ![0, 1, 6].contains(where: { slots[$0].needsIndividualFallback }) { return slots }
+            if let slots = Self.decodeBulkAttributes(values, expectedCount: attributes.count, requiredIndices: requiredIndices) { return slots }
         } else if result != .notImplemented && result != .attributeUnsupported { return nil }
         var values: [WindowAXAttributeValue] = []
         for attribute in attributes {
@@ -339,5 +422,66 @@ final class WindowControlAccess: @unchecked Sendable {
         if enabled { _ = AXUIElementSetAttributeValue(app, attribute, kCFBooleanFalse) }
         defer { if enabled { _ = AXUIElementSetAttributeValue(app, attribute, kCFBooleanTrue) } }
         return body()
+    }
+}
+
+// A bounded, notification-driven handoff, matching the sidebar's foreground gate.
+// It never retries activation or raises after a canceled click or another app switch.
+@MainActor
+final class WindowForegroundActivationWaiter {
+    private let targetPID: pid_t
+    private let initialPID: pid_t?
+    private let center: NotificationCenter
+    private let canContinue: () -> Bool
+    private let frontmostPID: () -> pid_t?
+    private let timeout: TimeInterval
+    private let completion: (Bool) -> Void
+    private var observer: NSObjectProtocol?
+    private var expiry: DispatchWorkItem?
+    private var completed = false
+
+    init(targetPID: pid_t, initialPID: pid_t?, center: NotificationCenter,
+         timeout: TimeInterval = 2, canContinue: @escaping () -> Bool,
+         frontmostPID: @escaping () -> pid_t?, completion: @escaping (Bool) -> Void) {
+        self.targetPID = targetPID
+        self.initialPID = initialPID
+        self.center = center
+        self.timeout = timeout
+        self.canContinue = canContinue
+        self.frontmostPID = frontmostPID
+        self.completion = completion
+    }
+
+    func start(requestActivation: () -> Bool) {
+        guard !completed, observer == nil else { return }
+        guard canContinue() else { finish(false); return }
+        // Registration precedes the request, including apps that activate synchronously.
+        // Observer/expiry retain this short-lived request until finish removes both.
+        observer = center.addObserver(forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main) { [self] _ in
+            MainActor.assumeIsolated { activationChanged() }
+        }
+        let work = DispatchWorkItem { [self] in finish(false) }
+        expiry = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + timeout, execute: work)
+        guard requestActivation() else { finish(false); return }
+        activationChanged()
+    }
+
+    private func activationChanged() {
+        guard !completed else { return }
+        guard canContinue() else { finish(false); return }
+        let current = frontmostPID()
+        if current == targetPID { finish(true) }
+        else if current != initialPID { finish(false) }
+    }
+
+    private func finish(_ activated: Bool) {
+        guard !completed else { return }
+        completed = true
+        if let observer { center.removeObserver(observer) }
+        observer = nil
+        expiry?.cancel()
+        expiry = nil
+        completion(activated)
     }
 }
