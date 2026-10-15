@@ -71,11 +71,7 @@ final class WindowTabStripPanel: NSPanel {
 
     func cancelDrag() {
         buttons.forEach { $0.cancelDrag() }
-        guard moveGesture != nil else { return }
-        moveGesture = nil
-        NSCursor.arrow.set()
-        positionStrip(windowFrame)
-        onMoveCancel()
+        endMove(at: nil)
     }
 
     private func beginMove(at point: CGPoint) {
@@ -91,12 +87,12 @@ final class WindowTabStripPanel: NSPanel {
         if gesture.moved { NSCursor.closedHand.set(); positionStrip(gesture.frame) }
     }
 
-    private func endMove(at point: CGPoint) {
-        updateMove(at: point)
+    private func endMove(at point: CGPoint?) {
+        if let point { updateMove(at: point) }
         guard let gesture = moveGesture else { return }
         moveGesture = nil
         NSCursor.arrow.set()
-        guard gesture.moved, gesture.frame != gesture.original,
+        guard point != nil, gesture.moved, gesture.frame != gesture.original,
               NSWorkspace.shared.frontmostApplication?.processIdentifier == moveForegroundPID else {
             positionStrip(windowFrame)
             onMoveCancel()
@@ -109,6 +105,7 @@ final class WindowTabStripPanel: NSPanel {
         let axFrame = WindowTabGeometry.stripFrame(window: window, workArea: workArea)
         let frame = SidebarPlacementGeometry.flip(axFrame, primaryTop: NSScreen.screens.first?.frame.maxY ?? 0)
         setFrame(frame, display: false)
+        grip.frame = CGRect(x: 0, y: 0, width: min(28, frame.width), height: frame.height)
         scroll.frame = CGRect(x: 28, y: 0, width: max(1, frame.width - 28), height: frame.height)
     }
 
@@ -117,12 +114,8 @@ final class WindowTabStripPanel: NSPanel {
         guard let active = group.active else { orderOut(nil); return }
         windowFrame = group.frame
         self.workArea = workArea
-        let axFrame = WindowTabGeometry.stripFrame(window: group.frame, workArea: workArea)
-        let frame = SidebarPlacementGeometry.flip(axFrame, primaryTop: NSScreen.screens.first?.frame.maxY ?? 0)
-        setFrame(frame, display: false)
-        let availableWidth = max(1, frame.width - 28)
-        grip.frame = CGRect(x: 0, y: 0, width: min(28, frame.width), height: frame.height)
-        scroll.frame = CGRect(x: 28, y: 0, width: availableWidth, height: frame.height)
+        positionStrip(group.frame)
+        let availableWidth = scroll.frame.width
         let identities = group.members.map(\.window.id)
         let membersChanged = identities != displayedMembers
         if membersChanged {

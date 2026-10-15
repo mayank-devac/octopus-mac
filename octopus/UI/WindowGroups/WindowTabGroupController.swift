@@ -363,30 +363,14 @@ final class WindowTabGroupController {
             originalBudget.isCurrent && NSEvent.pressedMouseButtons & 1 == 0
         })
         reader.queue.async { [weak self, reader] in
-            let access = reader.windowControlAccess
-            var windows: [WindowLayoutWindow] = []
-            for member in group.members {
-                guard nativeBudget.isCurrent,
-                      let live = access.read(member.window.id.window, displays: displays, budget: nativeBudget,
-                        expected: member.window, forFocus: true).window,
-                      live.id == member.window.id, live.eligible, live.scope == group.scope else { break }
-                windows.append(live)
-            }
-            let result = windows.count == group.members.count
-                ? WindowTabGroupService.move(windows, selected: group.selected, from: original, to: frame,
-                    scope: group.scope, displays: displays, access: access, budget: nativeBudget)
-                : WindowTabAlignmentResult(reason: "The group changed during the drag; remaining windows were left untouched.")
+            let result = WindowTabGroupService.move(group.members.map(\.window), selected: group.selected,
+                from: original, to: frame, scope: group.scope, displays: displays,
+                access: reader.windowControlAccess, budget: nativeBudget)
             DispatchQueue.main.async {
                 guard let self, self.operation === token, !token.isCancelled, self.revision == currentRevision else { return }
                 self.movingGroup = nil
-                if let reason = result.reason {
-                    if result.placementFailed {
-                        self.groups.removeValue(forKey: id)
-                        self.panels.removeValue(forKey: id)?.close()
-                        self.revision += 1
-                        self.updateObservation()
-                    }
-                    self.finish(token, reason: reason, refresh: false)
+                if result.reason != nil {
+                    self.finishAlignmentFailure(result, groupID: id, token: token, refreshAfterRemoval: false)
                     return
                 }
                 guard var current = self.groups[id], result.windows.count == current.members.count,
@@ -477,6 +461,19 @@ final class WindowTabGroupController {
         if let reason { feedback.showFeedback(reason) }
         if refresh { scheduleRefresh() }
         else { refreshAgain = false; refreshPanelGeometry() }
+    }
+
+    private func finishAlignmentFailure(_ result: WindowTabAlignmentResult, groupID: UUID,
+                                        token: WindowLayoutBatchToken, refreshAfterRemoval: Bool) {
+        guard let reason = result.reason else { return }
+        if result.placementFailed {
+            groups.removeValue(forKey: groupID)
+            panels.removeValue(forKey: groupID)?.close()
+            revision += 1
+            updateObservation()
+        }
+        // Interrupted arrangements keep membership and wait for a new native change.
+        finish(token, reason: reason, refresh: result.placementFailed && refreshAfterRemoval)
     }
 
     private func removeMembership(_ identity: WindowLayoutIdentity) {
@@ -623,20 +620,8 @@ final class WindowTabGroupController {
                       NSWorkspace.shared.frontmostApplication?.processIdentifier == token.frontmostPID else {
                     self.finish(token); return
                 }
-                if let reason = result.reason {
-                    guard result.placementFailed else {
-                        // Stale reads and cancellations do not mean an app refused a resize.
-                        // Wait for the next native change instead of dissolving or retrying.
-                        self.finish(token, reason: reason, refresh: false)
-                        return
-                    }
-                    // A refused resize cannot become an endless notification/write loop.
-                    // Leave every real window accessible and dissolve this group.
-                    self.groups.removeValue(forKey: id)
-                    self.panels.removeValue(forKey: id)?.close()
-                    self.revision += 1
-                    self.updateObservation()
-                    self.finish(token, reason: reason)
+                if result.reason != nil {
+                    self.finishAlignmentFailure(result, groupID: id, token: token, refreshAfterRemoval: true)
                     return
                 }
                 if var current = self.groups[id] {
