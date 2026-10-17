@@ -22,6 +22,7 @@ let keypadKeys: [KeyboardShortcuts.Key] = [
 ]
 
 extension KeyboardShortcuts.Name {
+    static let showRadialWindows = Self("showRadialWindows", default: .init(.space, modifiers: [.control, .option]))
     static let moveWindowLeftMonitor = Self("moveWindowLeftMonitor", default: .init(.leftArrow, modifiers: [.control, .shift]))
     static let moveWindowRightMonitor = Self("moveWindowRightMonitor", default: .init(.rightArrow, modifiers: [.control, .shift]))
 
@@ -69,13 +70,15 @@ enum WindowMonitorShortcuts {
         defaults.set(true, forKey: migrationKey)
     }
 
-    static func conflict(for shortcut: KeyboardShortcuts.Shortcut?, excluding name: KeyboardShortcuts.Name) -> Bool {
+    static func conflict(for shortcut: KeyboardShortcuts.Shortcut?, excluding name: KeyboardShortcuts.Name,
+                         includeRadial: Bool = true) -> Bool {
         guard let shortcut else { return false }
-        let names: [KeyboardShortcuts.Name] = [.moveWindowLeftMonitor, .moveWindowRightMonitor]
+        let names: [KeyboardShortcuts.Name] = [.moveWindowLeftMonitor, .moveWindowRightMonitor, .showRadialWindows]
             + KeyboardShortcuts.Name.bindShortcuts + KeyboardShortcuts.Name.activateShortcuts
             + KeyboardShortcuts.Name.profileShortcuts + KeyboardShortcuts.Name.bindKeypadShortcuts
             + KeyboardShortcuts.Name.activateKeypadShortcuts + KeyboardShortcuts.Name.profileKeypadShortcuts
-        return names.contains { $0 != name && KeyboardShortcuts.getShortcut(for: $0) == shortcut }
+        return names.contains { $0 != name && (includeRadial || $0 != .showRadialWindows)
+            && KeyboardShortcuts.getShortcut(for: $0) == shortcut }
     }
 }
 
@@ -84,10 +87,13 @@ final class ShortcutController {
     private let cycleController: CyclePanelController
     private let profileManager: ProfileManager
     private let monitorMoveController = WindowMonitorMoveController()
+    private let radialController: RadialWindowController?
     
-    init(_ cycleController: CyclePanelController, _ profileManager: ProfileManager) {
+    init(_ cycleController: CyclePanelController, _ profileManager: ProfileManager,
+         radialController: RadialWindowController? = nil) {
         self.cycleController = cycleController
         self.profileManager = profileManager
+        self.radialController = radialController
         
         WindowMonitorShortcuts.migrateDefaults()
         monitorMoveController.start()
@@ -95,13 +101,17 @@ final class ShortcutController {
     }
     
     private func setupShortcuts() {
+        KeyboardShortcuts.onKeyDown(for: .showRadialWindows) { [weak self] in
+            self?.radialController?.openFromKeyboard()
+        }
         // Key-up fires once per press, even when holding the arrow generates key repeats.
         for (name, direction) in [(KeyboardShortcuts.Name.moveWindowLeftMonitor, WindowMonitorMoveDirection.left),
                                   (.moveWindowRightMonitor, .right)] {
             KeyboardShortcuts.onKeyUp(for: name) { [weak self] in
                 // A later modifier change can make an app/profile shortcut collide with this one.
                 // Keep the existing action; never also move a window under an ambiguous binding.
-                guard !WindowMonitorShortcuts.conflict(for: KeyboardShortcuts.getShortcut(for: name), excluding: name) else { return }
+                guard !WindowMonitorShortcuts.conflict(for: KeyboardShortcuts.getShortcut(for: name), excluding: name, includeRadial: false) else { return }
+                self?.radialController?.cancel()
                 self?.monitorMoveController.move(direction)
             }
         }
@@ -129,11 +139,12 @@ final class ShortcutController {
     }
 
     func stop() {
-        KeyboardShortcuts.disable(.moveWindowLeftMonitor, .moveWindowRightMonitor)
+        KeyboardShortcuts.disable(.moveWindowLeftMonitor, .moveWindowRightMonitor, .showRadialWindows)
         monitorMoveController.stop()
     }
     
     private func handleBind(number: Int) {
+        radialController?.cancel()
         guard let application = Application.getFrontApplication() else {
             NSSound.beep()
             return
@@ -150,6 +161,7 @@ final class ShortcutController {
     }
     
     private func handleActivate(number: Int) {
+        radialController?.cancel()
         guard let binding = profileManager.application(for: number) else {
             NSSound.beep()
             return
@@ -178,6 +190,7 @@ final class ShortcutController {
     }
     
     func handleProfile(number: Int) {
+        radialController?.cancel()
         guard let profileID = profileManager.profileID(forNumber: number) else {
             NSSound.beep()
             return

@@ -26,6 +26,19 @@ struct PreferencesShortcutsView: View {
     @State private var monitorShortcutConflict = false
     @State private var savedLeftMonitorShortcut = KeyboardShortcuts.getShortcut(for: .moveWindowLeftMonitor)
     @State private var savedRightMonitorShortcut = KeyboardShortcuts.getShortcut(for: .moveWindowRightMonitor)
+    @StateObject private var radialSettings = RadialWindowSettings.shared
+    @State private var radialError: String?
+    @State private var savedRadialShortcut = KeyboardShortcuts.getShortcut(for: .showRadialWindows)
+
+    private func radialShortcutChanged(_ shortcut: KeyboardShortcuts.Shortcut?) {
+        if let error = RadialWindowSettings.keyboardError(shortcut) {
+            KeyboardShortcuts.setShortcut(savedRadialShortcut, for: .showRadialWindows)
+            radialError = error
+        } else {
+            savedRadialShortcut = shortcut
+            radialError = nil
+        }
+    }
 
     private func refreshMonitorShortcutConflict() {
         monitorShortcutConflict = WindowMonitorShortcuts.conflict(
@@ -209,6 +222,33 @@ struct PreferencesShortcutsView: View {
             }
 
             Section {
+                Toggle("Use middle mouse button", isOn: Binding(
+                    get: { radialSettings.middleClickEnabled },
+                    set: { radialError = radialSettings.setMiddleClick($0) }
+                ))
+                Text("Hold middle click, point to a window, then release. Enabling this reserves ordinary middle click for Octopus.")
+                    .font(.caption).foregroundStyle(.secondary)
+                HStack {
+                    Text("Select windows").frame(maxWidth: .infinity, alignment: .leading)
+                    KeyboardShortcuts.Recorder(for: .showRadialWindows) { radialShortcutChanged($0) }
+                        .accessibilityLabel("Radial window selector shortcut")
+                    Button("Disable") {
+                        KeyboardShortcuts.setShortcut(nil, for: .showRadialWindows)
+                        radialShortcutChanged(nil)
+                    }
+                    Button("Reset") {
+                        KeyboardShortcuts.reset(.showRadialWindows)
+                        radialShortcutChanged(KeyboardShortcuts.getShortcut(for: .showRadialWindows))
+                    }
+                }
+                Text("Includes open windows on every monitor and Desktop, including minimised windows and hidden apps. Hold the shortcut’s modifiers while choosing; release a modifier to select. Hover More for additional windows, then scroll or use Page Up / Page Down. Escape cancels.")
+                    .font(.caption).foregroundStyle(.secondary)
+                if let error = radialError ?? radialSettings.status {
+                    Text(error).font(.caption).foregroundStyle(.secondary)
+                }
+            } header: { Text("Radial window selector") }
+
+            Section {
                 Button("Reset all mouse shortcuts") {
                     recordingMouseAction = nil
                     mouseShortcutError = nil
@@ -293,8 +333,8 @@ struct PreferencesShortcutsView: View {
 
         }
         .formStyle(.grouped)
-        .onDisappear { recordingMouseAction = nil }
-        .onAppear { refreshMonitorShortcutConflict() }
+        .onDisappear { recordingMouseAction = nil; radialSettings.editingShortcuts = false }
+        .onAppear { refreshMonitorShortcutConflict(); radialSettings.editingShortcuts = true }
         .onReceive(NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification).receive(on: DispatchQueue.main)) { _ in
             refreshMonitorShortcutConflict()
         }

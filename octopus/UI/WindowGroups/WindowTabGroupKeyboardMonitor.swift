@@ -82,7 +82,7 @@ final class WindowTabGroupKeyboardMonitor {
         if type == .keyDown, !session.capturedTab, !repeating,
            let direction = WindowTabShortcut.direction(keyCode: UInt16(kVK_Tab), modifiers: flags),
            !WindowMonitorShortcuts.conflict(for: .init(.tab, modifiers: direction == 1 ? .control : [.control, .shift]),
-                excluding: .init("windowTabGroupCycle")) { window = sourceWindow() }
+                excluding: .init("windowTabGroupCycle"), includeRadial: false) { window = sourceWindow() }
         switch session.route(type, keyCode: UInt16(kVK_Tab), modifiers: flags, repeating: repeating, window: window) {
         case .pass: return Unmanaged.passUnretained(event)
         case .consume: return nil

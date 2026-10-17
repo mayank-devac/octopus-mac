@@ -171,6 +171,9 @@ final class MouseShortcutStore: ObservableObject {
     func assign(_ shortcut: MouseShortcut?, to action: MouseShortcutAction) -> String? {
         if let shortcut {
             guard shortcut.isValid else { return "This mouse button is not supported." }
+            if shortcut == MouseShortcut(button: 2), defaults.bool(forKey: RadialWindowSettings.mouseKey) {
+                return "Middle click is reserved for the radial window selector. Disable it there first."
+            }
             let other: MouseShortcutAction? = action == .hide ? .minimize : action == .minimize ? .hide : nil
             if let other, bindings[other] == shortcut {
                 return "\(shortcut.title) is already assigned to \(other.title.lowercased()). Choose another shortcut or clear that assignment first."

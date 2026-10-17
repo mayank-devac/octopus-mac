@@ -88,6 +88,16 @@ enum SidebarIconClickPolicy {
     }
 }
 
+// Pin selector requests to the original native window, including during restoration or Space changes.
+struct SidebarFocusRequirement {
+    let element: AXUIElement
+    let launchDate: Date?
+
+    func matches(element: AXUIElement, launchDate: Date?) -> Bool {
+        CFEqual(self.element, element) && self.launchDate == launchDate
+    }
+}
+
 // Main-thread cancellation must be visible even while the AX queue is blocked in another app.
 final class SidebarPendingAction: @unchecked Sendable {
     private let lock = NSLock()
@@ -96,11 +106,14 @@ final class SidebarPendingAction: @unchecked Sendable {
     private var reopenDeadline: TimeInterval?
     let frontmostPID: pid_t?
     let focusTarget: SidebarWindowID?
+    let focusRequirement: SidebarFocusRequirement?
     private var completion: ((Bool) -> Void)?
 
-    init(frontmostPID: pid_t?, focusTarget: SidebarWindowID? = nil, completion: ((Bool) -> Void)? = nil) {
+    init(frontmostPID: pid_t?, focusTarget: SidebarWindowID? = nil,
+         focusRequirement: SidebarFocusRequirement? = nil, completion: ((Bool) -> Void)? = nil) {
         self.frontmostPID = frontmostPID
         self.focusTarget = focusTarget
+        self.focusRequirement = focusRequirement
         self.completion = completion
     }
 
@@ -205,11 +218,11 @@ enum SidebarFocusActivation {
 
     // Prefer the exact window over app-wide activation. Acceptance alone does not
     // confirm a Space transition or that the requested window became focused.
-    static func activate(target: SidebarWindowID?, focusWindow: (SidebarWindowID) -> Bool,
+    static func activate(target: SidebarWindowID?, allowAppFallback: Bool = true, focusWindow: (SidebarWindowID) -> Bool,
                          activateApp: (NSApplication.ActivationOptions) -> Bool) -> Bool {
         // No target window: macOS chooses the Space either way.
         guard let target else { return activateApp([.activateAllWindows]) }
-        return focusWindow(target) || activateApp([])
+        return focusWindow(target) || (allowAppFallback && activateApp([]))
     }
 }
 
@@ -335,6 +348,7 @@ enum SidebarWindowPolicy {
 @MainActor
 final class SidebarWindowInventory: ObservableObject {
     @Published private(set) var entries: [SidebarEntry] = []
+    private(set) var recentWindows: [SidebarWindowID: UInt64] = [:]
     @Published private(set) var hasPermission = AXIsProcessTrusted()
     @Published private(set) var fullScreenDisplays: Set<CGDirectDisplayID> = []
     @Published private(set) var desktops: [SidebarDesktop] = []
@@ -346,9 +360,12 @@ final class SidebarWindowInventory: ObservableObject {
     var onPlacementResult: ((SidebarPlacementResult) -> Void)?
     var onDesktopTransferResult: ((String?) -> Void)?
 
+    private let tracksFrontmostFocus: Bool
+    init(tracksFrontmostFocus: Bool = false) { self.tracksFrontmostFocus = tracksFrontmostFocus }
+
     private lazy var reader = SidebarWindowReader(onChange: { [weak self] in
         DispatchQueue.main.async { self?.refresh() }
-    })
+    }, tracksFrontmostFocus: tracksFrontmostFocus)
     private var notifications: [NSObjectProtocol] = []
     private var permissionTimer: Timer?
     private var presentationObserver: NSKeyValueObservation?
@@ -494,11 +511,17 @@ final class SidebarWindowInventory: ObservableObject {
                     }
                     if note.name == NSWorkspace.didActivateApplicationNotification,
                        let pid = NSWorkspace.shared.frontmostApplication?.processIdentifier {
+                        if self.tracksFrontmostFocus {
+                            self.reader.queue.async { [reader = self.reader] in reader.recordFrontmostWindow(pid: pid) }
+                        }
                         self.finishForegroundFocus(pid)
                     }
                     self.refresh()
                 }
             })
+        }
+        if tracksFrontmostFocus, let pid = NSWorkspace.shared.frontmostApplication?.processIdentifier {
+            reader.queue.async { [reader] in reader.recordFrontmostWindow(pid: pid) }
         }
         refresh()
     }
@@ -520,6 +543,7 @@ final class SidebarWindowInventory: ObservableObject {
         presentationObserver = nil
         reader.queue.async { [reader] in reader.removeObservers() }
         entries = []
+        recentWindows = [:]
         desktops = []
         canTransferDesktops = false
         fullScreenDisplays = []
@@ -559,6 +583,7 @@ final class SidebarWindowInventory: ObservableObject {
                 guard let self, self.running, request == self.generation else { return }
                 if desktop == self.desktopGeneration {
                     self.hasPermission = snapshot.hasPermission
+                    self.recentWindows = snapshot.recency
                     self.entries = Self.entries(for: applications, windowEntries: snapshot.entries, scope: scope,
                                                 displayIdentifier: displayIdentifier)
                     self.fullScreenDisplays = snapshot.fullScreenDisplays
@@ -604,8 +629,13 @@ final class SidebarWindowInventory: ObservableObject {
     }
 
     // Sidebar actions never use Window.focus(), whose keyboard fallback reopens apps.
-    @discardableResult func focus(_ id: SidebarWindowID, completion: ((Bool) -> Void)? = nil) -> SidebarPendingAction? {
-        perform(.focus(id), completion: completion)
+    func focusRequirement(for window: Window) -> SidebarFocusRequirement {
+        SidebarFocusRequirement(element: window.element, launchDate: window.application.runningApplication?.launchDate)
+    }
+
+    @discardableResult func focus(_ id: SidebarWindowID, requirement: SidebarFocusRequirement? = nil,
+                                 completion: ((Bool) -> Void)? = nil) -> SidebarPendingAction? {
+        perform(.focus(id), requirement: requirement, completion: completion)
     }
 
     func hasPendingAction(for pid: pid_t) -> Bool { pendingActions[pid] != nil }
@@ -708,6 +738,7 @@ final class SidebarWindowInventory: ObservableObject {
 
     @discardableResult func perform(_ action: SidebarWindowAction,
                  frontmostPID: pid_t? = NSWorkspace.shared.frontmostApplication?.processIdentifier,
+                 requirement: SidebarFocusRequirement? = nil,
                  completion: ((Bool) -> Void)? = nil) -> SidebarPendingAction? {
         let startedAt = ProcessInfo.processInfo.systemUptime
         NotificationCenter.default.post(name: WindowLayoutController.userActionNotification, object: startedAt)
@@ -732,7 +763,8 @@ final class SidebarWindowInventory: ObservableObject {
             completion?(false)
             return nil
         }
-        let token = SidebarPendingAction(frontmostPID: frontmostPID, focusTarget: focusTarget, completion: completion)
+        let token = SidebarPendingAction(frontmostPID: frontmostPID, focusTarget: focusTarget,
+                                         focusRequirement: requirement, completion: completion)
         pendingActions[pid] = token
         let application = entries.first(where: { $0.pid == pid })?.application.runningApplication
         let desktop = desktopGeneration
@@ -858,7 +890,7 @@ final class SidebarWindowInventory: ObservableObject {
             canContinue: { token.canFinishFocus(on: pid) && !application.isTerminated },
             yieldActivation: { NSApp.yieldActivation(to: application) },
             activate: {
-                SidebarFocusActivation.activate(target: target,
+                SidebarFocusActivation.activate(target: target, allowAppFallback: token.focusRequirement == nil,
                     focusWindow: { SidebarWindowFocusRequest($0.pid, $0.windowID) },
                     activateApp: { application.activate(options: $0) })
             })
@@ -974,6 +1006,7 @@ final class SidebarWindowReader: @unchecked Sendable {
 
     struct Snapshot {
         var hasPermission: Bool
+        var recency: [SidebarWindowID: UInt64] = [:]
         var entries: [SidebarEntry] = []
         var fullScreenDisplays: Set<CGDirectDisplayID> = []
         var needsWindowDiscovery = false
@@ -1247,6 +1280,7 @@ final class SidebarWindowReader: @unchecked Sendable {
             recency = Dictionary(uniqueKeysWithValues: recency.sorted { $0.value > $1.value }.prefix(2048).map { ($0.key, $0.value) })
         }
         previousEntries = Dictionary(uniqueKeysWithValues: snapshot.entries.map { ($0.pid, $0) })
+        snapshot.recency = recency
         return snapshot
     }
 
@@ -1627,6 +1661,7 @@ final class SidebarWindowReader: @unchecked Sendable {
             return AXUIElementSetAttributeValue(element, kAXMinimizedAttribute as CFString,
                                                kCFBooleanTrue) == .success ? .completed : .rejected
         case .focus:
+            guard satisfiesFocusRequirement(known: known, token: token) else { return .rejected }
             // Only previously verified windows can be restored. Never launch or reopen.
             guard desktopScope == .allDesktops || running.isHidden || minimized || Self.isOnScreen(id),
                   token.beginFocus() else { return .rejected }
@@ -1652,6 +1687,7 @@ final class SidebarWindowReader: @unchecked Sendable {
               ProcessInfo.processInfo.systemUptime < expiresAt,
               NSWorkspace.shared.frontmostApplication?.processIdentifier == id.pid,
               let known = validatedWindow(id), !known.application.isTerminated else { return false }
+        guard satisfiesFocusRequirement(known: known, token: token) else { return false }
         AXUIElementSetMessagingTimeout(known.element, 0.2)
         guard token.canFinishFocus(on: id.pid), ProcessInfo.processInfo.systemUptime < expiresAt,
               NSWorkspace.shared.frontmostApplication?.processIdentifier == id.pid else { return false }
@@ -1660,6 +1696,11 @@ final class SidebarWindowReader: @unchecked Sendable {
             return true
         }
         return false
+    }
+
+    private func satisfiesFocusRequirement(known: KnownWindow, token: SidebarPendingAction) -> Bool {
+        guard let requirement = token.focusRequirement else { return true }
+        return requirement.matches(element: known.element, launchDate: known.application.launchDate)
     }
 
     private func validatedWindow(_ id: SidebarWindowID) -> KnownWindow? {
@@ -1788,10 +1829,12 @@ final class SidebarWindowReader: @unchecked Sendable {
             let callback: AXObserverCallback = { _, element, notification, context in
                 guard let context else { return }
                 let reader = Unmanaged<SidebarWindowReader>.fromOpaque(context).takeUnretainedValue()
-                reader.onChange()
                 if reader.tracksFrontmostFocus, notification as String == kAXFocusedWindowChangedNotification {
-                    reader.queue.async { reader.recordFrontmostWindow(element: element) }
-                }
+                    reader.queue.async {
+                        reader.recordFrontmostWindow(element: element)
+                        reader.onChange()
+                    }
+                } else { reader.onChange() }
             }
             guard AXObserverCreate(pid, callback, &observer) == .success, let observer else { return }
             observers[pid] = observer

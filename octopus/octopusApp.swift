@@ -59,6 +59,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var shortcutManager: ShortcutController!
     private var windowManager: PreferencesController!
     private var sidebarController: SidebarController!
+    private let radialController = RadialWindowController()
     let windowLayoutController = WindowLayoutController()
     let windowTabGroupController = WindowTabGroupController()
     private var appearanceObserver: NSObjectProtocol?
@@ -74,7 +75,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         AppDelegate.modifierManager = ModifierManager()
         
         cycleController = CyclePanelController(modifierManager: AppDelegate.modifierManager)
-        shortcutManager = ShortcutController(cycleController, AppDelegate.profileManager)
+        shortcutManager = ShortcutController(cycleController, AppDelegate.profileManager, radialController: radialController)
         windowManager = PreferencesController()
         
         NSApp.setActivationPolicy(.accessory)
@@ -88,6 +89,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         windowLayoutController.start()
         windowTabGroupController.start()
         sidebarController = SidebarController(cycleController: cycleController)
+        radialController.interactionBusy = { [weak self] in
+            self?.cycleController.isKeyboardSwitcherVisible == true || self?.sidebarController.hasActiveInteraction == true
+        }
+        radialController.onPresentation = { [weak self] presented in self?.sidebarController.setRadialPresented(presented) }
+        radialController.start()
         windowTabGroupController.focusUsingSidebar = { [weak self] id, completion in
             guard let sidebar = self?.sidebarController else { completion(false); return nil }
             return sidebar.focusWindow(id, completion: completion)
@@ -95,6 +101,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        radialController.stop()
         if let appearanceObserver { NotificationCenter.default.removeObserver(appearanceObserver) }
         appearanceObserver = nil
         sidebarController?.stop()

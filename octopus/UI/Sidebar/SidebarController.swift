@@ -6,6 +6,13 @@ final class SidebarController {
     private let cycleController: CyclePanelController
     private var displays: [SidebarDisplayTarget: SidebarDisplayController] = [:]
     private var observers: [NSObjectProtocol] = []
+    private var radialPresented = false
+    var hasActiveInteraction: Bool { displays.values.contains { $0.hasActiveInteraction } }
+
+    func setRadialPresented(_ presented: Bool) {
+        radialPresented = presented
+        displays.values.forEach { $0.setRadialPresented(presented) }
+    }
 
     init(cycleController: CyclePanelController) {
         self.cycleController = cycleController
@@ -38,6 +45,7 @@ final class SidebarController {
                 if screensChanged { controller.screensChanged() }
             } else {
                 let controller = SidebarDisplayController(cycleController: cycleController, displayID: id.displayID)
+                controller.setRadialPresented(radialPresented)
                 controller.otherSidebarFrames = { [weak self] in
                     self?.displays.values.flatMap { $0.interactionFrames } ?? []
                 }
@@ -79,6 +87,13 @@ final class SidebarController {
 @MainActor
 private final class SidebarDisplayController {
     private let inventory = SidebarWindowInventory()
+    private var radialPresented = false
+    var hasActiveInteraction: Bool { dragController.isActive || positionScrollCapture.isActive || frozeForAnotherDrag }
+    func setRadialPresented(_ presented: Bool) {
+        radialPresented = presented
+        if presented { cancelInteraction() }
+        else { updatePointer() }
+    }
     func containsWindow(_ id: SidebarWindowID) -> Bool {
         inventory.entries.contains { $0.pid == id.pid && $0.windows.contains { $0.cgWindowID == id.windowID } }
     }
@@ -851,6 +866,7 @@ private final class SidebarDisplayController {
     }
 
     private func handleMouse(_ event: NSEvent) {
+        guard !radialPresented else { return }
         guard !dragController.isActive, !otherDragActive() else { return }
         let point = NSEvent.mouseLocation
         // One pointer-position path owns row and button hover. Native row/button hover
@@ -881,6 +897,7 @@ private final class SidebarDisplayController {
     }
 
     private func updatePointer() {
+        guard !radialPresented else { return }
         guard settings?.enabled == true, !dragController.isActive, !otherDragActive() else { return }
         restoreSidebarIfNeeded()
         let point = NSEvent.mouseLocation
