@@ -162,6 +162,11 @@ final class ShortcutController {
     
     private func handleActivate(number: Int) {
         radialController?.cancel()
+        if let workspace = profileManager.currentProfile?.workspace(for: number) {
+            cycleController.dismissForWorkspace()
+            profileManager.openWorkspace(workspace)
+            return
+        }
         guard let binding = profileManager.application(for: number) else {
             NSSound.beep()
             return
@@ -196,6 +201,7 @@ final class ShortcutController {
             return
         }
         
-        profileManager.switchProfile(id: profileID)
+        cycleController.dismissForWorkspace()
+        profileManager.openProfileWorkspace(id: profileID)
     }
 }

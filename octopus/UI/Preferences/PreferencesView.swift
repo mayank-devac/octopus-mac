@@ -19,7 +19,7 @@ struct PreferencesView: View {
                 .tabItem { Label("Snap", systemImage: "rectangle.split.2x2") }
             
             PreferencesProfilesView()
-                .tabItem { Label("Profiles", systemImage: "person.crop.rectangle.stack") }
+                .tabItem { Label("Workspaces", systemImage: "person.crop.rectangle.stack") }
             
             PreferencesShortcutsView()
                 .tabItem { Label("Shortcuts", systemImage: "command") }

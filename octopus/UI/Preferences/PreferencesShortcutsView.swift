@@ -110,7 +110,7 @@ struct PreferencesShortcutsView: View {
             disabledCapabilities.append("binding")
         }
         if !modifierManager.profileEnabled {
-            disabledCapabilities.append("profile switching")
+            disabledCapabilities.append("workspace opening")
         }
 
         guard !disabledCapabilities.isEmpty else {
@@ -165,7 +165,7 @@ struct PreferencesShortcutsView: View {
                     }
 
                     GridRow {
-                        Text(verbatim: "Switch profile")
+                        Text(verbatim: "Open workspace")
                             .frame(minWidth: 150, alignment: .leading)
                         Toggle("", isOn: $modifierManager.profileControl).toggleStyle(.checkbox)
                         Toggle("", isOn: $modifierManager.profileOption).toggleStyle(.checkbox)

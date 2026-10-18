@@ -61,7 +61,7 @@ struct PreferencesProfilesView: View {
                     }
                     .tag(profile.id)
                     .contextMenu {
-                        Button("Duplicate Profile") {
+                        Button("Duplicate Workspace") {
                             let copy = profileManager.duplicateProfile(profile)
                             selectedProfileID = copy.id
                         }
@@ -100,7 +100,7 @@ struct PreferencesProfilesView: View {
                     modifierManager: modifierManager
                 )
             } else {
-                Text("Select a profile")
+                Text("Select a workspace")
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
@@ -114,7 +114,7 @@ struct PreferencesProfilesView: View {
     }
     
     private func addProfile() {
-        let newProfile = profileManager.createProfile(name: "New Profile")
+        let newProfile = profileManager.createWorkspace()
         selectedProfileID = newProfile.id
     }
     
@@ -145,12 +145,13 @@ struct ProfileDetailView: View {
     @ObservedObject var profileManager: ProfileManager
     @ObservedObject var modifierManager: ModifierManager
     @AppStorage("defaultNumberOrder") private var defaultNumberOrder = "rightHanded"
+    @State private var applicationSelectionError: String?
     
     
     var body: some View {
         Form {
             Section {
-                TextField("Profile name:", text: $profile.name)
+                TextField("Workspace name:", text: $profile.name)
                 
                 Picker("Number order:", selection: $profile.numberOrder) {
                     Text("Use default").tag(nil as String?)
@@ -159,7 +160,7 @@ struct ProfileDetailView: View {
                 }
                 .pickerStyle(.menu)
                 
-                Picker("Profile number:", selection: $profile.profileNumber) {
+                Picker("Workspace shortcut:", selection: $profile.profileNumber) {
                     Text("Unnumbered").tag(nil as Int?)
                     
                     Divider()
@@ -193,43 +194,66 @@ struct ProfileDetailView: View {
             }
             
             Section("Application Bindings") {
+                Text("Add apps to each numbered binding. Its shortcut opens those apps; the workspace shortcut opens every app below. Rename the workspace above.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                 ForEach(numbersInOrder, id: \.self) { number in
-                    HStack {
-                        Text("\(number):")
-                            .frame(width: 30, alignment: .leading)
-                        
-                        if let bundleIdentifier = profileManager.bundleIdentifier(for: number, in: profile) {
-                            if let app = Application(bundleIdentifier: bundleIdentifier) {
-                                Text(app.title)
-                                    .foregroundStyle(.secondary)
-                            } else {
-                                Text(bundleIdentifier)
-                                    .foregroundStyle(.secondary)
-                            }
-                            
-                            Spacer()
-                            
-                            Button("Remove") {
-                                profileManager.unbind(slot: number, in: profile)
-                            }
-                            .buttonStyle(.borderless)
-                        } else {
-                            Text("Not set")
-                                .foregroundStyle(.tertiary)
-                            
-                            Spacer()
-                        }
-                        
-                        Button("Choose application...") {
-                            chooseApplication(for: number)
-                        }
-                        .buttonStyle(.borderless)
-                    }
+                    applicationBindingRow(number)
+                }
+                if let applicationSelectionError {
+                    Text(applicationSelectionError).font(.caption).foregroundStyle(.red)
                 }
             }
         }
         .formStyle(.grouped)
         .padding()
+    }
+
+    private func applicationBindingRow(_ number: Int) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("\(number):")
+                    .frame(width: 30, alignment: .leading)
+                if let workspace = profile.workspace(for: number) {
+                    Image(systemName: "square.stack.3d.up")
+                    Text("\(workspace.bundleIdentifiers.count) apps")
+                        .foregroundStyle(.secondary)
+                } else if let identifier = profile.bundleIdentifier(for: number) {
+                    Text(Application(bundleIdentifier: identifier)?.title ?? identifier)
+                        .foregroundStyle(.secondary)
+                } else {
+                    Text("Not set").foregroundStyle(.tertiary)
+                }
+                Spacer()
+                if profile.binding(for: number) != nil {
+                    Button("Remove") {
+                        profileManager.unbind(slot: number, in: profile)
+                    }
+                    .buttonStyle(.borderless)
+                }
+                Button(profile.binding(for: number) == nil ? "Choose apps…" : "Add apps…") {
+                    chooseApplications(for: number)
+                }
+                .buttonStyle(.borderless)
+            }
+            if let workspace = profile.workspace(for: number) {
+                ForEach(workspace.bundleIdentifiers, id: \.self) { identifier in
+                    HStack {
+                        Text(Application(bundleIdentifier: identifier)?.title ?? "\(identifier) (unavailable)")
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Button {
+                            profileManager.removeWorkspaceApplication(identifier, slot: number, in: profile)
+                        } label: {
+                            Image(systemName: "minus.circle")
+                        }
+                        .buttonStyle(.borderless)
+                        .accessibilityLabel("Remove \(identifier) from \(workspace.displayName)")
+                    }
+                }
+                .padding(.leading, 38)
+            }
+        }
     }
     
     private var numbersInOrder: [Int] {
@@ -242,22 +266,24 @@ struct ProfileDetailView: View {
         }
     }
     
-    private func chooseApplication(for number: Int) {
+    private func chooseApplications(for number: Int) {
         let panel = NSOpenPanel()
-        panel.allowsMultipleSelection = false
+        panel.allowsMultipleSelection = true
         panel.canChooseDirectories = false
         panel.canChooseFiles = true
         panel.allowedContentTypes = [.application]
         panel.directoryURL = URL(fileURLWithPath: "/Applications")
         
-        if panel.runModal() == .OK, let url = panel.url {
-            if let app = Application(url: url) {
-                guard let bundleIdentifier = app.bundleIdentifier else {
-                    NSSound.beep()
-                    return
-                }
-                profileManager.bind(bundleIdentifier: bundleIdentifier, to: number, in: profile)
-            }
+        panel.prompt = "Add"
+        panel.message = "Select an app to add to this shortcut. Existing apps are kept. You can also hold Command to select several apps."
+
+        guard panel.runModal() == .OK else { return }
+        let identifiers = panel.urls.compactMap { Application(url: $0)?.bundleIdentifier }
+        guard identifiers.count == panel.urls.count, !identifiers.isEmpty else {
+            applicationSelectionError = "One of the selected apps could not be read. The binding was not changed."
+            return
         }
+        applicationSelectionError = nil
+        profileManager.addApplications(bundleIdentifiers: identifiers, to: number, in: profile)
     }
 }

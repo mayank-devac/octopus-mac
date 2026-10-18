@@ -20,6 +20,7 @@ final class ProfileManager: ObservableObject {
     private let storeURL: URL
     private var isLoading = false
     private var saveTask: Task<Void, Never>?
+    private var openingWorkspaces = Set<[String]>()
 
     init(storeURL: URL? = nil) {
         self.storeURL = storeURL ?? Self.defaultStoreURL()
@@ -41,8 +42,7 @@ final class ProfileManager: ObservableObject {
     }
 
     func createProfile(name: String, numberOrder: String? = nil) -> Profile {
-        var profile = Profile(name: name, numberOrder: numberOrder)
-        profile.bindings = Profile.normalizedBindings(profile.bindings)
+        let profile = Profile(name: name, numberOrder: numberOrder)
         profiles.append(profile)
 
         if currentProfileID == nil {
@@ -50,6 +50,13 @@ final class ProfileManager: ObservableObject {
         }
 
         return profile
+    }
+
+    func createWorkspace() -> Profile {
+        let names = Set(profiles.map(\.name))
+        var number = 0
+        while names.contains("Workspace \(number)") { number += 1 }
+        return createProfile(name: "Workspace \(number)")
     }
 
     func deleteProfile(_ profile: Profile) {
@@ -110,28 +117,70 @@ final class ProfileManager: ObservableObject {
         }
     }
 
-    func unbind(bundleIdentifier: String, in profile: Profile? = nil) {
-        guard let targetID = (profile ?? currentProfile)?.id else { return }
-        updateProfile(id: targetID) { updated in
-            updated.unbind(bundleIdentifier: bundleIdentifier)
+    func addApplications(bundleIdentifiers: [String], to slot: Int, in profile: Profile) {
+        updateProfile(id: profile.id) { updated in
+            updated.addApplications(bundleIdentifiers: bundleIdentifiers, slot: slot)
         }
     }
 
-    func bundleIdentifier(for slot: Int, in profile: Profile? = nil) -> String? {
-        guard let target = profile ?? currentProfile else { return nil }
-        return target.bundleIdentifier(for: slot)
+    func removeWorkspaceApplication(_ identifier: String, slot: Int, in profile: Profile) {
+        updateProfile(id: profile.id) { updated in
+            updated.removeApplication(identifier, slot: slot)
+        }
     }
 
     func application(for slot: Int, in profile: Profile? = nil) -> Application? {
-        guard let bundleIdentifier = bundleIdentifier(for: slot, in: profile) else {
+        guard let bundleIdentifier = (profile ?? currentProfile)?.bundleIdentifier(for: slot) else {
             return nil
         }
         return Application(bundleIdentifier: bundleIdentifier)
     }
 
+    func openWorkspace(_ workspace: Workspace) {
+        let identifiers = workspace.bundleIdentifiers
+        guard !identifiers.isEmpty, openingWorkspaces.insert(identifiers).inserted else { return }
+        Task { @MainActor in
+            defer { openingWorkspaces.remove(identifiers) }
+            var opened: [Application] = []
+            var failed: [String] = []
+            for identifier in identifiers {
+                guard let application = Application(bundleIdentifier: identifier) else {
+                    failed.append(identifier)
+                    continue
+                }
+                if !application.isRunning {
+                    do {
+                        let configuration = NSWorkspace.OpenConfiguration()
+                        configuration.activates = false
+                        _ = try await application.reopen(configuration: configuration)
+                    } catch {
+                        failed.append(application.title)
+                        continue
+                    }
+                }
+                opened.append(application)
+            }
+            // Request focus for each selected app, finishing with the first app.
+            for application in opened.reversed() { application.focus() }
+            if !failed.isEmpty {
+                let alert = NSAlert()
+                alert.messageText = "Some apps in \(workspace.displayName) could not be opened"
+                alert.informativeText = failed.joined(separator: "\n")
+                    + "\n\nCheck that these apps are installed, or update the workspace in Workspaces settings."
+                alert.runModal()
+            }
+        }
+    }
+
+    func openProfileWorkspace(id: UUID) {
+        guard let profile = profiles.first(where: { $0.id == id }) else { return }
+        switchProfile(id: id)
+        openWorkspace(profile.workspaceDefinition)
+    }
+
     func saveNow() {
         let state = ProfileStoreState(
-            schemaVersion: 1,
+            schemaVersion: 3,
             currentProfileID: currentProfileID,
             profiles: profiles.map { profile in
                 var normalized = profile
@@ -142,7 +191,8 @@ final class ProfileManager: ObservableObject {
 
         do {
             let data = try ProfileStoreState.encoder.encode(state)
-            try writeAtomically(data: data, to: storeURL)
+            try FileManager.default.createDirectory(at: storeURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try data.write(to: storeURL, options: .atomic)
         } catch {
             print("Failed to save profiles: \(error)")
         }
@@ -153,6 +203,7 @@ final class ProfileManager: ObservableObject {
         saveTask?.cancel()
         saveTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: 500_000_000)
+            guard !Task.isCancelled else { return }
             self?.saveNow()
         }
     }
@@ -161,40 +212,26 @@ final class ProfileManager: ObservableObject {
         isLoading = true
         defer { isLoading = false }
 
-        guard FileManager.default.fileExists(atPath: storeURL.path) else {
-            let defaultProfile = Profile(name: "Default")
-            profiles = [defaultProfile]
-            currentProfileID = defaultProfile.id
-            return
+        if FileManager.default.fileExists(atPath: storeURL.path) {
+            do {
+                let data = try Data(contentsOf: storeURL)
+                let state = try ProfileStoreState.decoder.decode(ProfileStoreState.self, from: data)
+                profiles = state.profiles.map { profile in
+                    var normalized = profile
+                    normalized.bindings = Profile.normalizedBindings(profile.bindings)
+                    if state.schemaVersion < 3 { normalized.migrateWorkspaceName() }
+                    return normalized
+                }
+                currentProfileID = state.currentProfileID
+            } catch {
+                print("Failed to load profiles: \(error)")
+            }
         }
-
-        do {
-            let data = try Data(contentsOf: storeURL)
-            let state = try ProfileStoreState.decoder.decode(ProfileStoreState.self, from: data)
-            profiles = state.profiles.map { profile in
-                var normalized = profile
-                normalized.bindings = Profile.normalizedBindings(profile.bindings)
-                return normalized
-            }
-
-            if profiles.isEmpty {
-                let defaultProfile = Profile(name: "Default")
-                profiles = [defaultProfile]
-                currentProfileID = defaultProfile.id
-                return
-            }
-
-            if let current = state.currentProfileID,
-               profiles.contains(where: { $0.id == current }) {
-                currentProfileID = current
-            } else {
-                currentProfileID = profiles.first?.id
-            }
-        } catch {
-            print("Failed to load profiles: \(error)")
-            let defaultProfile = Profile(name: "Default")
-            profiles = [defaultProfile]
-            currentProfileID = defaultProfile.id
+        if profiles.isEmpty {
+            profiles = [Profile(name: "Workspace 0")]
+        }
+        if !profiles.contains(where: { $0.id == currentProfileID }) {
+            currentProfileID = profiles.first?.id
         }
     }
 
@@ -213,20 +250,6 @@ final class ProfileManager: ObservableObject {
 
     func profileID(forNumber number: Int) -> UUID? {
         profiles.first(where: { $0.profileNumber == number })?.id
-    }
-
-    private func writeAtomically(data: Data, to url: URL) throws {
-        let directory = url.deletingLastPathComponent()
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        if !FileManager.default.fileExists(atPath: url.path) {
-            try data.write(to: url, options: .atomic)
-            return
-        }
-
-        let tmpURL = directory.appendingPathComponent(".profiles.json.tmp")
-        try data.write(to: tmpURL, options: .atomic)
-        defer { try? FileManager.default.removeItem(at: tmpURL) }
-        _ = try FileManager.default.replaceItemAt(url, withItemAt: tmpURL)
     }
 
     nonisolated private static func defaultStoreURL() -> URL {

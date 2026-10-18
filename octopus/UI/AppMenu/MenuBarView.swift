@@ -112,35 +112,34 @@ struct MenuBarView: View {
         let numberOrder = currentProfile?.numberOrder ?? defaultNumberOrder
         ForEach(Array(stride(from: 0, through: 9, by: 1)), id: \.self) { i in
             let number = getNumber(for: i, order: numberOrder)
-            if let binding = profileManager.application(for: number, in: currentProfile) {
-                if modifierManager.activateEnabled {
-                    Button("\(binding.title)") {
-                        binding.focus()
-                    }
-                    .keyboardShortcut(KeyEquivalent(Character("\(number)")), modifiers: modifierManager.activateEventModifiers)
-                } else {
-                    Button("\(binding.title)") {
-                        binding.focus()
-                    }
+            let shortcut: KeyboardShortcut? = modifierManager.activateEnabled
+                ? KeyboardShortcut(KeyEquivalent(Character("\(number)")), modifiers: modifierManager.activateEventModifiers)
+                : nil
+            if let workspace = currentProfile?.workspace(for: number) {
+                Button("\(workspace.bundleIdentifiers.count) apps") {
+                    profileManager.openWorkspace(workspace)
                 }
+                .keyboardShortcut(shortcut)
+            } else if let binding = profileManager.application(for: number, in: currentProfile) {
+                Button(binding.title) {
+                    binding.focus()
+                }
+                .keyboardShortcut(shortcut)
             }
         }
         
         Divider()
         
-        Text("Profiles")
+        Text("Workspaces")
         
         ForEach(sortedProfiles) { profile in
-            if modifierManager.profileEnabled, let profileNumber = profile.profileNumber {
-                Button(profile.name) {
-                    profileManager.switchProfile(profile)
-                }
-                .keyboardShortcut(KeyEquivalent(Character("\(profileNumber)")), modifiers: modifierManager.profileEventModifiers)
-            } else {
-                Button(profile.name) {
-                    profileManager.switchProfile(profile)
-                }
+            let shortcut: KeyboardShortcut? = modifierManager.profileEnabled ? profile.profileNumber.map {
+                KeyboardShortcut(KeyEquivalent(Character("\($0)")), modifiers: modifierManager.profileEventModifiers)
+            } : nil
+            Button(profile.name) {
+                profileManager.openProfileWorkspace(id: profile.id)
             }
+            .keyboardShortcut(shortcut)
         }
         
         Divider()

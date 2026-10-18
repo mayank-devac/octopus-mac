@@ -224,6 +224,10 @@ final class CyclePanelController: NSObject {
         if presentation == .sidebar { hideSwitcher() }
     }
 
+    func dismissForWorkspace() {
+        hideSwitcher()
+    }
+
     func updateSidebarPointer(at point: CGPoint) {
         guard presentation == .sidebar, panel.isVisible else { return }
         let target = panel.frame.contains(point) ? Self.sidebarPointerTarget(
