@@ -43,6 +43,9 @@ struct SidebarView: View {
 
     private var isCompact: Bool { state.configuration.idleBehavior == .compact }
     private var showsMainSidebar: Bool { !isCompact || state.isExpanded }
+    private var compactContentOffset: CGFloat {
+        isCompact ? (state.side == .right ? 11 : -11) : 0
+    }
     private var contentWidth: CGFloat? {
         state.isTopCentered ? state.topContentWidth
             : (showsMainSidebar ? SidebarLayout.width : 0) + (isCompact ? SidebarLayout.compactWidth : 0)
@@ -73,6 +76,7 @@ struct SidebarView: View {
                             Text("Allow access").font(.caption)
                         }
                         .frame(maxWidth: .infinity, minHeight: 76)
+                        .offset(x: compactContentOffset)
                     }
                     .buttonStyle(.plain)
                     .help("Allow octopus in System Settings → Privacy & Security → Accessibility")
@@ -87,6 +91,7 @@ struct SidebarView: View {
                     Text("No windows")
                         .font(.caption)
                         .frame(maxWidth: .infinity, minHeight: 76)
+                        .offset(x: compactContentOffset)
                 } compact: {
                     Text("–").frame(width: SidebarLayout.compactWidth, height: 76)
                         .accessibilityLabel("No windows")
@@ -114,6 +119,7 @@ struct SidebarView: View {
                                                     .allowsHitTesting(false)
                                             }
                                             .help(monitor.title)
+                                            .offset(x: compactContentOffset)
                                     } compact: {
                                         Color.clear.frame(width: SidebarLayout.compactWidth, height: SidebarMonitor.headerHeight)
                                     }
@@ -125,6 +131,7 @@ struct SidebarView: View {
                                                 .padding(.horizontal, 6).padding(.vertical, 2)
                                                 .background { SidebarFrostBackground(shadowOpacity: state.configuration.shadowOpacity) }
                                                 .frame(maxWidth: .infinity).frame(height: SidebarMonitor.emptyHeight)
+                                                .offset(x: compactContentOffset)
                                         } compact: {
                                             Color.clear.frame(width: SidebarLayout.compactWidth, height: SidebarMonitor.emptyHeight)
                                         }
@@ -135,6 +142,7 @@ struct SidebarView: View {
                                         sidebarRow {
                                             SidebarDesktopSeparator(title: section.desktop?.title ?? "Other apps",
                                                                     shadowOpacity: state.configuration.shadowOpacity)
+                                                .offset(x: compactContentOffset)
                                         } compact: {
                                             Color.clear.frame(width: SidebarLayout.compactWidth, height: SidebarLayout.desktopSeparatorHeight)
                                         }
@@ -370,8 +378,7 @@ struct SidebarView: View {
                 }
             }
             .scaleEffect(scale(for: index))
-            // Move only the icon toward the compact strip; preserve label and column widths.
-            .offset(x: isCompact ? (state.side == .right ? 11 : -11) : 0)
+            .offset(x: compactContentOffset)
             .frame(height: SidebarLayout.iconSlotHeight)
 
             Text(title)
@@ -396,6 +403,7 @@ struct SidebarView: View {
                 .frame(width: labelWidth + labelPadding * 2)
                 .frame(height: SidebarLayout.labelHeight, alignment: .top)
                 .padding(.horizontal, 3)
+                .offset(x: compactContentOffset)
         }
         .frame(maxWidth: .infinity, alignment: .center)
         .frame(height: SidebarLayout.rowHeight)
