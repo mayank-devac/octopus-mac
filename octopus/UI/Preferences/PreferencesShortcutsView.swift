@@ -8,6 +8,7 @@
 import SwiftUI
 import AppKit
 import KeyboardShortcuts
+import Carbon.HIToolbox
 
 struct PreferencesShortcutsView: View {
     private static let maximumFormHeight: CGFloat = 520
@@ -24,19 +25,38 @@ struct PreferencesShortcutsView: View {
     @State private var formHeight: CGFloat?
     @State private var monitorShortcutError: String?
     @State private var monitorShortcutConflict = false
-    @State private var savedLeftMonitorShortcut = KeyboardShortcuts.getShortcut(for: .moveWindowLeftMonitor)
-    @State private var savedRightMonitorShortcut = KeyboardShortcuts.getShortcut(for: .moveWindowRightMonitor)
     @StateObject private var radialSettings = RadialWindowSettings.shared
     @State private var radialError: String?
-    @State private var savedRadialShortcut = KeyboardShortcuts.getShortcut(for: .showRadialWindows)
+    private struct ShortcutAssignment {
+        let name: KeyboardShortcuts.Name
+        let shortcut: KeyboardShortcuts.Shortcut
+    }
+    @State private var pendingAssignment: ShortcutAssignment?
 
-    private func radialShortcutChanged(_ shortcut: KeyboardShortcuts.Shortcut?) {
-        if let error = RadialWindowSettings.keyboardError(shortcut) {
-            KeyboardShortcuts.setShortcut(savedRadialShortcut, for: .showRadialWindows)
-            radialError = error
-        } else {
-            savedRadialShortcut = shortcut
-            radialError = nil
+    private func saveShortcut(_ shortcut: KeyboardShortcuts.Shortcut?, for name: KeyboardShortcuts.Name, allowingSystemConflict: Bool = false) -> String? {
+        if name == .showRadialWindows {
+            if let error = RadialWindowSettings.keyboardError(shortcut) { return error }
+        } else if WindowMonitorShortcuts.conflict(for: shortcut, excluding: name) {
+            return "This shortcut is assigned to another Octopus action. Choose another."
+        }
+        if !allowingSystemConflict, let shortcut,
+           shortcut != KeyboardShortcuts.getShortcut(for: name), systemUsesShortcut(shortcut) {
+            pendingAssignment = ShortcutAssignment(name: name, shortcut: shortcut)
+            return nil
+        }
+        KeyboardShortcuts.setShortcut(shortcut, for: name)
+        return nil
+    }
+
+    private func systemUsesShortcut(_ shortcut: KeyboardShortcuts.Shortcut) -> Bool {
+        var symbolicKeys: Unmanaged<CFArray>?
+        guard CopySymbolicHotKeys(&symbolicKeys) == noErr,
+              let keys = symbolicKeys?.takeRetainedValue() as? [[String: Any]] else { return false }
+        return keys.contains {
+            guard ($0[kHISymbolicHotKeyEnabled] as? Bool) == true,
+                  let key = $0[kHISymbolicHotKeyCode] as? Int,
+                  let modifiers = $0[kHISymbolicHotKeyModifiers] as? Int else { return false }
+            return shortcut == KeyboardShortcuts.Shortcut(carbonKeyCode: key, carbonModifiers: modifiers)
         }
     }
 
@@ -47,27 +67,15 @@ struct PreferencesShortcutsView: View {
                 for: KeyboardShortcuts.getShortcut(for: .moveWindowRightMonitor), excluding: .moveWindowRightMonitor)
     }
 
-    private func monitorShortcutChanged(_ shortcut: KeyboardShortcuts.Shortcut?, name: KeyboardShortcuts.Name) {
-        let isLeft = name == .moveWindowLeftMonitor
-        let previous = isLeft ? savedLeftMonitorShortcut : savedRightMonitorShortcut
-        if WindowMonitorShortcuts.conflict(for: shortcut, excluding: name) {
-            KeyboardShortcuts.setShortcut(previous, for: name)
-            monitorShortcutError = "This shortcut is already assigned to another Octopus action. Choose another."
-            return
-        }
-        if isLeft { savedLeftMonitorShortcut = shortcut } else { savedRightMonitorShortcut = shortcut }
-        monitorShortcutError = nil
-    }
-
     private func monitorShortcutRow(_ title: String, name: KeyboardShortcuts.Name) -> some View {
         HStack {
             Text(title).frame(maxWidth: .infinity, alignment: .leading)
-            KeyboardShortcutRecordControl(name: name) { monitorShortcutChanged($0, name: name) }
+            KeyboardShortcutRecorder(name: name, onRecord: { saveShortcut($0, for: name) },
+                                     onError: { monitorShortcutError = $0 })
                 .frame(width: 135, height: 26)
                 .accessibilityLabel(title)
             Button("Disable") {
-                KeyboardShortcuts.setShortcut(nil, for: name)
-                monitorShortcutChanged(nil, name: name)
+                monitorShortcutError = saveShortcut(nil, for: name)
             }
             .help("Remove this shortcut and return the key combination to other apps")
             .accessibilityLabel("Disable \(title.lowercased()) shortcut")
@@ -206,9 +214,17 @@ struct PreferencesShortcutsView: View {
 
             Section {
                 Button("Reset monitor shortcuts") {
-                    KeyboardShortcuts.reset(.moveWindowLeftMonitor, .moveWindowRightMonitor)
-                    monitorShortcutChanged(KeyboardShortcuts.getShortcut(for: .moveWindowLeftMonitor), name: .moveWindowLeftMonitor)
-                    monitorShortcutChanged(KeyboardShortcuts.getShortcut(for: .moveWindowRightMonitor), name: .moveWindowRightMonitor)
+                    let names: [KeyboardShortcuts.Name] = [.moveWindowLeftMonitor, .moveWindowRightMonitor]
+                    let previous = names.map { KeyboardShortcuts.getShortcut(for: $0) }
+                    // Reset together so swapped shortcuts do not conflict with each other.
+                    KeyboardShortcuts.reset(names)
+                    monitorShortcutError = nil
+                    for (name, previousShortcut) in zip(names, previous) {
+                        if let error = saveShortcut(KeyboardShortcuts.getShortcut(for: name), for: name) {
+                            KeyboardShortcuts.setShortcut(previousShortcut, for: name)
+                            monitorShortcutError = error
+                        }
+                    }
                 }
                 monitorShortcutRow("Move window to left monitor", name: .moveWindowLeftMonitor)
                 monitorShortcutRow("Move window to right monitor", name: .moveWindowRightMonitor)
@@ -231,12 +247,12 @@ struct PreferencesShortcutsView: View {
                     .font(.caption).foregroundStyle(.secondary)
                 HStack {
                     Text("Select windows").frame(maxWidth: .infinity, alignment: .leading)
-                    KeyboardShortcutRecordControl(name: .showRadialWindows) { radialShortcutChanged($0) }
+                    KeyboardShortcutRecorder(name: .showRadialWindows, onRecord: { saveShortcut($0, for: .showRadialWindows) },
+                                             onError: { radialError = $0 })
                         .frame(width: 135, height: 26)
                         .accessibilityLabel("Radial window selector shortcut")
                     Button("Disable") {
-                        KeyboardShortcuts.setShortcut(nil, for: .showRadialWindows)
-                        radialShortcutChanged(nil)
+                        radialError = saveShortcut(nil, for: .showRadialWindows)
                     }
                 }
                 Text("Hold modifiers to browse all windows, hover More for extras, release a modifier to select, or press Escape to cancel.")
@@ -331,12 +347,25 @@ struct PreferencesShortcutsView: View {
 
         }
         .formStyle(.grouped)
-        .onDisappear { recordingMouseAction = nil; radialSettings.editingShortcuts = false }
+        .onDisappear { recordingMouseAction = nil; pendingAssignment = nil; radialSettings.editingShortcuts = false }
         .onAppear { refreshMonitorShortcutConflict(); radialSettings.editingShortcuts = true }
         .onReceive(NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification).receive(on: DispatchQueue.main)) { _ in
             refreshMonitorShortcutConflict()
         }
         .frame(height: min(formHeight ?? Self.maximumFormHeight, Self.maximumFormHeight))
+        .alert("macOS also uses this shortcut", isPresented: Binding(
+            get: { pendingAssignment != nil },
+            set: { if !$0 { pendingAssignment = nil } }
+        ), presenting: pendingAssignment) { assignment in
+            Button("Cancel", role: .cancel) {}
+            Button("Use Anyway") {
+                let error = saveShortcut(assignment.shortcut, for: assignment.name, allowingSystemConflict: true)
+                if assignment.name == .showRadialWindows { radialError = error }
+                else { monitorShortcutError = error }
+            }
+        } message: { assignment in
+            Text("Use \(assignment.shortcut) for Octopus anyway? If macOS still opens its own action, change that shortcut in System Settings → Keyboard → Keyboard Shortcuts.")
+        }
         .alert("Reset keyboard modifiers?", isPresented: $showingResetConfirmation) {
             Button("Cancel", role: .cancel) {}
             Button("Reset", role: .destructive) {
@@ -351,90 +380,6 @@ struct PreferencesShortcutsView: View {
             Bind:\t\t⌃ + ⌥ + ⇧
             """)
             .font(.system(.body, design: .monospaced))
-        }
-    }
-}
-
-// Keep the library's recording, storage and conflict checks, but show a real
-// button for an unassigned shortcut instead of an empty text field.
-private struct KeyboardShortcutRecordControl: NSViewRepresentable {
-    let name: KeyboardShortcuts.Name
-    var onChange: (KeyboardShortcuts.Shortcut?) -> Void
-
-    func makeNSView(context: Context) -> Control {
-        Control(name: name, onChange: onChange)
-    }
-
-    func updateNSView(_ control: Control, context: Context) {
-        control.onChange = onChange
-        control.refresh()
-    }
-
-    final class Control: NSView {
-        private let name: KeyboardShortcuts.Name
-        private var recorder: KeyboardShortcuts.RecorderCocoa!
-        private let recordButton = NSButton(title: "Record", target: nil, action: nil)
-        private var endEditingObserver: NSObjectProtocol?
-        var onChange: (KeyboardShortcuts.Shortcut?) -> Void
-
-        init(name: KeyboardShortcuts.Name, onChange: @escaping (KeyboardShortcuts.Shortcut?) -> Void) {
-            self.name = name
-            self.onChange = onChange
-            super.init(frame: .zero)
-            recorder = KeyboardShortcuts.RecorderCocoa(for: name) { [weak self] shortcut in
-                guard let self else { return }
-                self.onChange(shortcut)
-                // The library refocuses after clearing; wait until that finishes
-                // before ending recording and restoring the Record button.
-                DispatchQueue.main.async { [weak self] in
-                    guard let self else { return }
-                    if self.recorder.currentEditor() != nil {
-                        self.window?.makeFirstResponder(nil)
-                    }
-                    self.refresh()
-                }
-            }
-            recordButton.bezelStyle = .rounded
-            recordButton.target = self
-            recordButton.action = #selector(beginRecording)
-            recordButton.setAccessibilityLabel("Record keyboard shortcut")
-            recordButton.toolTip = "Record a key combination. Escape cancels."
-            let controls: [NSView] = [recorder, recordButton]
-            for view in controls {
-                view.translatesAutoresizingMaskIntoConstraints = false
-                addSubview(view)
-                NSLayoutConstraint.activate([
-                    view.leadingAnchor.constraint(equalTo: leadingAnchor),
-                    view.trailingAnchor.constraint(equalTo: trailingAnchor),
-                    view.centerYAnchor.constraint(equalTo: centerYAnchor)
-                ])
-            }
-            endEditingObserver = NotificationCenter.default.addObserver(
-                forName: NSControl.textDidEndEditingNotification, object: recorder, queue: .main
-            ) { [weak self] _ in
-                // AppKit may restart editing within the same event.
-                DispatchQueue.main.async { [weak self] in self?.refresh() }
-            }
-            refresh()
-        }
-
-        required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-
-        deinit {
-            if let endEditingObserver { NotificationCenter.default.removeObserver(endEditingObserver) }
-        }
-
-        @objc private func beginRecording() {
-            recorder.isHidden = false
-            recordButton.isHidden = true
-            window?.makeFirstResponder(recorder)
-            refresh()
-        }
-
-        func refresh() {
-            let showButton = KeyboardShortcuts.getShortcut(for: name) == nil && recorder.currentEditor() == nil
-            recorder.isHidden = showButton
-            recordButton.isHidden = !showButton
         }
     }
 }

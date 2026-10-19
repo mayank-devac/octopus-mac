@@ -47,6 +47,7 @@ final class RadialWindowController {
             guard let self, let direction = self.pager.step(delta: delta, precise: precise, momentum: momentum,
                                                            time: ProcessInfo.processInfo.systemUptime) else { return }
             self.model?.changePage(direction)
+            self.updateCursor()
         }
         catalogue.onDesktopChange = { [weak self] in
             // A committed focus can itself switch Desktops. Keep that focus request alive.
@@ -58,6 +59,7 @@ final class RadialWindowController {
             self.configure()
             if !self.loading, let model = self.model {
                 model.reconcile(availableIDs: Set(self.catalogue.items.map(\.id)))
+                self.updateCursor()
             }
         }
         let center = NotificationCenter.default
@@ -180,11 +182,17 @@ final class RadialWindowController {
         }
         panel?.setFrame(frame, display: true, animate: false)
         panel?.orderFrontRegardless()
+        updateCursor()
     }
 
     private func pointer(_ point: CGPoint) {
         guard !loading, let model, let panel else { return }
         model.updatePointer(point, centre: CGPoint(x: panel.frame.midX, y: panel.frame.midY))
+        updateCursor(at: point)
+    }
+
+    private func updateCursor(at point: CGPoint? = nil) {
+        (panel?.contentView as? RadialWindowHostingView)?.updateCursor(atScreen: point ?? NSEvent.mouseLocation)
     }
 
     private func key(_ code: UInt16) {
@@ -199,6 +207,7 @@ final class RadialWindowController {
             else { finish() }
         default: break
         }
+        updateCursor()
     }
 
     private func finish() {
@@ -252,12 +261,66 @@ final class RadialWindowPanel: NSPanel {
         hasShadow = false
         animationBehavior = .none
         hidesOnDeactivate = false
-        ignoresMouseEvents = true
+        // AppKit owns the cursor over this panel; the event tap still owns selection.
+        ignoresMouseEvents = false
+        acceptsMouseMovedEvents = true
         level = .popUpMenu
         collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient]
         isReleasedWhenClosed = false
-        let host = NSHostingView(rootView: RadialWindowView(model: model))
+        let host = RadialWindowHostingView(rootView: RadialWindowView(model: model))
         host.sizingOptions = []
         contentView = host
+    }
+}
+
+@MainActor
+private final class RadialWindowHostingView: NSHostingView<RadialWindowView> {
+    private var cursorTracking: NSTrackingArea?
+    private var ownsCursor = false
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let cursorTracking { removeTrackingArea(cursorTracking) }
+        // cursorUpdate is not supported with activeAlways; use entered/moved events instead.
+        let area = NSTrackingArea(rect: bounds.intersection(visibleRect),
+            options: [.activeAlways, .mouseEnteredAndExited, .mouseMoved, .enabledDuringMouseDrag],
+            owner: self, userInfo: nil)
+        addTrackingArea(area)
+        cursorTracking = area
+    }
+
+    override func mouseEntered(with event: NSEvent) { updateCursor(with: event) }
+    override func mouseMoved(with event: NSEvent) { updateCursor(with: event) }
+    override func cursorUpdate(with event: NSEvent) { updateCursor(with: event) }
+    override func mouseExited(with event: NSEvent) { releaseCursor() }
+
+    override func viewWillMove(toWindow newWindow: NSWindow?) {
+        if newWindow == nil { releaseCursor() }
+        super.viewWillMove(toWindow: newWindow)
+    }
+
+    func updateCursor(atScreen point: CGPoint) {
+        guard let window, window.isVisible else { return }
+        let inWindow = window.convertFromScreen(CGRect(origin: point, size: .zero)).origin
+        setCursor(at: convert(inWindow, from: nil))
+    }
+
+    private func updateCursor(with event: NSEvent) {
+        setCursor(at: convert(event.locationInWindow, from: nil))
+    }
+
+    private func setCursor(at point: CGPoint) {
+        guard bounds.intersection(visibleRect).contains(point) else { releaseCursor(); return }
+        let offset = CGVector(dx: point.x - bounds.midX,
+                              dy: isFlipped ? point.y - bounds.midY : bounds.midY - point.y)
+        let cursor = rootView.model.hasCursorTarget(at: offset) ? NSCursor.pointingHand : NSCursor.arrow
+        cursor.set()
+        ownsCursor = true
+    }
+
+    private func releaseCursor() {
+        guard ownsCursor else { return }
+        NSCursor.arrow.set()
+        ownsCursor = false
     }
 }

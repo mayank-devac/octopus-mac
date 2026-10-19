@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import KeyboardShortcuts
 import SwiftUI
 import Testing
@@ -42,6 +43,77 @@ struct RadialWindowTests {
         #expect(model.selectsMore && model.selectedItem == nil)
         model.updatePointer(.zero, centre: .zero)
         #expect(!model.expanded && model.selection == .none)
+    }
+
+    @Test func movingWithinOneSliceDoesNotRepublishTheSameHoverState() {
+        let model = RadialWindowModel(items: items(10))
+        var updates = 0
+        let observation = model.objectWillChange.sink { updates += 1 }
+        defer { observation.cancel() }
+        model.updatePointer(point(0, 100), centre: .zero)
+        #expect(updates == 1 && model.selection == .ring(0))
+        for angle in [1.0, 4.0, 8.0, 3.0] {
+            model.updatePointer(point(angle, 110), centre: .zero)
+        }
+        #expect(updates == 1)
+        model.updatePointer(point(45, 106), centre: .zero)
+        #expect(updates == 2 && model.selection == .ring(1))
+        model.updatePointer(.zero, centre: .zero)
+        #expect(updates == 3 && model.selection == .none)
+    }
+
+    @Test func handCursorTargetsMatchEnabledSlicesAndExcludeCentreAndGaps() {
+        let initial = items(10)
+        let model = RadialWindowModel(items: initial)
+        func offset(_ angle: Double, _ radius: CGFloat) -> CGVector {
+            let value = RadialWindowGeometry.offset(angle: angle, radius: radius)
+            return CGVector(dx: value.width, dy: value.height)
+        }
+        #expect(model.hasCursorTarget(at: offset(0, 106)))
+        #expect(!model.hasCursorTarget(at: .zero))
+        #expect(!model.hasCursorTarget(at: offset(22.5, 106)))
+        #expect(!model.hasCursorTarget(at: offset(0, 300)))
+        #expect(!model.hasCursorTarget(at: offset(315, 185)))
+        #expect(model.hasCursorTarget(at: offset(315, 106)))
+        model.updatePointer(point(315, 106), centre: .zero)
+        #expect(model.hasCursorTarget(at: offset(315, 185)))
+        model.reconcile(availableIDs: Set(initial.dropFirst().map(\.id)))
+        #expect(!model.hasCursorTarget(at: offset(0, 106)))
+        #expect(RadialWindowModel(items: []).hasCursorTarget(at: offset(0, 106)) == false)
+    }
+
+    @Test func nativeHoverSetsHandBeforeClickWithoutMakingPanelKey() throws {
+        let originalCursor = NSCursor.current
+        let panel = RadialWindowPanel(model: RadialWindowModel(items: items(3)))
+        panel.setFrameOrigin(CGPoint(x: 200, y: 200))
+        let host = try #require(panel.contentView as? NSHostingView<RadialWindowView>)
+        defer { panel.contentView = nil; panel.close(); originalCursor.set() }
+        panel.orderFront(nil)
+        host.layoutSubtreeIfNeeded()
+        host.updateTrackingAreas()
+        #expect(!panel.isKeyWindow)
+        #expect(host.trackingAreas.contains {
+            ($0.owner as? NSView) === host && $0.options.contains([.activeAlways, .mouseMoved, .enabledDuringMouseDrag])
+        })
+        func hover(_ angle: Double, _ radius: CGFloat) throws {
+            let offset = RadialWindowGeometry.offset(angle: angle, radius: radius)
+            let screenPoint = CGPoint(x: panel.frame.midX + offset.width, y: panel.frame.midY - offset.height)
+            let location = panel.convertFromScreen(CGRect(origin: screenPoint, size: .zero)).origin
+            let event = try #require(NSEvent.mouseEvent(with: .mouseMoved, location: location, modifierFlags: [],
+                timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: panel.windowNumber, context: nil,
+                eventNumber: 0, clickCount: 0, pressure: 0))
+            host.mouseMoved(with: event)
+        }
+        try hover(0, 106)
+        #expect(NSCursor.current === NSCursor.pointingHand)
+        #expect(!panel.isKeyWindow)
+        try hover(0, 0)
+        #expect(NSCursor.current === NSCursor.arrow)
+        try hover(60, 106)
+        #expect(NSCursor.current === NSCursor.arrow)
+        try hover(0, 106)
+        panel.contentView = nil
+        #expect(NSCursor.current === NSCursor.arrow)
     }
 
     @Test func outerArcRequiresMoreAndNeverSelectsBeyondVisibleBounds() {

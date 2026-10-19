@@ -55,6 +55,22 @@ final class RadialWindowModel: ObservableObject {
     }
     var selectsMore: Bool { hasOverflow && selection == .ring(7) }
 
+    func hasCursorTarget(at offset: CGVector) -> Bool {
+        selectableSelection(for: RadialWindowGeometry.hit(offset, ringCount: ringCount,
+            overflowCount: pageRange.count, expanded: expanded)) != .none
+    }
+
+    private func selectableSelection(for hit: RadialWindowGeometry.Hit) -> RadialWindowSelection {
+        switch hit {
+        case .ring(let index):
+            return (hasOverflow && index == 7) || items[index].available ? .ring(index) : .none
+        case .overflow(let index):
+            let itemIndex = pageRange.lowerBound + index
+            return items[itemIndex].available ? .overflow(itemIndex) : .none
+        case .none: return .none
+        }
+    }
+
     func load(_ items: [RadialWindowItem]) {
         self.items = items
         message = items.isEmpty ? "No open windows" : nil
@@ -79,16 +95,17 @@ final class RadialWindowModel: ObservableObject {
         let offset = RadialWindowGeometry.localOffset(pointer: point, centre: centre)
         let distance = hypot(offset.dx, offset.dy)
         let hit = RadialWindowGeometry.hit(offset, ringCount: ringCount, overflowCount: pageRange.count, expanded: expanded)
+        let nextSelection = selectableSelection(for: hit)
+        var nextExpanded = expanded
         switch hit {
         case .ring(let index):
-            expanded = hasOverflow && index == 7
-            selection = .ring(index)
-        case .overflow(let index): selection = .overflow(pageRange.lowerBound + index)
+            nextExpanded = hasOverflow && index == 7
+        case .overflow: break
         case .none:
-            selection = .none
-            if distance < RadialWindowGeometry.innerRadius || distance > RadialWindowGeometry.overflowOuter + 10 { expanded = false }
+            if distance < RadialWindowGeometry.innerRadius || distance > RadialWindowGeometry.overflowOuter + 10 { nextExpanded = false }
         }
-        if !selectsMore && selectedItem == nil { selection = .none }
+        if expanded != nextExpanded { expanded = nextExpanded }
+        if selection != nextSelection { selection = nextSelection }
     }
 
     func changePage(_ direction: Int) {
