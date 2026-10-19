@@ -62,7 +62,8 @@ struct PreferencesShortcutsView: View {
     private func monitorShortcutRow(_ title: String, name: KeyboardShortcuts.Name) -> some View {
         HStack {
             Text(title).frame(maxWidth: .infinity, alignment: .leading)
-            KeyboardShortcuts.Recorder(for: name) { monitorShortcutChanged($0, name: name) }
+            KeyboardShortcutRecordControl(name: name) { monitorShortcutChanged($0, name: name) }
+                .frame(width: 135, height: 26)
                 .accessibilityLabel(title)
             Button("Disable") {
                 KeyboardShortcuts.setShortcut(nil, for: name)
@@ -230,18 +231,15 @@ struct PreferencesShortcutsView: View {
                     .font(.caption).foregroundStyle(.secondary)
                 HStack {
                     Text("Select windows").frame(maxWidth: .infinity, alignment: .leading)
-                    KeyboardShortcuts.Recorder(for: .showRadialWindows) { radialShortcutChanged($0) }
+                    KeyboardShortcutRecordControl(name: .showRadialWindows) { radialShortcutChanged($0) }
+                        .frame(width: 135, height: 26)
                         .accessibilityLabel("Radial window selector shortcut")
                     Button("Disable") {
                         KeyboardShortcuts.setShortcut(nil, for: .showRadialWindows)
                         radialShortcutChanged(nil)
                     }
-                    Button("Reset") {
-                        KeyboardShortcuts.reset(.showRadialWindows)
-                        radialShortcutChanged(KeyboardShortcuts.getShortcut(for: .showRadialWindows))
-                    }
                 }
-                Text("Includes open windows on every monitor and Desktop, including minimised windows and hidden apps. Hold the shortcut’s modifiers while choosing; release a modifier to select. Hover More for additional windows, then scroll or use Page Up / Page Down. Escape cancels.")
+                Text("Hold modifiers to browse all windows, hover More for extras, release a modifier to select, or press Escape to cancel.")
                     .font(.caption).foregroundStyle(.secondary)
                 if let error = radialError ?? radialSettings.status {
                     Text(error).font(.caption).foregroundStyle(.secondary)
@@ -353,6 +351,90 @@ struct PreferencesShortcutsView: View {
             Bind:\t\t⌃ + ⌥ + ⇧
             """)
             .font(.system(.body, design: .monospaced))
+        }
+    }
+}
+
+// Keep the library's recording, storage and conflict checks, but show a real
+// button for an unassigned shortcut instead of an empty text field.
+private struct KeyboardShortcutRecordControl: NSViewRepresentable {
+    let name: KeyboardShortcuts.Name
+    var onChange: (KeyboardShortcuts.Shortcut?) -> Void
+
+    func makeNSView(context: Context) -> Control {
+        Control(name: name, onChange: onChange)
+    }
+
+    func updateNSView(_ control: Control, context: Context) {
+        control.onChange = onChange
+        control.refresh()
+    }
+
+    final class Control: NSView {
+        private let name: KeyboardShortcuts.Name
+        private var recorder: KeyboardShortcuts.RecorderCocoa!
+        private let recordButton = NSButton(title: "Record", target: nil, action: nil)
+        private var endEditingObserver: NSObjectProtocol?
+        var onChange: (KeyboardShortcuts.Shortcut?) -> Void
+
+        init(name: KeyboardShortcuts.Name, onChange: @escaping (KeyboardShortcuts.Shortcut?) -> Void) {
+            self.name = name
+            self.onChange = onChange
+            super.init(frame: .zero)
+            recorder = KeyboardShortcuts.RecorderCocoa(for: name) { [weak self] shortcut in
+                guard let self else { return }
+                self.onChange(shortcut)
+                // The library refocuses after clearing; wait until that finishes
+                // before ending recording and restoring the Record button.
+                DispatchQueue.main.async { [weak self] in
+                    guard let self else { return }
+                    if self.recorder.currentEditor() != nil {
+                        self.window?.makeFirstResponder(nil)
+                    }
+                    self.refresh()
+                }
+            }
+            recordButton.bezelStyle = .rounded
+            recordButton.target = self
+            recordButton.action = #selector(beginRecording)
+            recordButton.setAccessibilityLabel("Record keyboard shortcut")
+            recordButton.toolTip = "Record a key combination. Escape cancels."
+            let controls: [NSView] = [recorder, recordButton]
+            for view in controls {
+                view.translatesAutoresizingMaskIntoConstraints = false
+                addSubview(view)
+                NSLayoutConstraint.activate([
+                    view.leadingAnchor.constraint(equalTo: leadingAnchor),
+                    view.trailingAnchor.constraint(equalTo: trailingAnchor),
+                    view.centerYAnchor.constraint(equalTo: centerYAnchor)
+                ])
+            }
+            endEditingObserver = NotificationCenter.default.addObserver(
+                forName: NSControl.textDidEndEditingNotification, object: recorder, queue: .main
+            ) { [weak self] _ in
+                // AppKit may restart editing within the same event.
+                DispatchQueue.main.async { [weak self] in self?.refresh() }
+            }
+            refresh()
+        }
+
+        required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+        deinit {
+            if let endEditingObserver { NotificationCenter.default.removeObserver(endEditingObserver) }
+        }
+
+        @objc private func beginRecording() {
+            recorder.isHidden = false
+            recordButton.isHidden = true
+            window?.makeFirstResponder(recorder)
+            refresh()
+        }
+
+        func refresh() {
+            let showButton = KeyboardShortcuts.getShortcut(for: name) == nil && recorder.currentEditor() == nil
+            recorder.isHidden = showButton
+            recordButton.isHidden = !showButton
         }
     }
 }
