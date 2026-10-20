@@ -18,6 +18,13 @@ final class SidebarViewState: ObservableObject {
     @Published var topContentWidth: CGFloat?
     @Published var topDrawingBottomPadding: CGFloat = 0
     var dragDesktops: [SidebarDesktop]?
+
+    func displayedGroups(in inventory: SidebarWindowInventory) -> [SidebarMonitorGroup] {
+        let sections = dragSections ?? SidebarDesktopSection.make(entries: inventory.entries,
+            desktops: inventory.desktops, scope: inventory.desktopScope)
+        return SidebarMonitorGroup.make(sections: sections, desktops: dragDesktops ?? inventory.desktops,
+            monitors: monitors, scope: inventory.desktopScope)
+    }
 }
 
 struct SidebarView: View {
@@ -54,15 +61,9 @@ struct SidebarView: View {
         state.isTopCentered ? .center : state.side == .left ? .leading : .trailing
     }
 
-    private var sections: [SidebarDesktopSection] {
-        state.dragSections ?? SidebarDesktopSection.make(entries: inventory.entries,
-            desktops: inventory.desktops, scope: inventory.desktopScope)
-    }
-
     private var displayedEntries: [SidebarEntry] { groups.flatMap(\.sections).flatMap(\.entries) }
     private var groups: [SidebarMonitorGroup] {
-        SidebarMonitorGroup.make(sections: sections, desktops: state.dragDesktops ?? inventory.desktops,
-            monitors: state.monitors, scope: inventory.desktopScope)
+        state.displayedGroups(in: inventory)
     }
 
     var body: some View {
@@ -180,7 +181,7 @@ struct SidebarView: View {
         .accessibilityAction(named: Text("Expand sidebar"), onReveal)
     }
 
-    // Both columns live in the same scroll view, so numbers cannot drift from their app rows.
+    // Both columns share a scroll view so the compact strip stays aligned with app rows.
     private func sidebarRow<Main: View, Compact: View>(@ViewBuilder main: () -> Main,
                                                       @ViewBuilder compact: () -> Compact) -> some View {
         HStack(spacing: 0) {
@@ -197,7 +198,7 @@ struct SidebarView: View {
                 sidebarRow {
                     item(entry, index: index)
                 } compact: {
-                    compactNumber(entry, index: index)
+                    compactEntry(entry, index: index)
                 }
             }
         }
@@ -217,7 +218,7 @@ struct SidebarView: View {
         ScrollView(.vertical) {
             VStack(spacing: SidebarLayout.labelHeight + CGFloat(appSpacing)) {
                 ForEach(displayedEntries) { entry in
-                    compactNumber(entry, index: indices[entry.id] ?? 0, reservesLabelSpace: false)
+                    compactEntry(entry, index: indices[entry.id] ?? 0, reservesLabelSpace: false)
                 }
             }
             .padding(.vertical, SidebarLayout.verticalPadding)
@@ -311,19 +312,31 @@ struct SidebarView: View {
         }
     }
 
-    private func compactNumber(_ entry: SidebarEntry, index: Int, reservesLabelSpace: Bool = true) -> some View {
+    private func compactEntry(_ entry: SidebarEntry, index: Int, reservesLabelSpace: Bool = true) -> some View {
         let number = index + 1
         let isOpen = entry.hasOpenWindows
         let numberColor: Color = colorScheme == .dark ? .white : .black
         let numberOpacity: Double = isOpen ? 1 : 0.35
         let stateDescription = isOpen ? "open" : "hidden or no open windows"
         let accessibilityDescription = "\(number), \(entry.application.title), \(stateDescription)"
-        return Text(String(number))
-            .font(.system(size: CGFloat(labelFontSize) + 3, weight: .medium, design: .rounded))
-            .monospacedDigit()
-            .lineLimit(1)
-            .minimumScaleFactor(0.6)
-            .foregroundStyle(numberColor.opacity(numberOpacity))
+        return Group {
+            if state.configuration.compactShowsIcons {
+                Group {
+                    if let icon = entry.application.runningApplication?.icon {
+                        Image(nsImage: icon).resizable()
+                    } else {
+                        Image(systemName: "app.fill").resizable()
+                    }
+                }
+                .scaledToFit().frame(width: 16, height: 16)
+                .opacity(numberOpacity)
+            } else {
+                Text(String(number))
+                    .font(.system(size: CGFloat(labelFontSize) + 3, weight: .medium, design: .rounded))
+                    .monospacedDigit().lineLimit(1).minimumScaleFactor(0.6)
+                    .foregroundStyle(numberColor.opacity(numberOpacity))
+            }
+        }
             .frame(width: SidebarLayout.compactWidth, height: SidebarLayout.iconSlotHeight)
             .frame(height: reservesLabelSpace ? SidebarLayout.rowHeight : SidebarLayout.iconSlotHeight,
                    alignment: .top)

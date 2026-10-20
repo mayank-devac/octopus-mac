@@ -7,6 +7,7 @@
 
 import KeyboardShortcuts
 import Cocoa
+import Carbon.HIToolbox
 
 let numberKeys: [KeyboardShortcuts.Key] = [
     .zero, .one, .two, .three, .four,
@@ -53,6 +54,47 @@ extension KeyboardShortcuts.Name {
 }
 
 enum WindowMonitorShortcuts {
+    enum SystemShortcutReadError: Error {
+        case copyFailed(OSStatus)
+        case invalidResponse
+
+        var message: String {
+            switch self {
+            case .copyFailed(let status):
+                return "macOS keyboard shortcuts could not be checked (error \(status))."
+            case .invalidResponse:
+                return "macOS returned an invalid keyboard-shortcut list."
+            }
+        }
+    }
+
+    static let names: [KeyboardShortcuts.Name] = [.moveWindowLeftMonitor, .moveWindowRightMonitor, .showRadialWindows]
+        + KeyboardShortcuts.Name.bindShortcuts + KeyboardShortcuts.Name.activateShortcuts
+        + KeyboardShortcuts.Name.profileShortcuts + KeyboardShortcuts.Name.bindKeypadShortcuts
+        + KeyboardShortcuts.Name.activateKeypadShortcuts + KeyboardShortcuts.Name.profileKeypadShortcuts
+
+    static func systemShortcuts() -> Result<Set<KeyboardShortcuts.Shortcut>, SystemShortcutReadError> {
+        var symbolicKeys: Unmanaged<CFArray>?
+        let status = CopySymbolicHotKeys(&symbolicKeys)
+        guard status == noErr else { return .failure(.copyFailed(status)) }
+        guard let keys = symbolicKeys?.takeRetainedValue() as? [[String: Any]] else {
+            return .failure(.invalidResponse)
+        }
+        var shortcuts = Set<KeyboardShortcuts.Shortcut>()
+        for key in keys {
+            guard let isEnabled = key[kHISymbolicHotKeyEnabled] as? Bool else {
+                return .failure(.invalidResponse)
+            }
+            guard isEnabled else { continue }
+            guard let code = key[kHISymbolicHotKeyCode] as? Int,
+                  let modifiers = key[kHISymbolicHotKeyModifiers] as? Int else {
+                return .failure(.invalidResponse)
+            }
+            shortcuts.insert(KeyboardShortcuts.Shortcut(carbonKeyCode: code, carbonModifiers: modifiers))
+        }
+        return .success(shortcuts)
+    }
+
     static func migrateDefaults(in defaults: UserDefaults = .standard,
                                 read: (KeyboardShortcuts.Name) -> KeyboardShortcuts.Shortcut? = { KeyboardShortcuts.getShortcut(for: $0) },
                                 write: (KeyboardShortcuts.Shortcut?, KeyboardShortcuts.Name) -> Void = { KeyboardShortcuts.setShortcut($0, for: $1) }) {
@@ -73,12 +115,82 @@ enum WindowMonitorShortcuts {
     static func conflict(for shortcut: KeyboardShortcuts.Shortcut?, excluding name: KeyboardShortcuts.Name,
                          includeRadial: Bool = true) -> Bool {
         guard let shortcut else { return false }
-        let names: [KeyboardShortcuts.Name] = [.moveWindowLeftMonitor, .moveWindowRightMonitor, .showRadialWindows]
-            + KeyboardShortcuts.Name.bindShortcuts + KeyboardShortcuts.Name.activateShortcuts
-            + KeyboardShortcuts.Name.profileShortcuts + KeyboardShortcuts.Name.bindKeypadShortcuts
-            + KeyboardShortcuts.Name.activateKeypadShortcuts + KeyboardShortcuts.Name.profileKeypadShortcuts
         return names.contains { $0 != name && (includeRadial || $0 != .showRadialWindows)
             && KeyboardShortcuts.getShortcut(for: $0) == shortcut }
+    }
+}
+
+enum SidebarNumberShortcuts {
+    static let enabledKey = "sidebarNumberShortcutsEnabled"
+    static let modifiersKey = "sidebarNumberShortcutModifiers"
+    static let defaultModifiers: NSEvent.ModifierFlags = [.control, .shift]
+    static let names = (1...10).map { KeyboardShortcuts.Name("sidebarPosition\($0)") }
+    static var shortcuts: [KeyboardShortcuts.Shortcut] {
+        let chosenModifiers = modifiers()
+        return (1...10).map { KeyboardShortcuts.Shortcut(numberKeys[$0 % 10], modifiers: chosenModifiers) }
+    }
+
+    static func modifiers(in defaults: UserDefaults = .standard) -> NSEvent.ModifierFlags {
+        let saved = defaults.object(forKey: modifiersKey) as? Int ?? Int(defaultModifiers.rawValue)
+        return NSEvent.ModifierFlags(rawValue: UInt(clamping: saved)).intersection(MouseShortcut.supportedModifiers)
+    }
+
+    static func hint(for modifiers: NSEvent.ModifierFlags) -> String {
+        guard !modifiers.subtracting(.shift).isEmpty else { return "Sidebar number shortcuts are paused." }
+        let symbols: [(NSEvent.ModifierFlags, String)] = [(.control, "⌃"), (.option, "⌥"), (.shift, "⇧"), (.command, "⌘")]
+        let prefix = symbols.filter { modifiers.contains($0.0) }.map { $0.1 }.joined()
+        return "Use \(prefix)1–9, or \(prefix)0 for the tenth app, on the pointer’s monitor."
+    }
+
+    static var availabilityNote: String? {
+        guard !modifiers().subtracting(.shift).isEmpty else {
+            return "Choose Control, Option or Command for Sidebar apps in Shortcuts settings; Shift alone types symbols."
+        }
+        let systemShortcutResult = WindowMonitorShortcuts.systemShortcuts()
+        let unavailable: [Int]
+        switch systemShortcutResult {
+        case .failure(let error):
+            return "\(error.message) Sidebar number shortcuts are paused."
+        case .success(let system):
+            unavailable = unavailablePositions(systemShortcuts: system).sorted()
+        }
+        guard !unavailable.isEmpty else { return nil }
+        return "Shortcuts already used by a workspace, another Octopus action or macOS are skipped: \(unavailable.map { String(($0 + 1) % 10) }.joined(separator: ", "))."
+    }
+
+    static func assign(_ shortcut: KeyboardShortcuts.Shortcut?, to name: KeyboardShortcuts.Name) {
+        let previous = KeyboardShortcuts.getShortcut(for: name)
+        guard previous != shortcut else { return }
+        KeyboardShortcuts.setShortcut(shortcut, for: name)
+        // The library unregisters by key combination, so restore any shared owner.
+        if let previous {
+            KeyboardShortcuts.enable(WindowMonitorShortcuts.names.filter {
+                KeyboardShortcuts.getShortcut(for: $0) == previous
+            })
+        }
+    }
+
+    // Existing workspace, binding and system shortcuts keep priority.
+    static func unavailablePositions() -> Set<Int> {
+        guard !modifiers().subtracting(.shift).isEmpty else { return Set(names.indices) }
+        return unavailablePositions(systemShortcutResult: WindowMonitorShortcuts.systemShortcuts())
+    }
+
+    static func unavailablePositions(
+        systemShortcutResult: Result<Set<KeyboardShortcuts.Shortcut>, WindowMonitorShortcuts.SystemShortcutReadError>
+    ) -> Set<Int> {
+        guard case .success(let system) = systemShortcutResult else {
+            return Set(names.indices)
+        }
+        return unavailablePositions(systemShortcuts: system)
+    }
+
+    static func unavailablePositions(systemShortcuts: Set<KeyboardShortcuts.Shortcut>) -> Set<Int> {
+        let combinations = shortcuts
+        return Set(names.indices.filter {
+            systemShortcuts.contains(combinations[$0])
+                || WindowMonitorShortcuts.conflict(for: combinations[$0], excluding: names[$0])
+        })
     }
 }
 

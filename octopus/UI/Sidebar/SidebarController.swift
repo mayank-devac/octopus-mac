@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import KeyboardShortcuts
 
 @MainActor
 final class SidebarController {
@@ -16,6 +17,10 @@ final class SidebarController {
 
     init(cycleController: CyclePanelController) {
         self.cycleController = cycleController
+        for (index, name) in SidebarNumberShortcuts.names.enumerated() {
+            SidebarNumberShortcuts.assign(nil, to: name)
+            KeyboardShortcuts.onKeyDown(for: name) { [weak self] in self?.activateNumberedApp(at: index) }
+        }
         observers.append(NotificationCenter.default.addObserver(
             forName: UserDefaults.didChangeNotification, object: nil, queue: .main
         ) { [weak self] _ in Task { @MainActor in self?.reconcile() } })
@@ -68,11 +73,31 @@ final class SidebarController {
                 displays[id] = controller
             }
         }
+        let enabled = defaults.bool(forKey: SidebarNumberShortcuts.enabledKey) && !displays.isEmpty
+        let unavailable = enabled ? SidebarNumberShortcuts.unavailablePositions() : []
+        let shortcuts = SidebarNumberShortcuts.shortcuts
+        for (index, name) in SidebarNumberShortcuts.names.enumerated() {
+            let shortcut = enabled && !unavailable.contains(index) ? shortcuts[index] : nil
+            SidebarNumberShortcuts.assign(shortcut, to: name)
+        }
+    }
+
+    private func activateNumberedApp(at index: Int) {
+        guard UserDefaults.standard.bool(forKey: SidebarNumberShortcuts.enabledKey),
+              !radialPresented, !hasActiveInteraction, !cycleController.isKeyboardSwitcherVisible,
+              !SidebarNumberShortcuts.unavailablePositions().contains(index) else { return }
+        if let single = displays[.single] {
+            single.activateNumberedApp(at: index)
+        } else if let screen = NSScreen.screens.first(where: { $0.frame.contains(NSEvent.mouseLocation) }),
+                  let id = SidebarSettings.monitorID(screen) {
+            displays[.display(id)]?.activateNumberedApp(at: index)
+        }
     }
 
     func stop() {
         observers.forEach { NotificationCenter.default.removeObserver($0) }
         observers.removeAll()
+        SidebarNumberShortcuts.names.forEach { SidebarNumberShortcuts.assign(nil, to: $0) }
         displays.values.forEach { $0.stop() }
         displays.removeAll()
     }
@@ -782,6 +807,13 @@ private final class SidebarDisplayController {
         if !isHoveringMenuOrIcon(entryID) { dismissSidebar() }
         if let action { inventory.perform(action, frontmostPID: frontmostPID) }
         else { inventory.refresh() }
+    }
+
+    func activateNumberedApp(at index: Int) {
+        guard inventory.hasPermission, !hasActiveInteraction, !radialPresented else { return }
+        let entries = viewState.displayedGroups(in: inventory).flatMap(\.sections).flatMap(\.entries)
+        guard entries.indices.contains(index) else { return }
+        activate(entries[index].id)
     }
 
     private func performMouseAction(_ action: MouseShortcutAction, entryID: SidebarEntryID, target: SidebarWindowID?) {

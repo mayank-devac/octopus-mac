@@ -185,7 +185,7 @@ final class SidebarDragController: NSObject, NSDraggingSource {
                 self.inventory.perform(.place(id, request)); return
             }
             guard let prepareSnap = self.prepareSnap else { self.showFeedback("Snap preparation is unavailable."); return }
-            prepareSnap(id, request) { [weak self] prepared in
+            _ = prepareSnap(id, request) { [weak self] prepared in
                 guard let self, !self.isActive, self.generation == requestGeneration else { return }
                 guard let prepared, let onSnapDrop = self.onSnapDrop else {
                     self.showFeedback("The window could not be prepared for snapping."); return

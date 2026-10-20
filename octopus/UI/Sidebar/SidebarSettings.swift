@@ -100,6 +100,7 @@ struct SidebarConfiguration: Codable, Equatable {
     var side: SidebarSide
     var position: Double
     var idleBehavior: SidebarIdleBehavior
+    var compactShowsIcons: Bool
     var showSingleWindowMenu: Bool
     var appSpacing: Double
     var fontSize: Double
@@ -114,6 +115,7 @@ struct SidebarConfiguration: Codable, Equatable {
         side = SidebarSide(rawValue: defaults?.string(forKey: "sidebarSide") ?? "") ?? .right
         position = defaults?.object(forKey: "sidebarPosition") as? Double ?? 0.5
         idleBehavior = .saved(defaults?.string(forKey: SidebarSettings.idleBehaviorKey))
+        compactShowsIcons = defaults?.bool(forKey: SidebarSettings.compactIconsKey) ?? false
         showSingleWindowMenu = defaults?.object(forKey: "sidebarShowSingleWindowMenu") as? Bool ?? true
         appSpacing = defaults?.object(forKey: "sidebarAppSpacing") as? Double ?? SidebarSettings.defaultAppSpacing
         fontSize = defaults?.object(forKey: "sidebarFontSize") as? Double ?? SidebarSettings.defaultFontSize
@@ -128,7 +130,7 @@ struct SidebarConfiguration: Codable, Equatable {
     static var factoryDefaults: Self { Self(defaults: nil) }
 
     private enum CodingKeys: String, CodingKey {
-        case enabled, desktopScope, displayScope, side, position, idleBehavior
+        case enabled, desktopScope, displayScope, side, position, idleBehavior, compactShowsIcons
         case showSingleWindowMenu, appSpacing, fontSize, shadowOpacity, snapDistance, virtualNotchWidth
     }
 
@@ -142,6 +144,7 @@ struct SidebarConfiguration: Codable, Equatable {
         side = try saved.decodeIfPresent(SidebarSide.self, forKey: .side) ?? side
         position = try saved.decodeIfPresent(Double.self, forKey: .position) ?? position
         idleBehavior = try saved.decodeIfPresent(SidebarIdleBehavior.self, forKey: .idleBehavior) ?? idleBehavior
+        compactShowsIcons = try saved.decodeIfPresent(Bool.self, forKey: .compactShowsIcons) ?? false
         showSingleWindowMenu = try saved.decodeIfPresent(Bool.self, forKey: .showSingleWindowMenu) ?? showSingleWindowMenu
         appSpacing = try saved.decodeIfPresent(Double.self, forKey: .appSpacing) ?? appSpacing
         fontSize = try saved.decodeIfPresent(Double.self, forKey: .fontSize) ?? fontSize
@@ -172,6 +175,7 @@ struct SidebarConfiguration: Codable, Equatable {
             "sidebarDisplayScope": displayScope.rawValue,
             "sidebarSide": side.rawValue, "sidebarPosition": position,
             SidebarSettings.idleBehaviorKey: idleBehavior.rawValue,
+            SidebarSettings.compactIconsKey: compactShowsIcons,
             "sidebarShowSingleWindowMenu": showSingleWindowMenu, "sidebarAppSpacing": appSpacing,
             "sidebarFontSize": fontSize, "sidebarShadowOpacity": shadowOpacity,
             "sidebarSnapDistance": snapDistance,
@@ -197,6 +201,7 @@ enum SidebarDisplayTarget: Hashable {
 }
 
 enum SidebarSettings {
+    static let compactIconsKey = "sidebarCompactShowsIcons"
     static let virtualNotchWidthKey = "sidebarVirtualNotchWidth"
     static let defaultVirtualNotchWidth: Double = 200
     static let virtualNotchWidthRange: ClosedRange<Double> = 100...400
@@ -273,6 +278,19 @@ enum SidebarSettings {
         // The global switch controls all sidebars; it is not a new display's Off preference.
         if preference == nil { configuration.enabled = true }
         save(configuration, for: id, name: name, in: defaults)
+    }
+
+    static func enableCompactIconsForConnectedDisplays(_ displays: [(id: String, name: String)],
+                                                       in defaults: UserDefaults = .standard) {
+        defaults.set(true, forKey: compactIconsKey)
+
+        let preferences = displayPreferences(in: defaults)
+        for display in displays {
+            var displayConfiguration = preferences[display.id]?.configuration
+                ?? SidebarConfiguration(defaults: defaults)
+            displayConfiguration.compactShowsIcons = true
+            save(displayConfiguration, for: display.id, name: display.name, in: defaults)
+        }
     }
 
     static func targets(connectedDisplayIDs: [String], in defaults: UserDefaults = .standard) -> Set<SidebarDisplayTarget> {

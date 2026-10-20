@@ -15,6 +15,74 @@ import Testing
 @testable import octopus
 
 struct SidebarTests {
+    @Test func sidebarNumberModifiersKeepDefaultsAndRememberSelection() throws {
+        let suite = "SidebarModifiers-\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        #expect(SidebarNumberShortcuts.modifiers(in: defaults) == [.control, .shift])
+        let chosen: NSEvent.ModifierFlags = [.option, .command]
+        defaults.set(Int(chosen.rawValue), forKey: SidebarNumberShortcuts.modifiersKey)
+        #expect(SidebarNumberShortcuts.modifiers(in: defaults) == chosen)
+        #expect(SidebarNumberShortcuts.hint(for: chosen).contains("⌥⌘1–9"))
+        defaults.set(0, forKey: SidebarNumberShortcuts.modifiersKey)
+        #expect(SidebarNumberShortcuts.modifiers(in: defaults).isEmpty)
+        #expect(SidebarNumberShortcuts.hint(for: []).contains("paused"))
+    }
+
+    @Test func sidebarNumberShortcutsFailClosedWhenSystemShortcutsCannotBeRead() {
+        let unavailable = SidebarNumberShortcuts.unavailablePositions(
+            systemShortcutResult: .failure(.copyFailed(-1))
+        )
+        #expect(unavailable == Set(SidebarNumberShortcuts.names.indices))
+    }
+
+    @Test func compactIconsPersistPerDisplayAndOlderProfilesKeepNumbers() throws {
+        let suite = "CompactIcons-\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        var configuration = SidebarConfiguration.factoryDefaults
+        #expect(!configuration.compactShowsIcons)
+        configuration.compactShowsIcons = true
+        configuration.saveSingleSidebar(in: defaults)
+        #expect(SidebarConfiguration(defaults: defaults).compactShowsIcons)
+        SidebarSettings.save(configuration, for: "A", name: "A", in: defaults)
+        configuration.compactShowsIcons = false
+        SidebarSettings.save(configuration, for: "B", name: "B", in: defaults)
+        #expect(SidebarSettings.configuration(for: "A", in: defaults).compactShowsIcons)
+        #expect(!SidebarSettings.configuration(for: "B", in: defaults).compactShowsIcons)
+        let oldProfile = Data("{\"idleBehavior\":\"compact\"}".utf8)
+        let restored = try JSONDecoder().decode(SidebarConfiguration.self, from: oldProfile)
+        #expect(!restored.compactShowsIcons)
+    }
+
+    @Test func enablingSidebarNumberShortcutsDefaultsCompactIconsOnForConnectedDisplays() throws {
+        let suite = "CompactIconShortcutDefaults-\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(13.0, forKey: "sidebarFontSize")
+        var displayA = SidebarConfiguration.factoryDefaults
+        displayA.side = .left
+        SidebarSettings.save(displayA, for: "A", name: "Display A", in: defaults)
+        var displayB = SidebarConfiguration.factoryDefaults
+        displayB.compactShowsIcons = true
+        displayB.position = 0.25
+        SidebarSettings.save(displayB, for: "B", name: "Display B", in: defaults)
+
+        SidebarSettings.enableCompactIconsForConnectedDisplays(
+            [("A", "Display A"), ("B", "Display B")], in: defaults
+        )
+
+        #expect(SidebarConfiguration(defaults: defaults).compactShowsIcons)
+        #expect(defaults.persistentDomain(forName: suite)?["sidebarPosition"] == nil)
+        let updatedA = SidebarSettings.configuration(for: "A", in: defaults)
+        let updatedB = SidebarSettings.configuration(for: "B", in: defaults)
+        #expect(updatedA.compactShowsIcons)
+        #expect(updatedA.side == .left)
+        #expect(updatedB.compactShowsIcons)
+        #expect(updatedB.position == 0.25)
+        #expect(updatedB.fontSize == SidebarSettings.defaultFontSize)
+    }
+
     @Test func presentationPreservesVisibilityAndFullScreenRules() {
         let cases: [(SidebarIdleBehavior, Bool, Bool, SidebarPresentation.Mode, Bool)] = [
             (.fade, false, false, .edge, false), (.fade, false, true, .edge, true),

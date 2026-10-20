@@ -8,7 +8,6 @@
 import SwiftUI
 import AppKit
 import KeyboardShortcuts
-import Carbon.HIToolbox
 
 struct PreferencesShortcutsView: View {
     private static let maximumFormHeight: CGFloat = 520
@@ -19,6 +18,7 @@ struct PreferencesShortcutsView: View {
         return ModifierManager()
     }()
     @State private var showingResetConfirmation = false
+    @AppStorage(SidebarNumberShortcuts.modifiersKey) private var sidebarNumberModifierMask = Int(SidebarNumberShortcuts.defaultModifiers.rawValue)
     @StateObject private var mouseShortcuts = MouseShortcutStore.shared
     @State private var recordingMouseAction: MouseShortcutAction?
     @State private var mouseShortcutError: String?
@@ -40,24 +40,19 @@ struct PreferencesShortcutsView: View {
             return "This shortcut is assigned to another Octopus action. Choose another."
         }
         if !allowingSystemConflict, let shortcut,
-           shortcut != KeyboardShortcuts.getShortcut(for: name), systemUsesShortcut(shortcut) {
-            pendingAssignment = ShortcutAssignment(name: name, shortcut: shortcut)
-            return nil
+           shortcut != KeyboardShortcuts.getShortcut(for: name) {
+            switch WindowMonitorShortcuts.systemShortcuts() {
+            case .failure(let error):
+                return "\(error.message) The shortcut was not assigned."
+            case .success(let systemShortcuts) where systemShortcuts.contains(shortcut):
+                pendingAssignment = ShortcutAssignment(name: name, shortcut: shortcut)
+                return nil
+            case .success:
+                break
+            }
         }
         KeyboardShortcuts.setShortcut(shortcut, for: name)
         return nil
-    }
-
-    private func systemUsesShortcut(_ shortcut: KeyboardShortcuts.Shortcut) -> Bool {
-        var symbolicKeys: Unmanaged<CFArray>?
-        guard CopySymbolicHotKeys(&symbolicKeys) == noErr,
-              let keys = symbolicKeys?.takeRetainedValue() as? [[String: Any]] else { return false }
-        return keys.contains {
-            guard ($0[kHISymbolicHotKeyEnabled] as? Bool) == true,
-                  let key = $0[kHISymbolicHotKeyCode] as? Int,
-                  let modifiers = $0[kHISymbolicHotKeyModifiers] as? Int else { return false }
-            return shortcut == KeyboardShortcuts.Shortcut(carbonKeyCode: key, carbonModifiers: modifiers)
-        }
     }
 
     private func refreshMonitorShortcutConflict() {
@@ -80,6 +75,19 @@ struct PreferencesShortcutsView: View {
             .help("Remove this shortcut and return the key combination to other apps")
             .accessibilityLabel("Disable \(title.lowercased()) shortcut")
         }
+    }
+
+    private func sidebarNumberModifier(_ flag: NSEvent.ModifierFlags, name: String) -> some View {
+        Toggle("", isOn: Binding(
+            get: { NSEvent.ModifierFlags(rawValue: UInt(clamping: sidebarNumberModifierMask)).contains(flag) },
+            set: { enabled in
+                var modifiers = NSEvent.ModifierFlags(rawValue: UInt(clamping: sidebarNumberModifierMask))
+                if enabled { modifiers.insert(flag) } else { modifiers.remove(flag) }
+                sidebarNumberModifierMask = Int(modifiers.rawValue)
+            }
+        ))
+        .toggleStyle(.checkbox)
+        .accessibilityLabel("\(name) for sidebar app shortcuts")
     }
 
     private func positionModifier(_ flag: NSEvent.ModifierFlags, symbol: String, name: String) -> some View {
@@ -190,8 +198,21 @@ struct PreferencesShortcutsView: View {
                         Toggle("", isOn: $modifierManager.bindShift).toggleStyle(.checkbox)
                         Toggle("", isOn: $modifierManager.bindCommand).toggleStyle(.checkbox)
                     }
+                    GridRow {
+                        Text(verbatim: "Sidebar apps")
+                            .frame(minWidth: 150, alignment: .leading)
+                        sidebarNumberModifier(.control, name: "Control")
+                        sidebarNumberModifier(.option, name: "Option")
+                        sidebarNumberModifier(.shift, name: "Shift")
+                        sidebarNumberModifier(.command, name: "Command")
+                    }
+                    .help("Use these modifiers with 1–9 or 0 for sidebar apps; enable number shortcuts in Sidebar settings.")
                 }
                 .padding(.vertical, 8)
+
+                if let note = SidebarNumberShortcuts.availabilityNote {
+                    Text(note).font(.caption).foregroundStyle(.secondary)
+                }
 
                 if let disabledCapabilityNote {
                     HStack(alignment: .top, spacing: 8) {
@@ -364,12 +385,13 @@ struct PreferencesShortcutsView: View {
                 else { monitorShortcutError = error }
             }
         } message: { assignment in
-            Text("Use \(assignment.shortcut) for Octopus anyway? If macOS still opens its own action, change that shortcut in System Settings → Keyboard → Keyboard Shortcuts.")
+            Text("Use \(String(describing: assignment.shortcut)) for Octopus anyway? If macOS still opens its own action, change that shortcut in System Settings → Keyboard → Keyboard Shortcuts.")
         }
         .alert("Reset keyboard modifiers?", isPresented: $showingResetConfirmation) {
             Button("Cancel", role: .cancel) {}
             Button("Reset", role: .destructive) {
                 modifierManager.resetToDefaults()
+                sidebarNumberModifierMask = Int(SidebarNumberShortcuts.defaultModifiers.rawValue)
             }
         } message: {
             Text(verbatim: """
@@ -378,6 +400,7 @@ struct PreferencesShortcutsView: View {
             Activate:\t\t⌃
             Profile:\t\t⌃ + ⌥
             Bind:\t\t⌃ + ⌥ + ⇧
+            Sidebar apps:\t⌃ + ⇧
             """)
             .font(.system(.body, design: .monospaced))
         }

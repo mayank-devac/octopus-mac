@@ -4,6 +4,8 @@ import AppKit
 struct PreferencesSidebarView: View {
     @AppStorage("sidebarEnabled") private var enabled = true
     @AppStorage(SidebarSettings.multiDisplayKey) private var multiDisplay = false
+    @AppStorage(SidebarNumberShortcuts.enabledKey) private var numberShortcuts = false
+    @AppStorage(SidebarNumberShortcuts.modifiersKey) private var numberShortcutModifierMask = Int(SidebarNumberShortcuts.defaultModifiers.rawValue)
     @AppStorage("sidebarMonitor") private var monitor = "primary"
     @State private var screens = NSScreen.screens
     @State private var selectedDisplayID = ""
@@ -89,6 +91,15 @@ struct PreferencesSidebarView: View {
         configuration = SidebarSettings.configuration(for: multiDisplay ? selectedDisplayID : nil)
     }
 
+    private func enableCompactIconsForConnectedDisplays() {
+        let connectedDisplays = screens.compactMap { screen -> (id: String, name: String)? in
+            guard let id = SidebarSettings.monitorID(screen) else { return nil }
+            return (id, screen.localizedName)
+        }
+        SidebarSettings.enableCompactIconsForConnectedDisplays(connectedDisplays)
+        reload()
+    }
+
     private var resetButton: some View {
         Button("Reset") {
             var next = SidebarConfiguration.factoryDefaults
@@ -106,6 +117,21 @@ struct PreferencesSidebarView: View {
             Toggle("Show window sidebar", isOn: $enabled)
             Toggle("Multi-display sidebar", isOn: $multiDisplay)
                 .help("Show a sidebar on each enabled display. Each display remembers its own settings.")
+            Toggle("Number shortcuts for sidebar apps", isOn: $numberShortcuts)
+                .disabled(!enabled)
+                .help("Open sidebar apps from top to bottom with 1–9 or 0; choose the modifier keys in Shortcuts settings.")
+            if configuration.idleBehavior == .compact {
+                Toggle("Show app icons instead of numbers", isOn: setting(\.compactShowsIcons))
+                    .disabled(!editingEnabled)
+            }
+            if numberShortcuts {
+                Text(SidebarNumberShortcuts.hint(for: NSEvent.ModifierFlags(rawValue: UInt(clamping: numberShortcutModifierMask))))
+                    .font(.caption).foregroundStyle(.secondary)
+                if let note = SidebarNumberShortcuts.availabilityNote {
+                    Text(note)
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
             if multiDisplay {
                 HStack {
                     Picker("Display", selection: $selectedDisplayID) {
@@ -165,7 +191,7 @@ struct PreferencesSidebarView: View {
                     }
                 }
                 .disabled(!editingEnabled)
-                .help("Fade makes the idle sidebar more transparent. Auto-Hide shows it at the screen edge. Always visible keeps it fully opaque. Compact keeps a numbered strip visible. Mac Notch opens a horizontal app bar below a real or virtual notch; each app’s windows remain in one vertical list.")
+                .help("Fade makes the idle sidebar more transparent. Auto-Hide shows it at the screen edge. Always visible keeps it fully opaque. Compact keeps a strip of numbers or app icons visible. Mac Notch opens a horizontal app bar below a real or virtual notch; each app’s windows remain in one vertical list.")
                 if usesVirtualNotch {
                     HStack {
                         Text("Notch width")
@@ -258,6 +284,9 @@ struct PreferencesSidebarView: View {
         .onAppear { reload() }
         .onChange(of: selectedDisplayID) { _, _ in reload() }
         .onChange(of: multiDisplay) { _, _ in reload() }
+        .onChange(of: numberShortcuts) { wasEnabled, isEnabled in
+            if isEnabled && !wasEnabled { enableCompactIconsForConnectedDisplays() }
+        }
         .onReceive(NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification)
             .receive(on: RunLoop.main)) { _ in reload() }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didChangeScreenParametersNotification)
