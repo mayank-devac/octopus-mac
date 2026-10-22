@@ -19,6 +19,7 @@ struct PreferencesShortcutsView: View {
     }()
     @State private var showingResetConfirmation = false
     @AppStorage(SidebarNumberShortcuts.modifiersKey) private var sidebarNumberModifierMask = Int(SidebarNumberShortcuts.defaultModifiers.rawValue)
+    @AppStorage(MissionControlHoverShortcut.modifiersKey) private var desktopMapModifierMask = Int(MissionControlHoverShortcut.defaultModifiers.rawValue)
     @StateObject private var mouseShortcuts = MouseShortcutStore.shared
     @State private var recordingMouseAction: MouseShortcutAction?
     @State private var mouseShortcutError: String?
@@ -88,6 +89,19 @@ struct PreferencesShortcutsView: View {
         ))
         .toggleStyle(.checkbox)
         .accessibilityLabel("\(name) for sidebar app shortcuts")
+    }
+
+    private func desktopMapModifier(_ flag: NSEvent.ModifierFlags, name: String) -> some View {
+        Toggle("", isOn: Binding(
+            get: { NSEvent.ModifierFlags(rawValue: UInt(clamping: desktopMapModifierMask)).contains(flag) },
+            set: { enabled in
+                var modifiers = NSEvent.ModifierFlags(rawValue: UInt(clamping: desktopMapModifierMask))
+                if enabled { modifiers.insert(flag) } else { modifiers.remove(flag) }
+                desktopMapModifierMask = Int(modifiers.intersection(MouseShortcut.supportedModifiers).rawValue)
+            }
+        ))
+        .toggleStyle(.checkbox)
+        .accessibilityLabel("\(name) for desktop map preview")
     }
 
     private func positionModifier(_ flag: NSEvent.ModifierFlags, symbol: String, name: String) -> some View {
@@ -207,6 +221,15 @@ struct PreferencesShortcutsView: View {
                         sidebarNumberModifier(.command, name: "Command")
                     }
                     .help("Use these modifiers with 1–9 or 0 for sidebar apps; enable number shortcuts in Sidebar settings.")
+                    GridRow {
+                        Text(verbatim: "Desktop map")
+                            .frame(minWidth: 150, alignment: .leading)
+                        desktopMapModifier(.control, name: "Control")
+                        desktopMapModifier(.option, name: "Option")
+                        desktopMapModifier(.shift, name: "Shift")
+                        desktopMapModifier(.command, name: "Command")
+                    }
+                    .help("Hold these keys and move onto the sidebar to preview desktops. Release a selected key to hide the preview. Clear all to disable hover preview.")
                 }
                 .padding(.vertical, 8)
 
@@ -392,6 +415,7 @@ struct PreferencesShortcutsView: View {
             Button("Reset", role: .destructive) {
                 modifierManager.resetToDefaults()
                 sidebarNumberModifierMask = Int(SidebarNumberShortcuts.defaultModifiers.rawValue)
+                desktopMapModifierMask = Int(MissionControlHoverShortcut.defaultModifiers.rawValue)
             }
         } message: {
             Text(verbatim: """
@@ -401,6 +425,7 @@ struct PreferencesShortcutsView: View {
             Profile:\t\t⌃ + ⌥
             Bind:\t\t⌃ + ⌥ + ⇧
             Sidebar apps:\t⌃ + ⇧
+            Desktop map:\t⌥
             """)
             .font(.system(.body, design: .monospaced))
         }

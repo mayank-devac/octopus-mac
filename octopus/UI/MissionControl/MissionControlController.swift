@@ -7,6 +7,52 @@ struct MissionControlTarget {
     let position: Double
 }
 
+struct MissionControlPresentationState {
+    enum Source: Hashable { case missionControl, hoverPreview }
+    private var sources = Set<Source>()
+    var isVisible: Bool { !sources.isEmpty }
+
+    mutating func set(_ source: Source, presented: Bool) {
+        if presented { sources.insert(source) }
+        else { sources.remove(source) }
+    }
+
+    mutating func clear() { sources.removeAll() }
+}
+
+enum MissionControlHoverShortcut {
+    static let modifiersKey = "missionControlHoverModifiers"
+    static let defaultModifiers: NSEvent.ModifierFlags = .option
+
+    static func modifiers(in defaults: UserDefaults = .standard) -> NSEvent.ModifierFlags {
+        guard let saved = defaults.object(forKey: modifiersKey) as? Int, saved >= 0 else { return defaultModifiers }
+        let raw = UInt(saved)
+        guard raw & ~MouseShortcut.supportedModifiers.rawValue == 0 else { return defaultModifiers }
+        return NSEvent.ModifierFlags(rawValue: raw)
+    }
+
+    static func matches(_ modifiers: NSEvent.ModifierFlags, required: NSEvent.ModifierFlags) -> Bool {
+        !required.isEmpty && modifiers.intersection(MouseShortcut.supportedModifiers) == required
+    }
+
+    static func isHeld(_ modifiers: NSEvent.ModifierFlags, required: NSEvent.ModifierFlags) -> Bool {
+        !required.isEmpty && modifiers.intersection(required) == required
+    }
+}
+
+struct MissionControlHoverTrigger {
+    private var wasInside = false
+
+    mutating func update(isInside: Bool, pointerMoved: Bool, modifiers: NSEvent.ModifierFlags,
+                         required: NSEvent.ModifierFlags = MissionControlHoverShortcut.defaultModifiers,
+                         pressedButtons: Int, canPresent: Bool) -> Bool {
+        let entered = isInside && !wasInside
+        wasInside = isInside
+        return entered && pointerMoved && canPresent && pressedButtons == 0
+            && MissionControlHoverShortcut.matches(modifiers, required: required)
+    }
+}
+
 enum MissionControlPlacement {
     static func availableFrame(screen: CGRect, visibleFrame: CGRect) -> CGRect {
         let visible = screen.intersection(visibleFrame)
@@ -41,6 +87,8 @@ final class MissionControlController {
     private var targets: [MissionControlTarget] = []
     private var panels: [String: MissionControlPanel] = [:]
     private var visible = false
+    private var presentation = MissionControlPresentationState()
+    private var previewModifiers = MissionControlHoverShortcut.modifiers()
     private var snapshots = MissionControlSnapshotState()
     private var refreshTimer: Timer?
     private var refreshInFlight = false
@@ -48,10 +96,33 @@ final class MissionControlController {
     init(windowSeeds: @escaping () -> [SidebarWindowID: AXUIElement], onVisibilityChange: @escaping (Bool) -> Void) {
         self.windowSeeds = windowSeeds
         self.onVisibilityChange = onVisibilityChange
-        monitor.onVisibilityChange = { [weak self] visible in self?.setVisible(visible) }
+        monitor.onVisibilityChange = { [weak self] visible in
+            self?.setSource(.missionControl, presented: visible)
+        }
+        monitor.onStopped = { [weak self] in self?.clearPresentation() }
+    }
+
+    func setPreviewPresented(_ presented: Bool) {
+        guard !presented || (!previewModifiers.isEmpty && !targets.isEmpty && monitor.isRunning && AXIsProcessTrusted()) else { return }
+        setSource(.hoverPreview, presented: presented)
+    }
+
+    private func setSource(_ source: MissionControlPresentationState.Source, presented: Bool) {
+        presentation.set(source, presented: presented)
+        setVisible(presentation.isVisible)
+    }
+
+    private func clearPresentation() {
+        presentation.clear()
+        setVisible(false)
     }
 
     func updateTargets(_ targets: [MissionControlTarget]) {
+        let modifiers = MissionControlHoverShortcut.modifiers()
+        if modifiers != previewModifiers {
+            previewModifiers = modifiers
+            setPreviewPresented(false)
+        }
         self.targets = targets
         let ids = Set(targets.map(\.id))
         for id in Array(panels.keys) where !ids.contains(id) { removePanel(id) }
@@ -66,7 +137,7 @@ final class MissionControlController {
 
     func stop() {
         monitor.stop()
-        setVisible(false)
+        clearPresentation()
         refreshTimer?.invalidate()
         refreshTimer = nil
         for id in Array(panels.keys) { removePanel(id) }

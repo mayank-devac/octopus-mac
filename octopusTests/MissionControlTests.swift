@@ -71,6 +71,98 @@ struct MissionControlTests {
         #expect(state.isVisible)
     }
 
+    @Test func missionControlAndHoverPreviewKeepTheMapUntilBothTriggersEnd() {
+        var state = MissionControlPresentationState()
+        state.set(.hoverPreview, presented: true)
+        #expect(state.isVisible)
+        state.set(.missionControl, presented: true)
+        state.set(.hoverPreview, presented: false)
+        #expect(state.isVisible)
+        state.set(.missionControl, presented: false)
+        #expect(!state.isVisible)
+        state.set(.missionControl, presented: true)
+        state.set(.hoverPreview, presented: true)
+        state.set(.missionControl, presented: false)
+        #expect(state.isVisible)
+        state.set(.hoverPreview, presented: false)
+        #expect(!state.isVisible)
+    }
+
+    @Test func suspensionClearsBothMapTriggers() {
+        var state = MissionControlPresentationState()
+        state.set(.missionControl, presented: true)
+        state.set(.hoverPreview, presented: true)
+        state.clear()
+        #expect(!state.isVisible)
+    }
+
+    @Test func optionHoverOpensOnlyWhenEnteringAndCanBeRepeatedAfterLeaving() {
+        var commandTrigger = MissionControlHoverTrigger()
+        let commandEnter = commandTrigger.update(isInside: true, pointerMoved: true, modifiers: .command,
+                                                 pressedButtons: 0, canPresent: true)
+        #expect(!commandEnter)
+
+        var trigger = MissionControlHoverTrigger()
+        let enter = trigger.update(isInside: true, pointerMoved: true, modifiers: .option,
+                                   pressedButtons: 0, canPresent: true)
+        #expect(enter)
+        let moveInside = trigger.update(isInside: true, pointerMoved: true, modifiers: .option,
+                                        pressedButtons: 0, canPresent: true)
+        #expect(!moveInside)
+        _ = trigger.update(isInside: false, pointerMoved: true, modifiers: .option,
+                           pressedButtons: 0, canPresent: true)
+        let reenter = trigger.update(isInside: true, pointerMoved: true, modifiers: .option,
+                                     pressedButtons: 0, canPresent: true)
+        #expect(reenter)
+    }
+
+    @Test func pressingControlAfterHoverKeepsTheExistingPositionScrollGestureAvailable() {
+        var trigger = MissionControlHoverTrigger()
+        _ = trigger.update(isInside: true, pointerMoved: true, modifiers: [],
+                           required: .control, pressedButtons: 0, canPresent: true)
+        let press = trigger.update(isInside: true, pointerMoved: false, modifiers: .control,
+                                   required: .control, pressedButtons: 0, canPresent: true)
+        let move = trigger.update(isInside: true, pointerMoved: true, modifiers: .control,
+                                  required: .control, pressedButtons: 0, canPresent: true)
+        #expect(!press && !move)
+    }
+
+    @Test func optionHoverDoesNotInterruptDragsOtherModifiersOrBlockedInteractions() {
+        let blocked: [(NSEvent.ModifierFlags, Int, Bool)] = [
+            ([], 0, true), ([.option, .shift], 0, true), ([.option, .command], 0, true),
+            ([.control, .option], 0, true), (.option, 1, true), (.option, 0, false)
+        ]
+        for (modifiers, buttons, canPresent) in blocked {
+            var trigger = MissionControlHoverTrigger()
+            let requested = trigger.update(isInside: true, pointerMoved: true, modifiers: modifiers,
+                                            pressedButtons: buttons, canPresent: canPresent)
+            #expect(!requested)
+        }
+    }
+
+    @Test func hoverModifiersDefaultToOptionAndPersistCustomOrDisabledChoices() throws {
+        let suite = "MissionControlHoverTests.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        #expect(MissionControlHoverShortcut.modifiers(in: defaults) == .option)
+        let custom: NSEvent.ModifierFlags = [.option, .shift]
+        defaults.set(Int(custom.rawValue), forKey: MissionControlHoverShortcut.modifiersKey)
+        #expect(MissionControlHoverShortcut.modifiers(in: defaults) == custom)
+        var trigger = MissionControlHoverTrigger()
+        let opened = trigger.update(isInside: true, pointerMoved: true, modifiers: custom,
+            required: MissionControlHoverShortcut.modifiers(in: defaults), pressedButtons: 0, canPresent: true)
+        #expect(opened)
+        #expect(MissionControlHoverShortcut.isHeld(custom.union(.command), required: custom))
+        #expect(!MissionControlHoverShortcut.isHeld(.option, required: custom))
+        #expect(!MissionControlHoverShortcut.isHeld(.shift, required: custom))
+        defaults.set(0, forKey: MissionControlHoverShortcut.modifiersKey)
+        let disabled = MissionControlHoverShortcut.modifiers(in: defaults)
+        #expect(disabled.isEmpty && !MissionControlHoverShortcut.matches([], required: disabled))
+        #expect(!MissionControlHoverShortcut.isHeld(.option, required: disabled))
+        defaults.set("invalid", forKey: MissionControlHoverShortcut.modifiersKey)
+        #expect(MissionControlHoverShortcut.modifiers(in: defaults) == .option)
+    }
+
     @Test func placementFollowsSidebarSideAndPositionWithoutCoveringDesktopStripOrDock() {
         let screen = CGRect(x: -1920, y: 200, width: 1920, height: 1080)
         let visible = CGRect(x: -1920, y: 270, width: 1920, height: 986)

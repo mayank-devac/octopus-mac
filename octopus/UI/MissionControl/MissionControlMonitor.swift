@@ -36,6 +36,8 @@ struct MissionControlMonitorState {
 @MainActor
 final class MissionControlMonitor {
     var onVisibilityChange: ((Bool) -> Void)?
+    var onStopped: (() -> Void)?
+    var isRunning: Bool { state.phase != .stopped }
     private var state = MissionControlMonitorState()
     private let queue = DispatchQueue(label: "com.octopus.mission-control", qos: .utility)
     private var timer: Timer?
@@ -94,8 +96,10 @@ final class MissionControlMonitor {
             timer?.invalidate()
             timer = nil
             let wasVisible = state.isVisible
+            let wasRunning = isRunning
             state.stop()
             if wasVisible { onVisibilityChange?(false) }
+            if wasRunning { onStopped?() }
             return
         }
         guard timer == nil else { return }

@@ -42,6 +42,7 @@ final class SidebarController {
 
     private func reconcile(screensChanged: Bool = false) {
         let defaults = UserDefaults.standard
+        let previewModifiers = MissionControlHoverShortcut.modifiers(in: defaults)
         let multiDisplay = defaults.bool(forKey: SidebarSettings.multiDisplayKey)
         let screens = NSScreen.screens
         if multiDisplay {
@@ -62,6 +63,8 @@ final class SidebarController {
                 let controller = SidebarDisplayController(cycleController: cycleController, displayID: id.displayID)
                 controller.setRadialPresented(radialPresented)
                 controller.setMissionControlPresented(missionControlPresented)
+                controller.onMissionControlPreview = { [weak self] in self?.missionControl.setPreviewPresented(true) }
+                controller.onMissionControlPreviewEnd = { [weak self] in self?.missionControl.setPreviewPresented(false) }
                 controller.otherSidebarFrames = { [weak self] in
                     self?.displays.values.flatMap { $0.interactionFrames } ?? []
                 }
@@ -83,6 +86,7 @@ final class SidebarController {
                 }
                 displays[id] = controller
             }
+            displays[id]?.missionControlPreviewModifiers = previewModifiers
         }
         missionControl.updateTargets(displays.values.compactMap { $0.missionControlTarget })
         let enabled = defaults.bool(forKey: SidebarNumberShortcuts.enabledKey) && !displays.isEmpty
@@ -127,6 +131,10 @@ private final class SidebarDisplayController {
     private let inventory = SidebarWindowInventory()
     private var radialPresented = false
     private var missionControlPresented = false
+    private var missionControlHover = MissionControlHoverTrigger()
+    var missionControlPreviewModifiers = MissionControlHoverShortcut.defaultModifiers
+    var onMissionControlPreview: (() -> Void)?
+    var onMissionControlPreviewEnd: (() -> Void)?
 
     func setMissionControlPresented(_ presented: Bool) {
         guard missionControlPresented != presented else { return }
@@ -957,9 +965,26 @@ private final class SidebarDisplayController {
     }
 
     private func handleMouse(_ event: NSEvent) {
+        let modifiers = NSEvent.modifierFlags
+        if !MissionControlHoverShortcut.isHeld(modifiers, required: missionControlPreviewModifiers) {
+            onMissionControlPreviewEnd?()
+        }
+        let point = NSEvent.mouseLocation
+        let inPanel = panel.isVisible && panel.isOnActiveSpace && pointerFrame.contains(point)
+        let inNotch = notchPanel.isVisible && notchPanel.isOnActiveSpace && notchFrame.contains(point)
+        let canPreview = settings?.enabled == true && inventory.hasPermission && screen != nil
+            && !radialPresented && !missionControlPresented && !hasActiveInteraction
+            && !otherDragActive() && !cycleController.isKeyboardSwitcherVisible
+        let requested = missionControlHover.update(
+            isInside: inPanel || inNotch || edgeFrame.contains(point), pointerMoved: event.type == .mouseMoved,
+            modifiers: modifiers, required: missionControlPreviewModifiers,
+            pressedButtons: Int(NSEvent.pressedMouseButtons), canPresent: canPreview)
+        if requested {
+            onMissionControlPreview?()
+            return
+        }
         guard !radialPresented, !missionControlPresented else { return }
         guard !dragController.isActive, !otherDragActive() else { return }
-        let point = NSEvent.mouseLocation
         // One pointer-position path owns row and button hover. Native row/button hover
         // callbacks must not compete with it or miss movement over overlapping controls.
         if [.mouseMoved, .leftMouseDragged, .rightMouseDragged].contains(event.type) {
