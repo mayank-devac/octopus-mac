@@ -82,6 +82,17 @@ enum MissionControlPlacement {
 final class MissionControlController {
     private let monitor = MissionControlMonitor()
     private let reader = MissionControlSnapshotReader()
+    private let actions = MissionControlActions()
+    private var selection = MissionControlSelectionState()
+    private var hoverLifetime = MissionControlHoverLifetime()
+    private var triggerIDs = Set<SidebarDisplayTarget>()
+    private var pointerTimer: Timer?
+    private var localKeyMonitor: Any?
+    private var globalKeyMonitor: Any?
+    private var actionGeneration = 0
+    private var selectionDismissed = false
+    private var actionScreens: [MissionControlScreen]?
+    private var previewFrames: [CGRect] = []
     private let windowSeeds: () -> [SidebarWindowID: AXUIElement]
     private let onVisibilityChange: (Bool) -> Void
     private var targets: [MissionControlTarget] = []
@@ -96,15 +107,69 @@ final class MissionControlController {
     init(windowSeeds: @escaping () -> [SidebarWindowID: AXUIElement], onVisibilityChange: @escaping (Bool) -> Void) {
         self.windowSeeds = windowSeeds
         self.onVisibilityChange = onVisibilityChange
-        monitor.onVisibilityChange = { [weak self] visible in
-            self?.setSource(.missionControl, presented: visible)
+        monitor.onReading = { [weak self] reading in
+            guard let self else { return }
+            let visible = reading == .visible
+            if reading == .hidden { self.selection.observeMissionControl(false) }
+            guard !self.selection.suppressMissionControl else { return }
+            self.setSource(.missionControl, presented: visible)
         }
-        monitor.onStopped = { [weak self] in self?.clearPresentation() }
+        monitor.onStopped = { [weak self] in self?.cancelPresentation() }
+        localKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            let consumed = MainActor.assumeIsolated { self?.escape(event.keyCode) ?? false }
+            return consumed ? nil : event
+        }
+        globalKeyMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            MainActor.assumeIsolated { _ = self?.escape(event.keyCode) }
+        }
     }
 
     func setPreviewPresented(_ presented: Bool) {
+        guard !presented || (!selection.pending && !selection.suppressMissionControl) else { return }
         guard !presented || (!previewModifiers.isEmpty && !targets.isEmpty && monitor.isRunning && AXIsProcessTrusted()) else { return }
+        hoverLifetime.reset()
         setSource(.hoverPreview, presented: presented)
+    }
+
+    func updatePointer(triggerID: SidebarDisplayTarget, inside: Bool) {
+        if inside { triggerIDs.insert(triggerID) } else { triggerIDs.remove(triggerID) }
+        samplePointer()
+    }
+
+    private func samplePointer() {
+        guard visible else { return }
+        guard AXIsProcessTrusted() else { cancelPresentation(); return }
+        let point = NSEvent.mouseLocation
+        let inMap = panels.values.contains { $0.isVisible && $0.frame.contains(point) }
+            || (panels.isEmpty && previewFrames.contains { $0.contains(point) })
+        if hoverLifetime.update(inTrigger: !triggerIDs.isEmpty, inMap: inMap, pressed: selection.pressed,
+                                now: ProcessInfo.processInfo.systemUptime) {
+            setSource(.hoverPreview, presented: false)
+        }
+    }
+
+    private func escape(_ keyCode: UInt16) -> Bool {
+        guard keyCode == 53, visible || selection.pending else { return false }
+        // Keep suppression until a fresh hidden MC observation; Escape must not
+        // immediately reopen the map from the monitor's previous visible sample.
+        selection.dismiss()
+        selectionDismissed = true
+        actions.cancel()
+        clearPresentation()
+        return true
+    }
+
+    private func cancelPresentation() {
+        actionGeneration += 1
+        let wasPending = selection.pending
+        actions.cancel()
+        selection.reset()
+        if wasPending && monitor.isRunning { selection.dismiss() }
+        actionScreens = nil
+        hoverLifetime.reset()
+        triggerIDs.removeAll()
+        clearPresentation()
+        if wasPending { onVisibilityChange(false) }
     }
 
     private func setSource(_ source: MissionControlPresentationState.Source, presented: Bool) {
@@ -123,6 +188,9 @@ final class MissionControlController {
             previewModifiers = modifiers
             setPreviewPresented(false)
         }
+        let topologyChanged = (actionScreens ?? snapshots.snapshot?.screens).map { $0 != connectedScreens() } ?? false
+        let targetChanged = Set(self.targets.map(\.id)) != Set(targets.map(\.id))
+        if targetChanged || topologyChanged { cancelPresentation() }
         self.targets = targets
         let ids = Set(targets.map(\.id))
         for id in Array(panels.keys) where !ids.contains(id) { removePanel(id) }
@@ -137,7 +205,11 @@ final class MissionControlController {
 
     func stop() {
         monitor.stop()
-        clearPresentation()
+        cancelPresentation()
+        if let localKeyMonitor { NSEvent.removeMonitor(localKeyMonitor) }
+        if let globalKeyMonitor { NSEvent.removeMonitor(globalKeyMonitor) }
+        localKeyMonitor = nil
+        globalKeyMonitor = nil
         refreshTimer?.invalidate()
         refreshTimer = nil
         for id in Array(panels.keys) { removePanel(id) }
@@ -153,6 +225,12 @@ final class MissionControlController {
         reader.queue.async { [reader] in reader.reset(clearDiscovery: clearDiscovery) }
         if visible {
             onVisibilityChange(true)
+            hoverLifetime.reset()
+            let pointerTimer = Timer(timeInterval: 0.05, repeats: true) { [weak self] _ in
+                MainActor.assumeIsolated { self?.samplePointer() }
+            }
+            self.pointerTimer = pointerTimer
+            RunLoop.main.add(pointerTimer, forMode: .common)
             let timer = Timer(timeInterval: 0.75, repeats: true) { [weak self] _ in
                 MainActor.assumeIsolated { self?.refresh() }
             }
@@ -161,10 +239,13 @@ final class MissionControlController {
             RunLoop.main.add(timer, forMode: .common)
             refresh()
         } else {
+            previewFrames.removeAll()
+            pointerTimer?.invalidate()
+            pointerTimer = nil
             refreshTimer?.invalidate()
             refreshTimer = nil
             for id in Array(panels.keys) { removePanel(id) }
-            onVisibilityChange(false)
+            onVisibilityChange(selection.pending)
         }
     }
 
@@ -179,13 +260,13 @@ final class MissionControlController {
     }
 
     private func refresh() {
-        guard visible, !targets.isEmpty, !refreshInFlight, AXIsProcessTrusted() else { return }
+        guard visible, !selection.pressed, !selection.pending, !targets.isEmpty, !refreshInFlight, AXIsProcessTrusted() else { return }
         let apps = NSWorkspace.shared.runningApplications.filter {
             $0.activationPolicy == .regular && !$0.isTerminated && $0.processIdentifier != ProcessInfo.processInfo.processIdentifier
         }.map { app in
             MissionControlApplication(pid: app.processIdentifier, name: app.localizedName ?? "Application",
                 icon: app.icon ?? app.bundleURL.map { NSWorkspace.shared.icon(forFile: $0.path) }
-                    ?? NSImage(named: NSImage.applicationIconName), isHidden: app.isHidden)
+                    ?? NSImage(named: NSImage.applicationIconName), isHidden: app.isHidden, launchDate: app.launchDate)
         }
         let screens = connectedScreens()
         let seeds = windowSeeds()
@@ -200,7 +281,8 @@ final class MissionControlController {
                     if self.visible { self.refresh() }
                     return
                 }
-                guard AXIsProcessTrusted(), self.snapshots.receive(snapshot, generation: generation) else { return }
+                guard !self.selection.pressed, !self.selection.pending,
+                      AXIsProcessTrusted(), self.snapshots.receive(snapshot, generation: generation) else { return }
                 self.present()
             }
         }
@@ -213,8 +295,45 @@ final class MissionControlController {
         panel.close()
     }
 
+    private func select(_ target: MissionControlSelection) {
+        guard visible, !actions.isPending, let snapshot = snapshots.snapshot,
+              snapshot.screens == connectedScreens(),
+              let screen = targets.first(where: { $0.id == target.screenID })?.screen,
+              let displayID = SidebarSettings.displayID(screen),
+              target.windowID.map({ snapshot.focusRequirements[$0] != nil }) ?? true,
+              selection.begin() else { return }
+        let screens = connectedScreens()
+        let generation = actionGeneration
+        actionScreens = screens
+        selectionDismissed = false
+        let previousPresentation = presentation
+        let previousFrames = panels.values.map(\.frame)
+        presentation.clear()
+        setVisible(false)
+        // setVisible keeps sidebar input suppressed throughout the transition.
+        actions.select(target, snapshot: snapshot, displayID: displayID,
+            isCurrent: { [weak self] in
+                guard let self else { return false }
+                return self.monitor.isRunning && AXIsProcessTrusted() && screens == self.connectedScreens()
+                    && self.targets.contains(where: { $0.id == target.screenID })
+            }, completion: { [weak self] succeeded in
+                guard let self, generation == self.actionGeneration else { return }
+                self.selection.finish()
+                self.selection.press(false)
+                self.actionScreens = nil
+                self.onVisibilityChange(false)
+                if !succeeded && !self.selectionDismissed && self.monitor.isRunning && AXIsProcessTrusted() {
+                    // Re-read, rather than retaining stale selectable handles.
+                    self.presentation = previousPresentation
+                    self.presentation.set(.hoverPreview, presented: true)
+                    self.setVisible(true)
+                    self.previewFrames = previousFrames
+                }
+            })
+    }
+
     private func present() {
-        guard let snapshot = snapshots.snapshot else { return }
+        guard !selection.pressed, !selection.pending, let snapshot = snapshots.snapshot else { return }
         for target in targets {
             let available = MissionControlPlacement.availableFrame(screen: target.screen.frame,
                                                                    visibleFrame: target.screen.visibleFrame)
@@ -227,7 +346,8 @@ final class MissionControlController {
                                                      side: target.side, position: target.position)
             if let panel = panels[target.id] {
                 if panel.frame != frame { panel.setFrame(frame, display: true) }
-                (panel.contentView as? MissionControlView)?.configure(layout: layout, applications: snapshot.applications, side: target.side)
+                (panel.contentView as? MissionControlView)?.configure(layout: layout, applications: snapshot.applications, side: target.side,
+                    selectableWindows: Set(snapshot.focusRequirements.keys))
                 continue
             }
             let panel = MissionControlPanel(contentRect: frame, styleMask: [.borderless, .nonactivatingPanel],
@@ -237,14 +357,24 @@ final class MissionControlController {
             panel.backgroundColor = .clear
             panel.hasShadow = false
             panel.hidesOnDeactivate = false
-            panel.ignoresMouseEvents = true
+            panel.ignoresMouseEvents = false
             panel.isMovable = false
+            panel.becomesKeyOnlyIfNeeded = true
             panel.animationBehavior = .none
             panel.collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary, .ignoresCycle]
             panel.level = .screenSaver
             let view = MissionControlView(frame: CGRect(origin: .zero, size: frame.size))
             view.autoresizingMask = [.width, .height]
-            view.configure(layout: layout, applications: snapshot.applications, side: target.side)
+            view.onSelection = { [weak self] desktopID, windowID in
+                self?.select(MissionControlSelection(screenID: target.id, desktopID: desktopID, windowID: windowID))
+            }
+            view.onPress = { [weak self] pressed in
+                guard let self else { return }
+                self.selection.press(pressed)
+                if !pressed && !self.selection.pending { self.present(); self.refresh(); self.samplePointer() }
+            }
+            view.configure(layout: layout, applications: snapshot.applications, side: target.side,
+                    selectableWindows: Set(snapshot.focusRequirements.keys))
             panel.contentView = view
             panels[target.id] = panel
             if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {

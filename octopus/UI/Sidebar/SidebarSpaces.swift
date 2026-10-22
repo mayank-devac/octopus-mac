@@ -22,6 +22,19 @@ final class SidebarSpaceReader {
     struct Catalog {
         let desktops: [SidebarDesktop]
         let activeIDs: Set<UInt64>
+
+        func desktops(on screenID: String) -> [SidebarDesktop] {
+            desktops.filter { $0.displayIdentifier == screenID || $0.displayIdentifier == "Main" }
+                .sorted { $0.order < $1.order }
+        }
+
+        // Match the live order, never the index cached when the map was drawn.
+        func selectionIndex(screenID: String, desktopID: UInt64, controlCount: Int) -> Int? {
+            let ordered = desktops(on: screenID)
+            guard ordered.count == controlCount, Set(ordered.map(\.id)).count == ordered.count,
+                  Set(ordered.compactMap(\.displayIdentifier)).count == 1 else { return nil }
+            return ordered.firstIndex { $0.id == desktopID }
+        }
     }
     private typealias Connection = @convention(c) () -> Int32
     private typealias Displays = @convention(c) (Int32) -> Unmanaged<CFArray>?

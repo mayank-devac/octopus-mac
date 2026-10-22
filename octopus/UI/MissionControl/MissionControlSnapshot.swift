@@ -5,6 +5,7 @@ struct MissionControlApplication {
     let name: String
     let icon: NSImage?
     var isHidden = false
+    var launchDate: Date? = nil
 }
 
 struct MissionControlScreen: Equatable {
@@ -19,6 +20,7 @@ struct MissionControlWindowRecord {
     var desktopIDs: Set<UInt64>?
     var isMinimized: Bool?
     var isStandardWindow = true
+    var focusRequirement: SidebarFocusRequirement? = nil
 }
 
 struct MissionControlSnapshot {
@@ -34,6 +36,7 @@ struct MissionControlSnapshot {
     let applications: [pid_t: MissionControlApplication]
     let windows: [Window]
     let screens: [MissionControlScreen]
+    var focusRequirements: [SidebarWindowID: SidebarFocusRequirement] = [:]
 
     func desktops(on screenID: String) -> [SidebarDesktop] {
         desktops.filter { $0.displayIdentifier == screenID || $0.displayIdentifier == "Main" }
@@ -66,7 +69,10 @@ struct MissionControlSnapshot {
             return Window(id: record.id, bounds: bounds, desktopIDs: Set(members.map(\.id)), screenID: displayID)
         }.sorted { ($0.id.pid, $0.id.windowID) < ($1.id.pid, $1.id.windowID) }
         return Self(desktops: catalog.desktops, activeIDs: catalog.activeIDs, applications: apps,
-                    windows: windows, screens: screens)
+                    windows: windows, screens: screens, focusRequirements: Dictionary(records.compactMap { record in
+                        guard windows.contains(where: { $0.id == record.id }), let requirement = record.focusRequirement else { return nil }
+                        return (record.id, requirement)
+                    }, uniquingKeysWith: { first, _ in first }))
     }
 }
 
@@ -121,7 +127,10 @@ final class MissionControlSnapshotReader {
         let apps = applications.filter { !$0.isHidden }.sorted { $0.pid < $1.pid }
         let pids = Set(apps.map(\.pid))
         owners = owners.filter { pids.contains($0.value) }
-        records = records.filter { pids.contains($0.key.pid) && owners[$0.key.windowID] == $0.key.pid }
+        records = records.filter { id, record in
+            pids.contains(id.pid) && owners[id.windowID] == id.pid
+                && record.focusRequirement?.launchDate == apps.first(where: { $0.pid == id.pid })?.launchDate
+        }
         windowCursors = windowCursors.filter { pids.contains($0.key) }
         discovery.retainApplications(pids)
         let membership = spaces.read(windowIDs: Set(owners.keys), catalog: catalog.desktops)
@@ -165,7 +174,8 @@ final class MissionControlSnapshotReader {
                 records[identity] = MissionControlWindowRecord(id: identity,
                     bounds: bounds ?? records[identity]?.bounds,
                     desktopIDs: desktops ?? records[identity]?.desktopIDs,
-                    isMinimized: minimized ?? records[identity]?.isMinimized)
+                    isMinimized: minimized ?? records[identity]?.isMinimized,
+                    focusRequirement: SidebarFocusRequirement(element: window, launchDate: app.launchDate))
             }
             windowCursors[app.pid] = cursor + processed
             if processed == found.windows.count, !found.needsAnotherPass {

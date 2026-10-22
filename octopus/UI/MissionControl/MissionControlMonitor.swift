@@ -1,5 +1,6 @@
 import AppKit
 import ApplicationServices
+import Darwin
 
 enum MissionControlReading: Equatable {
     case hidden, visible, unavailable
@@ -37,6 +38,7 @@ struct MissionControlMonitorState {
 final class MissionControlMonitor {
     var onVisibilityChange: ((Bool) -> Void)?
     var onStopped: (() -> Void)?
+    var onReading: ((MissionControlReading) -> Void)?
     var isRunning: Bool { state.phase != .stopped }
     private var state = MissionControlMonitorState()
     private let queue = DispatchQueue(label: "com.octopus.mission-control", qos: .utility)
@@ -116,15 +118,7 @@ final class MissionControlMonitor {
     private func poll() {
         guard AXIsProcessTrusted() else { reconcile(); return }
         guard !inFlight else { return }
-        var owners: [(String, MissionControlAXProbe.Owner)] = [
-            ("com.apple.dock", .dock), ("com.apple.WindowManager", .windowManager)
-        ]
-        if ProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 27 { owners.reverse() }
-        let sources = owners.compactMap { bundleID, owner -> (pid_t, MissionControlAXProbe.Owner)? in
-            guard let pid = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID)
-                .first?.processIdentifier else { return nil }
-            return (pid, owner)
-        }
+        let sources = MissionControlAXProbe.sources()
         let generation = state.generation
         inFlight = true
         queue.async { [weak self] in
@@ -141,7 +135,9 @@ final class MissionControlMonitor {
                 self.inFlight = false
                 guard AXIsProcessTrusted() else { self.reconcile(); return }
                 let wasVisible = self.state.isVisible
+                guard generation == self.state.generation, self.isRunning else { return }
                 self.state.receive(completedReading, generation: generation)
+                self.onReading?(completedReading)
                 if wasVisible != self.state.isVisible { self.onVisibilityChange?(self.state.isVisible) }
             }
         }
@@ -150,6 +146,89 @@ final class MissionControlMonitor {
 
 enum MissionControlAXProbe {
     enum Owner: Equatable { case dock, windowManager }
+
+    static func sources() -> [(pid_t, Owner)] {
+        var owners: [(String, Owner)] = [("com.apple.dock", .dock), ("com.apple.WindowManager", .windowManager)]
+        if ProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 27 { owners.reverse() }
+        return owners.compactMap { bundleID, owner in
+            guard let pid = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID)
+                .first?.processIdentifier else { return nil }
+            return (pid, owner)
+        }
+    }
+
+    static func reading(deadline: TimeInterval) -> MissionControlReading {
+        let owners = sources()
+        var result: MissionControlReading = owners.isEmpty ? .unavailable : .hidden
+        for (pid, owner) in owners {
+            let next = read(pid: pid, owner: owner, deadline: deadline)
+            if next == .visible { return .visible }
+            if next == .unavailable { result = .unavailable }
+        }
+        return result
+    }
+
+    // Same notification used by hs.spaces; resolve at runtime and fail closed.
+    static func toggle() -> Bool {
+        typealias Notify = @convention(c) (CFString, Int32) -> Int32
+        guard let handle = dlopen("/System/Library/Frameworks/ApplicationServices.framework/Frameworks/HIServices.framework/HIServices", RTLD_LAZY) else { return false }
+        defer { dlclose(handle) }
+        guard let symbol = dlsym(handle, "CoreDockSendNotification") else { return false }
+        return unsafeBitCast(symbol, to: Notify.self)("com.apple.expose.awake" as CFString, 0) == 0
+    }
+
+    // Require one exact display and one complete Spaces list. Never infer a monitor
+    // from array position or a localised desktop title.
+    static func spaceButtons<Node>(root: Node, owner: Owner, displayID: CGDirectDisplayID,
+                                   children: (Node) -> [Node]?, identifier: (Node) -> String?,
+                                   screen: (Node) -> CGDirectDisplayID?) -> [Node]? {
+        guard let roots = children(root) else { return nil }
+        let displays: [Node]
+        if owner == .dock {
+            let groups = roots.filter { identifier($0) == "mc" }
+            guard groups.count == 1, let group = groups.first, let items = children(group) else { return nil }
+            displays = items
+        } else { displays = roots }
+        let matches = displays.filter { identifier($0) == "mc.display" && screen($0) == displayID }
+        guard matches.count == 1, let display = matches.first, let groups = children(display) else { return nil }
+        let spaces = groups.filter { identifier($0) == "mc.spaces" }
+        guard spaces.count == 1, let space = spaces.first, let groups = children(space) else { return nil }
+        let lists = groups.filter { identifier($0) == "mc.spaces.list" }
+        guard lists.count == 1, let list = lists.first else { return nil }
+        return children(list)
+    }
+
+    static func selectionButtons(displayID: CGDirectDisplayID, deadline: TimeInterval) -> [AXUIElement]? {
+        for (pid, owner) in sources() {
+            let buttons = spaceButtons(root: AXUIElementCreateApplication(pid), owner: owner, displayID: displayID,
+                children: { element in
+                    // Unlike visibility probing, action mapping requires complete
+                    // groups so a truncated tree cannot hide an ambiguous match.
+                    guard ProcessInfo.processInfo.systemUptime < deadline else { return nil }
+                    AXUIElementSetMessagingTimeout(element, 0.04)
+                    var count: CFIndex = 0
+                    guard AXUIElementGetAttributeValueCount(element, kAXChildrenAttribute as CFString, &count) == .success,
+                          count <= 128 else { return nil }
+                    return readChildren(of: element, limit: 128, deadline: deadline)
+                }, identifier: { identifier(of: $0, deadline: deadline) }, screen: {
+                    let value: NSNumber? = $0.getAttributeValue(NSAccessibility.Attribute(rawValue: "AXDisplayID"))
+                    return value?.uint32Value
+                })
+            if let buttons, !buttons.isEmpty {
+                guard buttons.allSatisfy({ button in
+                    guard ProcessInfo.processInfo.systemUptime < deadline else { return false }
+                    AXUIElementSetMessagingTimeout(button, 0.04)
+                    let role: String? = button.getAttributeValue(.role)
+                    var actions: CFArray?
+                    return role == kAXButtonRole as String
+                        && AXUIElementCopyActionNames(button, &actions) == .success
+                        && (actions as? [String])?.contains(kAXPressAction as String) == true
+                }) else { return nil }
+                return buttons
+            }
+        }
+        return nil
+    }
 
     static func read(pid: pid_t, owner: Owner, deadline: TimeInterval) -> MissionControlReading {
         classify(root: AXUIElementCreateApplication(pid), owner: owner,

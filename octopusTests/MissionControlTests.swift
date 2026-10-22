@@ -353,3 +353,272 @@ struct MissionControlTests {
         #expect(limited.size.width <= 300 && limited.size.height <= 400)
     }
 }
+
+extension MissionControlTests {
+    @Test func hoverReleaseDepartureAndReentryUseThreeHundredMilliseconds() {
+        var lifetime = MissionControlHoverLifetime()
+        // Modifier release has no bearing on ownership: trigger/map pointer state does.
+        #expect(!lifetime.update(inTrigger: true, inMap: false, pressed: false, now: 0))
+        #expect(!lifetime.update(inTrigger: false, inMap: false, pressed: false, now: 1))
+        #expect(!lifetime.update(inTrigger: false, inMap: true, pressed: false, now: 1.29))
+        #expect(!lifetime.update(inTrigger: false, inMap: true, pressed: false, now: 3))
+        #expect(!lifetime.update(inTrigger: false, inMap: false, pressed: true, now: 4))
+        #expect(!lifetime.update(inTrigger: false, inMap: false, pressed: false, now: 5))
+        #expect(!lifetime.update(inTrigger: false, inMap: false, pressed: false, now: 5.29))
+        #expect(lifetime.update(inTrigger: false, inMap: false, pressed: false, now: 5.31))
+    }
+
+    @Test func pendingSelectionFreezesLayoutAndRejectsRepeatedClicks() {
+        var state = MissionControlSelectionState()
+        state.press(true)
+        #expect(state.pressed)
+        #expect(state.begin())
+        #expect(!state.begin())
+        state.observeMissionControl(false)
+        #expect(state.suppressMissionControl)
+        state.finish()
+        state.press(false)
+        #expect(!state.pending && !state.pressed)
+        state.observeMissionControl(true)
+        #expect(state.suppressMissionControl)
+        state.observeMissionControl(false)
+        #expect(!state.suppressMissionControl)
+    }
+
+    @Test func escapeAndLifecycleResetDiscardPendingIntent() {
+        var state = MissionControlSelectionState()
+        state.press(true)
+        state.dismiss() // The same path used by Escape.
+        #expect(!state.pending && !state.pressed && state.suppressMissionControl)
+        state.observeMissionControl(true)
+        #expect(state.suppressMissionControl)
+        state.observeMissionControl(false)
+        #expect(!state.suppressMissionControl)
+        #expect(state.begin())
+        state.reset() // Permission loss, shutdown, or screen change.
+        #expect(!state.pending && !state.pressed && !state.suppressMissionControl)
+    }
+
+    @Test func desktopMappingUsesLiveOrderAndRejectsDeletedOrAmbiguousTargets() {
+        let original = catalog()
+        #expect(original.selectionIndex(screenID: "primary", desktopID: 2, controlCount: 3) == 1)
+        let reordered = SidebarSpaceReader.Catalog(desktops: [
+            SidebarDesktop(id: 2, order: 0, number: 1, displayIdentifier: "primary"),
+            SidebarDesktop(id: 1, order: 1, number: 2, displayIdentifier: "primary"),
+            SidebarDesktop(id: 3, order: 2, number: nil, displayIdentifier: "primary")
+        ], activeIDs: [1])
+        #expect(reordered.selectionIndex(screenID: "primary", desktopID: 2, controlCount: 3) == 0)
+        #expect(reordered.selectionIndex(screenID: "primary", desktopID: 3, controlCount: 3) == 2)
+        #expect(reordered.selectionIndex(screenID: "primary", desktopID: 99, controlCount: 3) == nil)
+        #expect(reordered.selectionIndex(screenID: "primary", desktopID: 2, controlCount: 2) == nil)
+        #expect(reordered.selectionIndex(screenID: "secondary", desktopID: 2, controlCount: 3) == nil)
+    }
+
+    @Test func nativeControlsRequireAnExactUniqueDisplayAndCompleteList() {
+        struct Node {
+            var id: String
+            var display: CGDirectDisplayID? = nil
+            var children: [Node] = []
+        }
+        let display = Node(id: "mc.display", display: 22, children: [
+            Node(id: "mc.spaces", children: [Node(id: "mc.spaces.list", children: [Node(id: "button")])])
+        ])
+        func buttons(_ displays: [Node], _ id: CGDirectDisplayID) -> [Node]? {
+            MissionControlAXProbe.spaceButtons(root: Node(id: "root", children: displays), owner: .windowManager,
+                displayID: id, children: { $0.children }, identifier: { $0.id }, screen: { $0.display })
+        }
+        #expect(buttons([display], 22)?.count == 1)
+        #expect(buttons([display], 23) == nil)
+        #expect(buttons([display, display], 22) == nil)
+        #expect(buttons([Node(id: "mc.display", display: 22)], 22) == nil)
+    }
+
+    @Test func snapshotRetainsExactHandleAndLaunchIdentityWithoutSidebarEntries() throws {
+        let handle = AXUIElementCreateApplication(20_001)
+        let launch = Date(timeIntervalSince1970: 1)
+        var item = record()
+        item.focusRequirement = SidebarFocusRequirement(element: handle, launchDate: launch)
+        let result = snapshot([item])
+        let requirement = try #require(result.focusRequirements[item.id])
+        #expect(requirement.matches(element: handle, launchDate: launch))
+        #expect(!requirement.matches(element: AXUIElementCreateApplication(20_002), launchDate: launch))
+        #expect(!requirement.matches(element: handle, launchDate: Date(timeIntervalSince1970: 2)))
+    }
+
+    @Test @MainActor func iconTileAndOuterPaddingHaveSeparateActions() throws {
+        let result = snapshot([record()])
+        let layout = try #require(MissionControlLayout.make(snapshot: result, screenID: "primary", screenSize: primary.bounds.size))
+        let view = MissionControlView(frame: CGRect(origin: .zero, size: layout.size))
+        var selections: [(UInt64, SidebarWindowID?)] = []
+        view.onSelection = { selections.append(($0, $1)) }
+        view.configure(layout: layout, applications: result.applications, side: .right,
+                       selectableWindows: Set(result.windows.map(\.id)))
+        let tile = try #require(layout.tiles.first)
+        let icon = try #require(tile.icons.first)
+        let point = CGPoint(x: tile.frame.minX + icon.frame.midX, y: tile.frame.minY + icon.frame.midY)
+        let iconButton = try #require(view.hitTest(point) as? NSButton)
+        iconButton.performClick(nil)
+        #expect(selections.count == 1 && selections[0].0 == tile.desktop.id && selections[0].1 == icon.windowID)
+        let tileButton = try #require(view.hitTest(CGPoint(x: tile.frame.minX + 1, y: tile.frame.minY + 1)) as? NSButton)
+        #expect(tileButton !== iconButton)
+        tileButton.performClick(nil)
+        #expect(selections.count == 2 && selections[1].0 == tile.desktop.id && selections[1].1 == nil)
+        #expect(view.hitTest(CGPoint(x: 1, y: 1)) === view)
+        #expect(iconButton.title.isEmpty && tileButton.title.isEmpty && !iconButton.isBordered && !tileButton.isBordered)
+    }
+
+    @Test @MainActor func releasingOutsidePressedButtonDoesNotSelect() throws {
+        let application = NSApplication.shared
+        let result = snapshot([record()])
+        let layout = try #require(MissionControlLayout.make(snapshot: result, screenID: "primary", screenSize: primary.bounds.size))
+        let panel = NSPanel(contentRect: CGRect(origin: .zero, size: layout.size),
+                            styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+        panel.isReleasedWhenClosed = false
+        defer { panel.close() }
+        let view = MissionControlView(frame: CGRect(origin: .zero, size: layout.size))
+        panel.contentView = view
+        var selected = false
+        var pressed = false
+        view.onSelection = { _, _ in selected = true }
+        view.onPress = { pressed = $0 }
+        view.configure(layout: layout, applications: result.applications, side: .right,
+                       selectableWindows: Set(result.windows.map(\.id)))
+        let tile = try #require(layout.tiles.first)
+        let button = try #require(view.hitTest(CGPoint(x: tile.frame.minX + 1, y: tile.frame.minY + 1)) as? NSButton)
+        let down = try #require(NSEvent.mouseEvent(with: .leftMouseDown,
+            location: view.convert(CGPoint(x: tile.frame.minX + 1, y: tile.frame.minY + 1), to: nil),
+            modifierFlags: [], timestamp: 0, windowNumber: panel.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 1))
+        let up = try #require(NSEvent.mouseEvent(with: .leftMouseUp, location: CGPoint(x: -20, y: -20),
+            modifierFlags: [], timestamp: 0.1, windowNumber: panel.windowNumber, context: nil, eventNumber: 2, clickCount: 1, pressure: 0))
+        application.postEvent(up, atStart: true)
+        button.mouseDown(with: down)
+        #expect(!selected && !pressed)
+    }
+}
+
+@MainActor
+private final class MapActionFixture {
+    var current = true
+    var windowValid = true
+    var mode = MissionControlReading.hidden
+    var active: Set<UInt64> = [1]
+    var desktops = [SidebarDesktop(id: 1, order: 0, number: 1, displayIdentifier: "screen"),
+                    SidebarDesktop(id: 2, order: 1, number: 2, displayIdentifier: "screen")]
+    var events: [String] = []
+    var press = MissionControlActions.DesktopPress.submitted
+    var confirmsSwitch = true
+    var confirmsFocus = true
+    var onPause: (() -> Void)?
+    var onPress: (() -> Void)?
+    let selection = MissionControlSelection(screenID: "screen", desktopID: 2, windowID: SidebarWindowID(pid: 100, windowID: 7))
+
+    var environment: MissionControlActions.Environment {
+        .init(isCurrent: { self.current },
+              catalog: { SidebarSpaceReader.Catalog(desktops: self.desktops, activeIDs: self.active) },
+              reading: { self.mode }, validateWindow: { self.windowValid },
+              pressDesktop: {
+                  self.events.append("press")
+                  self.onPress?()
+                  if self.press == .submitted && self.confirmsSwitch { self.active = [2]; self.mode = .hidden }
+                  return self.press
+              }, toggle: {
+                  self.events.append("toggle")
+                  self.mode = self.mode == .hidden ? .visible : .hidden
+                  return true
+              }, focusWindow: { self.events.append("focus"); return self.confirmsFocus },
+              pause: { self.onPause?() })
+    }
+}
+
+extension MissionControlTests {
+    @Test @MainActor func selectionSwitchesBeforeExactFocusFromBothEntryMethods() async {
+        for mode in [MissionControlReading.hidden, .visible] {
+            let fixture = MapActionFixture()
+            fixture.mode = mode
+            let success = await MissionControlActions.perform(fixture.selection, environment: fixture.environment)
+            #expect(success)
+            #expect(fixture.events == (mode == .hidden ? ["toggle", "press", "focus"] : ["press", "focus"]))
+        }
+    }
+
+    @Test @MainActor func currentAndEmptyDesktopSelectionDoesNotRequireAWindow() async {
+        let fixture = MapActionFixture()
+        var desktop = fixture.selection
+        desktop.windowID = nil
+        fixture.windowValid = false
+        #expect(await MissionControlActions.perform(desktop, environment: fixture.environment))
+        #expect(fixture.events == ["toggle", "press"])
+        fixture.events = []
+        #expect(await MissionControlActions.perform(desktop, environment: fixture.environment))
+        #expect(fixture.events.isEmpty)
+    }
+
+    @Test @MainActor func staleWindowDeletedDesktopAndDisconnectedScreenRejectBeforeMutation() async {
+        for failure in 0..<3 {
+            let fixture = MapActionFixture()
+            if failure == 0 { fixture.windowValid = false }
+            if failure == 1 { fixture.desktops.removeLast() }
+            if failure == 2 { fixture.current = false }
+            #expect(!(await MissionControlActions.perform(fixture.selection, environment: fixture.environment)))
+            #expect(fixture.events.isEmpty)
+        }
+    }
+
+    @Test @MainActor func unsupportedControlsCleanUpOnlyMissionControlOpenedByTheAction() async {
+        for mode in [MissionControlReading.hidden, .visible] {
+            let fixture = MapActionFixture()
+            fixture.mode = mode
+            fixture.press = .rejected
+            #expect(!(await MissionControlActions.perform(fixture.selection, environment: fixture.environment)))
+            #expect(fixture.events == (mode == .hidden ? ["toggle", "press", "toggle"] : ["press"]))
+            #expect(fixture.mode == mode)
+        }
+    }
+
+    @Test @MainActor func acceptedPressWithoutDesktopConfirmationNeverFocusesOrRetries() async {
+        let fixture = MapActionFixture()
+        fixture.confirmsSwitch = false
+        #expect(!(await MissionControlActions.perform(fixture.selection, environment: fixture.environment)))
+        #expect(fixture.events == ["toggle", "press", "toggle"])
+    }
+
+    @Test @MainActor func staleWindowAfterDesktopSwitchAndUnconfirmedFocusFailQuietly() async {
+        let fixture = MapActionFixture()
+        fixture.onPress = { fixture.windowValid = false }
+        #expect(!(await MissionControlActions.perform(fixture.selection, environment: fixture.environment)))
+        #expect(!fixture.events.contains("focus"))
+        let unconfirmed = MapActionFixture()
+        unconfirmed.confirmsFocus = false
+        #expect(!(await MissionControlActions.perform(unconfirmed.selection, environment: unconfirmed.environment)))
+    }
+
+    @Test @MainActor func permissionLossDuringTransitionStopsPendingWork() async {
+        let fixture = MapActionFixture()
+        fixture.press = .notReady
+        fixture.onPause = { fixture.current = false }
+        #expect(!(await MissionControlActions.perform(fixture.selection, environment: fixture.environment)))
+        #expect(!fixture.events.contains("focus"))
+        #expect(fixture.events.filter { $0 == "toggle" }.count == 1)
+    }
+}
+
+extension MissionControlTests {
+    @Test @MainActor func currentDesktopInMissionControlExitsWithoutFocusingAWindow() async {
+        let fixture = MapActionFixture()
+        fixture.mode = .visible
+        fixture.active = [2]
+        var desktop = fixture.selection
+        desktop.windowID = nil
+        #expect(await MissionControlActions.perform(desktop, environment: fixture.environment))
+        #expect(fixture.events == ["toggle"])
+    }
+
+    @Test @MainActor func escapeCancellationCleansUpOwnedMissionControlWithoutFocus() async {
+        let fixture = MapActionFixture()
+        fixture.press = .notReady
+        let task = Task { await MissionControlActions.perform(fixture.selection, environment: fixture.environment) }
+        fixture.onPause = { task.cancel() }
+        #expect(!(await task.value))
+        #expect(fixture.events == ["toggle", "press", "toggle"])
+    }
+}

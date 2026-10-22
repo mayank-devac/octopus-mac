@@ -64,7 +64,9 @@ final class SidebarController {
                 controller.setRadialPresented(radialPresented)
                 controller.setMissionControlPresented(missionControlPresented)
                 controller.onMissionControlPreview = { [weak self] in self?.missionControl.setPreviewPresented(true) }
-                controller.onMissionControlPreviewEnd = { [weak self] in self?.missionControl.setPreviewPresented(false) }
+                controller.onMissionControlPointer = { [weak self] inside in
+                    self?.missionControl.updatePointer(triggerID: id, inside: inside)
+                }
                 controller.otherSidebarFrames = { [weak self] in
                     self?.displays.values.flatMap { $0.interactionFrames } ?? []
                 }
@@ -134,7 +136,7 @@ private final class SidebarDisplayController {
     private var missionControlHover = MissionControlHoverTrigger()
     var missionControlPreviewModifiers = MissionControlHoverShortcut.defaultModifiers
     var onMissionControlPreview: (() -> Void)?
-    var onMissionControlPreviewEnd: (() -> Void)?
+    var onMissionControlPointer: ((Bool) -> Void)?
 
     func setMissionControlPresented(_ presented: Bool) {
         guard missionControlPresented != presented else { return }
@@ -966,15 +968,15 @@ private final class SidebarDisplayController {
 
     private func handleMouse(_ event: NSEvent) {
         let modifiers = NSEvent.modifierFlags
-        if !MissionControlHoverShortcut.isHeld(modifiers, required: missionControlPreviewModifiers) {
-            onMissionControlPreviewEnd?()
-        }
         let point = NSEvent.mouseLocation
         let inPanel = panel.isVisible && panel.isOnActiveSpace && pointerFrame.contains(point)
         let inNotch = notchPanel.isVisible && notchPanel.isOnActiveSpace && notchFrame.contains(point)
         let canPreview = settings?.enabled == true && inventory.hasPermission && screen != nil
             && !radialPresented && !missionControlPresented && !hasActiveInteraction
             && !otherDragActive() && !cycleController.isKeyboardSwitcherVisible
+        onMissionControlPointer?(edgeFrame.contains(point)
+            || (missionControlPresented ? pointerFrame.contains(point) : inPanel)
+            || (settings?.idleBehavior == .notch && notchFrame.contains(point)))
         let requested = missionControlHover.update(
             isInside: inPanel || inNotch || edgeFrame.contains(point), pointerMoved: event.type == .mouseMoved,
             modifiers: modifiers, required: missionControlPreviewModifiers,
