@@ -1,3 +1,4 @@
+@preconcurrency import ApplicationServices
 import AppKit
 
 struct MissionControlTarget {
@@ -42,14 +43,18 @@ enum MissionControlHoverShortcut {
 
 struct MissionControlHoverTrigger {
     private var wasInside = false
+    private var wasHeld = false
 
     mutating func update(isInside: Bool, pointerMoved: Bool, modifiers: NSEvent.ModifierFlags,
                          required: NSEvent.ModifierFlags = MissionControlHoverShortcut.defaultModifiers,
                          pressedButtons: Int, canPresent: Bool) -> Bool {
         let entered = isInside && !wasInside
+        let held = MissionControlHoverShortcut.matches(modifiers, required: required)
+        let pressedModifier = held && !wasHeld
         wasInside = isInside
-        return entered && pointerMoved && canPresent && pressedButtons == 0
-            && MissionControlHoverShortcut.matches(modifiers, required: required)
+        wasHeld = held
+        return isInside && held && canPresent && pressedButtons == 0
+            && ((entered && pointerMoved) || pressedModifier)
     }
 }
 
@@ -57,20 +62,20 @@ enum MissionControlPlacement {
     static func availableFrame(screen: CGRect, visibleFrame: CGRect) -> CGRect {
         let visible = screen.intersection(visibleFrame)
         guard !visible.isNull else { return .zero }
-        // Leave room for Mission Control's expanded desktop strip as well as
-        // the menu bar and Dock already excluded by the screen's visible frame.
-        let desktopStripHeight = max(180, screen.height * 0.2)
-        let top = min(visible.maxY, screen.maxY - desktopStripHeight)
         return CGRect(x: visible.minX, y: visible.minY + 8, width: visible.width,
-                      height: max(0, top - visible.minY - 16))
+                      height: max(0, visible.height - 16))
     }
 
-    static func frame(in available: CGRect, size: CGSize, side: SidebarSide, position: Double) -> CGRect {
+    static func frame(in available: CGRect, size: CGSize, side: SidebarSide, position: Double,
+                      cursorY: CGFloat? = nil) -> CGRect {
         let anchor = SidebarLayout.sidebarFrame(in: available, count: 0, side: side, position: position,
                                                 contentHeight: size.height, minimumHeight: 0)
         let width = min(size.width, available.width)
+        let y = cursorY.flatMap { $0.isFinite ? $0 : nil }.map {
+            min(available.maxY - anchor.height, max(available.minY, $0 - anchor.height / 2))
+        } ?? anchor.minY
         return CGRect(x: side == .left ? available.minX : available.maxX - width,
-                      y: anchor.minY, width: width, height: anchor.height)
+                      y: y, width: width, height: anchor.height)
     }
 
     static func collapsed(_ frame: CGRect, side: SidebarSide) -> CGRect {
@@ -107,14 +112,15 @@ final class MissionControlController {
     private var targets: [MissionControlTarget] = []
     private var panels: [String: MissionControlPanel] = [:]
     private var visible = false
+    private var hoverAnchor: (screenID: String, point: CGPoint)?
     private var presentation = MissionControlPresentationState()
     private var previewModifiers = MissionControlHoverShortcut.modifiers()
     private var snapshots = MissionControlSnapshotState()
     private var refreshTimer: Timer?
-    private var cacheExpiry: DispatchWorkItem?
     private var refreshInFlight = false
 
-    init(windowSeeds: @escaping () -> [SidebarWindowID: AXUIElement], onVisibilityChange: @escaping (Bool) -> Void) {
+    init(windowSeeds: @escaping () -> [SidebarWindowID: AXUIElement],
+         onVisibilityChange: @escaping (Bool) -> Void) {
         self.windowSeeds = windowSeeds
         self.onVisibilityChange = onVisibilityChange
         monitor.onReading = { [weak self] reading in
@@ -134,9 +140,13 @@ final class MissionControlController {
         }
     }
 
-    func setPreviewPresented(_ presented: Bool) {
+    func setPreviewPresented(_ presented: Bool, at point: CGPoint? = nil) {
         guard !presented || (!selection.pending && !selection.suppressMissionControl) else { return }
         guard !presented || (!previewModifiers.isEmpty && !targets.isEmpty && monitor.isRunning && AXIsProcessTrusted()) else { return }
+        if presented, !visible, let point,
+           let target = targets.first(where: { $0.screen.frame.contains(point) }) {
+            hoverAnchor = (target.id, point)
+        }
         hoverLifetime.reset()
         setSource(.hoverPreview, presented: presented)
     }
@@ -191,6 +201,7 @@ final class MissionControlController {
     }
 
     private func clearPresentation() {
+        hoverAnchor = nil
         presentation.clear()
         setVisible(false)
     }
@@ -236,6 +247,7 @@ final class MissionControlController {
         guard self.visible != visible else { return }
         self.visible = visible
         if visible {
+            snapshots.beginPresentation()
             onVisibilityChange(true)
             hoverLifetime.beginLoading(now: ProcessInfo.processInfo.systemUptime)
             let pointerTimer = Timer(timeInterval: 0.05, repeats: true) { [weak self] _ in
@@ -252,8 +264,8 @@ final class MissionControlController {
             present()
             refresh()
         } else {
-            cacheExpiry?.cancel()
-            cacheExpiry = nil
+            snapshots.endPresentation()
+            hoverAnchor = nil
             let hasAccessibility = AXIsProcessTrusted()
             snapshots.invalidateRequests()
             if !hasAccessibility {
@@ -288,7 +300,8 @@ final class MissionControlController {
         }.map { app in
             MissionControlApplication(pid: app.processIdentifier, name: app.localizedName ?? "Application",
                 icon: app.icon ?? app.bundleURL.map { NSWorkspace.shared.icon(forFile: $0.path) }
-                    ?? NSImage(named: NSImage.applicationIconName), isHidden: app.isHidden, launchDate: app.launchDate)
+                    ?? NSImage(named: NSImage.applicationIconName), isHidden: app.isHidden, launchDate: app.launchDate,
+                bundleIdentifier: app.bundleIdentifier)
         }
         let screens = connectedScreens()
         let seeds = windowSeeds()
@@ -323,9 +336,11 @@ final class MissionControlController {
                 context.duration = Self.animationDuration
                 panel.animator().setFrame(frame, display: true)
             } completionHandler: { [weak self, panel] in
-                guard let self, self.panels[id] === panel,
-                      panel.isClosing, panel.animationGeneration == generation else { return }
-                self.removePanel(id)
+                MainActor.assumeIsolated {
+                    guard let self, self.panels[id] === panel,
+                          panel.isClosing, panel.animationGeneration == generation else { return }
+                    self.removePanel(id)
+                }
             }
             return
         }
@@ -336,7 +351,7 @@ final class MissionControlController {
     }
 
     private func select(_ target: MissionControlSelection) {
-        guard visible, !actions.isPending, let snapshot = snapshots.freshSnapshot(),
+        guard visible, !actions.isPending, let snapshot = snapshots.displayedSnapshot,
               snapshot.screens == connectedScreens(),
               let screen = targets.first(where: { $0.id == target.screenID })?.screen,
               let displayID = SidebarSettings.displayID(screen),
@@ -347,6 +362,7 @@ final class MissionControlController {
         actionScreens = screens
         selectionDismissed = false
         let previousPresentation = presentation
+        let previousAnchor = hoverAnchor
         let previousFrames = panels.values.map(\.frame)
         presentation.clear()
         setVisible(false)
@@ -365,6 +381,7 @@ final class MissionControlController {
                 if !succeeded && !self.selectionDismissed && self.monitor.isRunning && AXIsProcessTrusted() {
                     // Re-read, rather than retaining stale selectable handles.
                     self.presentation = previousPresentation
+                    self.hoverAnchor = previousAnchor
                     self.presentation.set(.hoverPreview, presented: true)
                     self.setVisible(true)
                     self.previewFrames = previousFrames
@@ -374,17 +391,9 @@ final class MissionControlController {
 
     private func present() {
         guard visible, !selection.pressed, !selection.pending else { return }
-        cacheExpiry?.cancel()
-        cacheExpiry = nil
-        guard let snapshot = snapshots.freshSnapshot(), snapshot.screens == connectedScreens() else {
+        guard let snapshot = snapshots.displayedSnapshot, snapshot.screens == connectedScreens() else {
             for id in Array(panels.keys) { removePanel(id) }
             return
-        }
-        if let receivedAt = snapshots.receivedAt {
-            let expiry = receivedAt + MissionControlSnapshotState.maximumAge
-            let work = DispatchWorkItem { [weak self] in self?.present(); self?.refresh() }
-            cacheExpiry = work
-            DispatchQueue.main.asyncAfter(deadline: .now() + max(0.01, expiry - ProcessInfo.processInfo.systemUptime), execute: work)
         }
         for target in targets {
             let available = MissionControlPlacement.availableFrame(screen: target.screen.frame,
@@ -395,8 +404,10 @@ final class MissionControlController {
                 continue
             }
             let frame = MissionControlPlacement.frame(in: available, size: layout.size,
-                                                     side: target.side, position: target.position)
+                side: target.side, position: target.position,
+                cursorY: hoverAnchor?.screenID == target.id ? hoverAnchor?.point.y : nil)
             if let panel = panels[target.id] {
+                hoverLifetime.didPresent()
                 let reopening = panel.isClosing
                 panel.isClosing = false
                 panel.animationGeneration += 1

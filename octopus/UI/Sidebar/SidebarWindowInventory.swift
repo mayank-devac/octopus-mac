@@ -332,6 +332,21 @@ enum SidebarWindowPolicy {
         bundleIdentifier == "com.brave.Browser" || bundleIdentifier == "com.google.Chrome"
     }
 
+    static func isWindowHelper(bundleIdentifier: String?, title: String?, applicationTitle: String,
+                               subrole: String?, hasCloseButton: Bool?, parentIsWindow: Bool,
+                               bounds: CGRect?, minimized: Bool) -> Bool {
+        if bundleIdentifier == "com.apple.finder" {
+            let generic = title.map { normalizedWindowTitle($0).isEmpty
+                || normalizedWindowTitle($0) == normalizedWindowTitle(applicationTitle) } ?? false
+            guard generic || parentIsWindow else { return false }
+        } else if !needsBrowserHelperCheck(bundleIdentifier: bundleIdentifier) {
+            return false
+        }
+        return isBrowserHelper(title: title, applicationTitle: applicationTitle, subrole: subrole,
+                               hasCloseButton: hasCloseButton, parentIsWindow: parentIsWindow,
+                               bounds: bounds, minimized: minimized)
+    }
+
     static func isBrowserHelper(title: String?, applicationTitle: String, subrole: String?,
                                 hasCloseButton: Bool?, parentIsWindow: Bool,
                                 bounds: CGRect?, minimized: Bool) -> Bool {
@@ -361,6 +376,53 @@ enum SidebarWindowPolicy {
         }
         if let focused, candidates.contains(focused) { return focused }
         return candidates.first
+    }
+}
+
+extension SidebarWindowPolicy {
+    static func isHelperWindow(_ element: AXUIElement, bundleIdentifier: String?, applicationTitle: String, title: String?,
+                                 subrole: String?, bounds: CGRect?, minimized: Bool) -> Bool {
+        guard needsBrowserHelperCheck(bundleIdentifier: bundleIdentifier)
+            || bundleIdentifier == "com.apple.finder" else { return false }
+        var closeButton: CFTypeRef?
+        let closeError = AXUIElementCopyAttributeValue(element, kAXCloseButtonAttribute as CFString, &closeButton)
+        let hasCloseButton: Bool?
+        var closeWindowID: CGWindowID?
+        switch closeError {
+        case .success:
+            if let closeButton, CFGetTypeID(closeButton) == AXUIElementGetTypeID() {
+                let button = closeButton as! AXUIElement
+                let ownerWindow: AXUIElement? = button.getAttributeValue(
+                    NSAccessibility.Attribute(rawValue: kAXWindowAttribute as String))
+                closeWindowID = ownerWindow?.getWindowID()
+                // A browser overlay can forward the real window's controls. Those
+                // controls do not make the overlay a second independent window.
+                if let closeWindowID, let id = element.getWindowID() {
+                    hasCloseButton = closeWindowID == id
+                } else {
+                    hasCloseButton = true
+                }
+            } else {
+                hasCloseButton = false
+            }
+        case .attributeUnsupported, .noValue:
+            hasCloseButton = false
+        default:
+            hasCloseButton = nil
+        }
+        let parent: AXUIElement? = element.getAttributeValue(.parent)
+        let parentRole: String? = parent?.getAttributeValue(.role)
+        let rejected = SidebarWindowPolicy.isWindowHelper(bundleIdentifier: bundleIdentifier, title: title, applicationTitle: applicationTitle,
+            subrole: subrole, hasCloseButton: hasCloseButton, parentIsWindow: parentRole == (kAXWindowRole as String),
+            bounds: bounds, minimized: minimized)
+        #if DEBUG
+        if ProcessInfo.processInfo.environment["octopus_BROWSER_WINDOW_DIAGNOSTICS"] == "1" {
+            let id = element.getWindowID() ?? 0
+            let line = "octopus browser window id=\(id) title=\(String(describing: title)) subrole=\(String(describing: subrole)) ownClose=\(String(describing: hasCloseButton)) closeWindowID=\(String(describing: closeWindowID)) closeError=\(closeError.rawValue) parent=\(String(describing: parentRole)) bounds=\(String(describing: bounds)) minimized=\(minimized) rejected=\(rejected)\n"
+            if let data = line.data(using: .utf8) { FileHandle.standardError.write(data) }
+        }
+        #endif
+        return rejected
     }
 }
 
@@ -397,12 +459,6 @@ final class SidebarWindowInventory: ObservableObject {
     private var refreshCompletions: [() -> Void] = []
     private var pendingActions: [pid_t: SidebarPendingAction] = [:]
     private var pendingDesktopTransfer: SidebarPendingAction?
-    private struct ForegroundFocus {
-        let id: SidebarWindowID
-        let token: SidebarPendingAction
-        let expiresAt: TimeInterval
-    }
-    private var foregroundFocus: [pid_t: ForegroundFocus] = [:]
 
     var separatorIndices: Set<Int> {
         Self.separatorIndices(entries: entries, scope: desktopScope)
@@ -533,7 +589,6 @@ final class SidebarWindowInventory: ObservableObject {
                         if self.tracksFrontmostFocus {
                             self.reader.queue.async { [reader = self.reader] in reader.recordFrontmostWindow(pid: pid) }
                         }
-                        self.finishForegroundFocus(pid)
                     }
                     self.refresh()
                 }
@@ -774,7 +829,6 @@ final class SidebarWindowInventory: ObservableObject {
         if focusTarget != nil, let previous = pendingActions[pid], previous.focusTarget != nil {
             previous.cancel()
             pendingActions[pid] = nil
-            foregroundFocus[pid] = nil
         }
         // Ignore a second action during the first action. The active token stays locked until
         // the resulting window state has been read and published to the sidebar.
@@ -901,37 +955,28 @@ final class SidebarWindowInventory: ObservableObject {
 
     private func requestForeground(_ application: NSRunningApplication, target: SidebarWindowID?, token: SidebarPendingAction) {
         let pid = application.processIdentifier
-        if let target {
-            foregroundFocus[pid] = ForegroundFocus(id: target, token: token,
-                                                  expiresAt: ProcessInfo.processInfo.systemUptime + 1)
-        }
-        let accepted = SidebarFocusActivation.requestForeground(application, target: target, token: token)
-        guard accepted, target != nil else {
-            foregroundFocus[pid] = nil
+        guard let target else {
+            _ = SidebarFocusActivation.requestForeground(application, target: nil, token: token)
             refreshAndUnlock(pid, token: token)
             return
         }
-        finishForegroundFocus(pid)
-        guard let waiting = foregroundFocus[pid], waiting.token === token else { return }
-        // Expiry only cancels stale intent; it never postpones an activation or raise.
-        let remaining = max(0, waiting.expiresAt - ProcessInfo.processInfo.systemUptime)
-        DispatchQueue.main.asyncAfter(deadline: .now() + remaining) { [weak self] in
-            guard let self, self.foregroundFocus[pid]?.token === token else { return }
-            self.foregroundFocus[pid] = nil
-            token.cancel()
-            self.refreshAndUnlock(pid, token: token)
-        }
-    }
-
-    private func finishForegroundFocus(_ pid: pid_t) {
-        guard let request = foregroundFocus[pid], pendingActions[pid] === request.token,
-              request.token.canFinishFocus(on: pid),
-              ProcessInfo.processInfo.systemUptime < request.expiresAt,
-              NSWorkspace.shared.frontmostApplication?.processIdentifier == pid else { return }
-        foregroundFocus[pid] = nil // Claim once, even if activation notifications repeat.
-        reader.queue.async { [weak self, reader] in
-            let raised = reader.raiseForegroundWindow(request.id, token: request.token, expiresAt: request.expiresAt)
-            DispatchQueue.main.async { self?.refreshAndUnlock(pid, token: request.token, focused: raised) }
+        Task { [weak self, reader] in
+            guard let self else { return }
+            let requirement = await withCheckedContinuation { continuation in
+                reader.queue.async {
+                    continuation.resume(returning: reader.presentationRequirement(for: target, token: token))
+                }
+            }
+            guard let requirement else { self.refreshAndUnlock(pid, token: token); return }
+            let presented = await WindowPresentation.bringForward(target, requirement: requirement,
+                token: token, queue: reader.queue,
+                canContinue: { self.running && self.pendingActions[pid] === token },
+                validate: {
+                    reader.presentationRequirement(for: target, token: token)?.matches(
+                        element: requirement.element, launchDate: requirement.launchDate) == true
+                })
+            if presented { reader.queue.async { reader.recordFrontmostWindow(pid: pid) } }
+            self.refreshAndUnlock(pid, token: token, focused: presented)
         }
     }
 
@@ -954,7 +999,6 @@ final class SidebarWindowInventory: ObservableObject {
             token.cancel()
             return false
         }
-        foregroundFocus = foregroundFocus.filter { pid, request in pendingActions[pid] === request.token }
         if pendingDesktopTransfer?.isCancelled == true { pendingDesktopTransfer = nil }
     }
 
@@ -1215,7 +1259,7 @@ final class SidebarWindowReader: @unchecked Sendable {
                     windowID: axID, listed: scope == .allDesktops || restorable ? listed : visible)
                 let rawTitle: String? = axWindow.getAttributeValue(.title)
                 if SidebarWindowPolicy.needsBrowserHelperCheck(bundleIdentifier: running.bundleIdentifier),
-                   isBrowserHelper(axWindow, applicationTitle: app.title, title: rawTitle,
+                   SidebarWindowPolicy.isHelperWindow(axWindow, bundleIdentifier: running.bundleIdentifier, applicationTitle: app.title, title: rawTitle,
                                    subrole: subrole, bounds: match?.1.bounds, minimized: minimized) {
                     continue
                 }
@@ -1677,37 +1721,16 @@ final class SidebarWindowReader: @unchecked Sendable {
             // Only previously verified windows can be restored. Never launch or reopen.
             guard desktopScope == .allDesktops || running.isHidden || minimized || Self.isOnScreen(id),
                   token.beginFocus() else { return .rejected }
-            if minimized {
-                guard canChangeMinimized(element, fullScreen: fullScreenWindows.contains(id)), token.isCurrent,
-                      AXUIElementSetAttributeValue(element, kAXMinimizedAttribute as CFString,
-                                                   kCFBooleanFalse) == .success else { return .rejected }
-            }
-            guard token.canFinishFocus(on: id.pid) else { return .rejected }
-            if running.isHidden, !running.unhide() { return .rejected }
-            guard token.canFinishFocus(on: id.pid), !running.isTerminated,
-                  validatedWindow(id) != nil else { return .rejected }
-            // Request the exact window before any main-window or raise operation.
-            // Raising here races the subsequent WindowServer focus request across Spaces.
-            // requestForeground owns activation and the follow-up raise.
+            guard token.canFinishFocus(on: id.pid), !running.isTerminated else { return .rejected }
             return .activate(running)
         }
     }
 
-    @discardableResult func raiseForegroundWindow(_ id: SidebarWindowID, token: SidebarPendingAction, expiresAt: TimeInterval) -> Bool {
+    func presentationRequirement(for id: SidebarWindowID, token: SidebarPendingAction) -> SidebarFocusRequirement? {
         dispatchPrecondition(condition: .onQueue(queue))
-        guard token.canFinishFocus(on: id.pid),
-              ProcessInfo.processInfo.systemUptime < expiresAt,
-              NSWorkspace.shared.frontmostApplication?.processIdentifier == id.pid,
-              let known = validatedWindow(id), !known.application.isTerminated else { return false }
-        guard satisfiesFocusRequirement(known: known, token: token) else { return false }
-        AXUIElementSetMessagingTimeout(known.element, 0.2)
-        guard token.canFinishFocus(on: id.pid), ProcessInfo.processInfo.systemUptime < expiresAt,
-              NSWorkspace.shared.frontmostApplication?.processIdentifier == id.pid else { return false }
-        if SidebarFocusActivation.raise(known.element, id: id, token: token, expiresAt: expiresAt) {
-            recordFocus(id)
-            return true
-        }
-        return false
+        guard !token.isCancelled, let known = validatedWindow(id),
+              satisfiesFocusRequirement(known: known, token: token) else { return nil }
+        return SidebarFocusRequirement(element: known.element, launchDate: known.application.launchDate)
     }
 
     private func satisfiesFocusRequirement(known: KnownWindow, token: SidebarPendingAction) -> Bool {
@@ -1764,49 +1787,6 @@ final class SidebarWindowReader: @unchecked Sendable {
             return nil
         }
         return button
-    }
-
-    private func isBrowserHelper(_ element: AXUIElement, applicationTitle: String, title: String?,
-                                 subrole: String?, bounds: CGRect?, minimized: Bool) -> Bool {
-        var closeButton: CFTypeRef?
-        let closeError = AXUIElementCopyAttributeValue(element, kAXCloseButtonAttribute as CFString, &closeButton)
-        let hasCloseButton: Bool?
-        var closeWindowID: CGWindowID?
-        switch closeError {
-        case .success:
-            if let closeButton, CFGetTypeID(closeButton) == AXUIElementGetTypeID() {
-                let button = closeButton as! AXUIElement
-                let ownerWindow: AXUIElement? = button.getAttributeValue(
-                    NSAccessibility.Attribute(rawValue: kAXWindowAttribute as String))
-                closeWindowID = ownerWindow?.getWindowID()
-                // A browser overlay can forward the real window's controls. Those
-                // controls do not make the overlay a second independent window.
-                if let closeWindowID, let id = element.getWindowID() {
-                    hasCloseButton = closeWindowID == id
-                } else {
-                    hasCloseButton = true
-                }
-            } else {
-                hasCloseButton = false
-            }
-        case .attributeUnsupported, .noValue:
-            hasCloseButton = false
-        default:
-            hasCloseButton = nil
-        }
-        let parent: AXUIElement? = element.getAttributeValue(.parent)
-        let parentRole: String? = parent?.getAttributeValue(.role)
-        let rejected = SidebarWindowPolicy.isBrowserHelper(title: title, applicationTitle: applicationTitle,
-            subrole: subrole, hasCloseButton: hasCloseButton, parentIsWindow: parentRole == (kAXWindowRole as String),
-            bounds: bounds, minimized: minimized)
-        #if DEBUG
-        if ProcessInfo.processInfo.environment["octopus_BROWSER_WINDOW_DIAGNOSTICS"] == "1" {
-            let id = element.getWindowID() ?? 0
-            let line = "octopus browser window id=\(id) title=\(String(describing: title)) subrole=\(String(describing: subrole)) ownClose=\(String(describing: hasCloseButton)) closeWindowID=\(String(describing: closeWindowID)) closeError=\(closeError.rawValue) parent=\(String(describing: parentRole)) bounds=\(String(describing: bounds)) minimized=\(minimized) rejected=\(rejected)\n"
-            if let data = line.data(using: .utf8) { FileHandle.standardError.write(data) }
-        }
-        #endif
-        return rejected
     }
 
     private func recordFocus(_ id: SidebarWindowID) {

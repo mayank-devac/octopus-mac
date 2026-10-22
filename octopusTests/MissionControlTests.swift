@@ -116,7 +116,7 @@ struct MissionControlTests {
         #expect(reenter)
     }
 
-    @Test func pressingControlAfterHoverKeepsTheExistingPositionScrollGestureAvailable() {
+    @Test func pressingConfiguredModifierAfterHoverOpensWithoutMovingAgain() {
         var trigger = MissionControlHoverTrigger()
         _ = trigger.update(isInside: true, pointerMoved: true, modifiers: [],
                            required: .control, pressedButtons: 0, canPresent: true)
@@ -124,7 +124,33 @@ struct MissionControlTests {
                                    required: .control, pressedButtons: 0, canPresent: true)
         let move = trigger.update(isInside: true, pointerMoved: true, modifiers: .control,
                                   required: .control, pressedButtons: 0, canPresent: true)
-        #expect(!press && !move)
+        #expect(press && !move)
+    }
+
+    @Test func optionPressOverStationarySidebarOpensOncePerPress() {
+        var trigger = MissionControlHoverTrigger()
+        _ = trigger.update(isInside: true, pointerMoved: true, modifiers: [], pressedButtons: 0, canPresent: true)
+        let press = trigger.update(isInside: true, pointerMoved: false, modifiers: .option, pressedButtons: 0, canPresent: true)
+        let repeated = trigger.update(isInside: true, pointerMoved: false, modifiers: .option, pressedButtons: 0, canPresent: true)
+        let release = trigger.update(isInside: true, pointerMoved: false, modifiers: [], pressedButtons: 0, canPresent: true)
+        let nextPress = trigger.update(isInside: true, pointerMoved: false, modifiers: .option, pressedButtons: 0, canPresent: true)
+        #expect(press && !repeated && !release && nextPress)
+    }
+
+    @Test func cursorPlacementKeepsTheEdgeAndClampsAtScreenBoundaries() {
+        let available = CGRect(x: -1800, y: -600, width: 1800, height: 900)
+        let size = CGSize(width: 136, height: 250)
+        for side in [SidebarSide.left, .right] {
+            for cursorY in [CGFloat(-1000), -200, 1000] {
+                let frame = MissionControlPlacement.frame(in: available, size: size, side: side,
+                                                         position: 0, cursorY: cursorY)
+                #expect(available.contains(frame))
+                #expect(side == .left ? frame.minX == available.minX : frame.maxX == available.maxX)
+                if cursorY == -200 { #expect(frame.midY == cursorY) }
+                if cursorY < available.minY { #expect(frame.minY == available.minY) }
+                if cursorY > available.maxY { #expect(frame.maxY == available.maxY) }
+            }
+        }
     }
 
     @Test func optionHoverDoesNotInterruptDragsOtherModifiersOrBlockedInteractions() {
@@ -163,16 +189,16 @@ struct MissionControlTests {
         #expect(MissionControlHoverShortcut.modifiers(in: defaults) == .option)
     }
 
-    @Test func placementFollowsSidebarSideAndPositionWithoutCoveringDesktopStripOrDock() {
+    @Test func placementFollowsSidebarSideAndPositionWithinVisibleScreen() {
         let screen = CGRect(x: -1920, y: 200, width: 1920, height: 1080)
         let visible = CGRect(x: -1920, y: 270, width: 1920, height: 986)
         let available = MissionControlPlacement.availableFrame(screen: screen, visibleFrame: visible)
         let size = CGSize(width: 136, height: 250)
-        #expect(available.maxY < screen.maxY - screen.height * 0.2)
-        #expect(available.minY > visible.minY)
+        #expect(available.maxY == visible.maxY - 8)
+        #expect(available.minY == visible.minY + 8)
         let shortScreen = CGRect(x: 0, y: 0, width: 1280, height: 720)
         let shortArea = MissionControlPlacement.availableFrame(screen: shortScreen, visibleFrame: shortScreen)
-        #expect(shortArea.maxY <= shortScreen.maxY - 180)
+        #expect(shortArea.maxY == shortScreen.maxY - 8)
         for side in [SidebarSide.left, .right] {
             for position in [0.0, 0.5, 1.0] {
                 let frame = MissionControlPlacement.frame(in: available, size: size, side: side, position: position)
@@ -342,9 +368,7 @@ struct MissionControlTests {
     }
 
     @Test func snapshotExpiresWithoutFailedReadsOrRequestInvalidationRenewingIt() {
-        var item = record()
-        item.verifiedAt = 10
-        let data = snapshot([item])
+        let data = snapshot([record()])
         var state = MissionControlSnapshotState()
         let generation = state.generation
         let accepted = state.receive(data, generation: generation, now: 10)
@@ -359,20 +383,6 @@ struct MissionControlTests {
         #expect(published && state.freshSnapshot(at: 12)?.windows.count == 1)
         state.clearCache()
         #expect(state.snapshot == nil && state.receivedAt == nil)
-    }
-
-    @Test func partialWindowReadsDoNotRefreshOldFields() {
-        var item = record()
-        item.verifiedAt = 10
-        let originalBounds = item.bounds
-        let requirement = SidebarFocusRequirement(element: AXUIElementCreateApplication(100), launchDate: nil)
-        item.verify(bounds: CGRect(x: 300, y: 300, width: 600, height: 400), desktopIDs: [2],
-                    minimized: nil, requirement: requirement, now: 11)
-        #expect(item.verifiedAt == 10 && item.bounds == originalBounds)
-        #expect(snapshot([item]).removingExpiredWindows(at: 12).windows.isEmpty)
-        item.verify(bounds: originalBounds, desktopIDs: [2], minimized: false, requirement: requirement, now: 12)
-        #expect(item.verifiedAt == 12 && item.desktopIDs == [2])
-        #expect(snapshot([item]).removingExpiredWindows(at: 13).windows.count == 1)
     }
 
     @Test func openingAnimationPreferenceAlsoHonoursReduceMotion() throws {

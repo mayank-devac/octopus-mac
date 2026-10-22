@@ -432,6 +432,83 @@ final class WindowControlAccess: @unchecked Sendable {
 // A bounded, notification-driven handoff, matching the sidebar's foreground gate.
 // It never retries activation or raises after a canceled click or another app switch.
 @MainActor
+enum WindowPresentation {
+    static func bringForward(_ id: SidebarWindowID, requirement: SidebarFocusRequirement,
+                             token: SidebarPendingAction, queue: DispatchQueue,
+                             canContinue: @escaping () -> Bool,
+                             validate: @escaping () -> Bool) async -> Bool {
+        guard let app = NSRunningApplication(processIdentifier: id.pid),
+              let launchDate = app.launchDate, requirement.launchDate == launchDate else { return false }
+        func current() -> Bool {
+            !Task.isCancelled && token.canFinishFocus(on: id.pid)
+                && canContinue() && !app.isTerminated
+        }
+        func read<T>(_ body: @escaping () -> T) async -> T {
+            await withCheckedContinuation { continuation in
+                queue.async { continuation.resume(returning: body()) }
+            }
+        }
+        @Sendable func live() -> Bool {
+            guard !token.isCancelled, AXIsProcessTrusted(), !app.isTerminated,
+                  app.launchDate == launchDate else { return false }
+            let element = requirement.element
+            AXUIElementSetMessagingTimeout(element, 0.2)
+            var pid: pid_t = 0
+            return AXUIElementGetPid(element, &pid) == .success && pid == id.pid
+                && element.getWindowID() == id.windowID
+                && SidebarWindowPolicy.isTopLevelWindow(role: element.getAttributeValue(.role),
+                                                        subrole: element.getAttributeValue(.subrole))
+                && validate()
+        }
+        guard current(), await read({
+            guard live(), token.beginFocus(),
+                  let minimized: Bool = requirement.element.getAttributeValue(.minimized) else { return false }
+            if minimized {
+                var settable = DarwinBoolean(false)
+                guard AXUIElementIsAttributeSettable(requirement.element, kAXMinimizedAttribute as CFString,
+                                                     &settable) == .success, settable.boolValue,
+                      !token.isCancelled,
+                      AXUIElementSetAttributeValue(requirement.element, kAXMinimizedAttribute as CFString,
+                                                   kCFBooleanFalse) == .success else { return false }
+            }
+            return !token.isCancelled
+        }), current() else { return false }
+        if app.isHidden {
+            guard app.unhide(), current() else { return false }
+        }
+        let activated = await withCheckedContinuation { continuation in
+            let waiter = WindowForegroundActivationWaiter(targetPID: id.pid, initialPID: token.frontmostPID,
+                center: NSWorkspace.shared.notificationCenter, timeout: 1, canContinue: current,
+                frontmostPID: { NSWorkspace.shared.frontmostApplication?.processIdentifier }) {
+                    continuation.resume(returning: $0)
+                }
+            waiter.start { SidebarFocusActivation.requestForeground(app, target: id, token: token) }
+        }
+        guard activated, current() else { return false }
+        let deadline = ProcessInfo.processInfo.systemUptime + 0.8
+        guard await read({
+            live() && SidebarFocusActivation.raise(requirement.element, id: id, token: token, expiresAt: deadline)
+        }), current() else { return false }
+        while current(), ProcessInfo.processInfo.systemUptime < deadline {
+            let confirmed = await read {
+                guard live(), !app.isHidden,
+                      NSWorkspace.shared.frontmostApplication?.processIdentifier == id.pid else { return false }
+                let application = AXUIElementCreateApplication(id.pid)
+                AXUIElementSetMessagingTimeout(application, 0.1)
+                guard let focused: AXUIElement = application.getAttributeValue(.focusedWindow) else { return false }
+                AXUIElementSetMessagingTimeout(focused, 0.1)
+                return requirement.matches(element: focused, launchDate: app.launchDate)
+                    && focused.getWindowID() == id.windowID
+                    && SidebarWindowReader.isOnScreen(id)
+            }
+            if confirmed { return current() }
+            try? await Task.sleep(for: .milliseconds(50))
+        }
+        return false
+    }
+}
+
+@MainActor
 final class WindowForegroundActivationWaiter {
     private let targetPID: pid_t
     private let initialPID: pid_t?

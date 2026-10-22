@@ -5,6 +5,12 @@ import Darwin
 // the technique used by AltTab. Never fabricate a window unless AX verifies its
 // role, owner PID and Core Graphics ID. All state stays on the inventory AX queue.
 final class SidebarWindowDiscovery {
+    private enum HandleLiveness {
+        case valid(CGWindowID)
+        case invalid
+        case unknown
+    }
+
     private typealias CreateElement = @convention(c) (CFData) -> Unmanaged<AXUIElement>?
     private let handle: UnsafeMutableRawPointer?
     private let createElement: CreateElement?
@@ -39,8 +45,22 @@ final class SidebarWindowDiscovery {
         role == (kAXWindowRole as String) && subrole == (kAXStandardWindowSubrole as String)
     }
 
-    func read(pid: pid_t, current: [AXUIElement], candidates: Set<CGWindowID>, deadline: TimeInterval? = nil)
-        -> (windows: [AXUIElement], needsAnotherPass: Bool) {
+    private static func liveness(of element: AXUIElement) -> HandleLiveness {
+        var role: CFTypeRef?
+        let roleError = AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &role)
+        if roleError == .invalidUIElement { return .invalid }
+        guard roleError == .success else { return .unknown }
+        var id = CGWindowID(0)
+        switch _AXUIElementGetWindow(element, &id) {
+        case .success where id != kCGNullWindowID: return .valid(id)
+        case .invalidUIElement: return .invalid
+        default: return .unknown
+        }
+    }
+
+    func read(pid: pid_t, current: [AXUIElement], candidates: Set<CGWindowID>, deadline: TimeInterval? = nil,
+              seeds: [CGWindowID: AXUIElement] = [:])
+        -> (windows: [AXUIElement], needsAnotherPass: Bool, invalidatedIDs: Set<CGWindowID>) {
         var scan = scans[pid] ?? Scan()
         if scan.expected != candidates {
             scan.expected = candidates
@@ -51,6 +71,7 @@ final class SidebarWindowDiscovery {
         scan.windows = scan.windows.filter { candidates.contains($0.key) }
         let knownIDs = scan.windows.keys.sorted()
         var verifiedIDs = Set<CGWindowID>()
+        var invalidatedIDs = Set<CGWindowID>()
         var validationIncomplete = false
         let validationStart = scan.validationCursor
         for offset in 0..<knownIDs.count {
@@ -63,19 +84,59 @@ final class SidebarWindowDiscovery {
             let id = knownIDs[index]
             guard let element = scan.windows[id] else { continue }
             AXUIElementSetMessagingTimeout(element, 0.05)
+            switch Self.liveness(of: element) {
+            case .invalid:
+                scan.windows.removeValue(forKey: id)
+                invalidatedIDs.insert(id)
+                continue
+            case .unknown:
+                continue
+            case .valid(let actualID) where actualID != id:
+                scan.windows.removeValue(forKey: id)
+                invalidatedIDs.insert(id)
+                continue
+            case .valid:
+                break
+            }
             let role: String? = element.getAttributeValue(.role)
             let subrole: String? = element.getAttributeValue(.subrole)
-            if Self.isEligibleRemoteWindow(role: role, subrole: subrole), element.getWindowID() == id {
+            if Self.isEligibleRemoteWindow(role: role, subrole: subrole) {
                 verifiedIDs.insert(id)
-            } else {
+            } else if role != nil, subrole != nil {
                 scan.windows.removeValue(forKey: id)
             }
         }
+        var currentIDs = Set<CGWindowID>()
+        var acceptedCurrent: [AXUIElement] = []
         for element in current {
             if let deadline, ProcessInfo.processInfo.systemUptime >= deadline { break }
-            if let id = element.getWindowID(), candidates.contains(id) {
+            switch Self.liveness(of: element) {
+            case .valid(let id):
+                acceptedCurrent.append(element)
+                guard candidates.contains(id) else { continue }
+                currentIDs.insert(id)
                 scan.windows[id] = element
                 verifiedIDs.insert(id)
+            case .unknown:
+                acceptedCurrent.append(element)
+            case .invalid:
+                continue
+            }
+        }
+        for (expectedID, element) in seeds {
+            if let deadline, ProcessInfo.processInfo.systemUptime >= deadline { break }
+            switch Self.liveness(of: element) {
+            case .valid(let id) where id == expectedID && candidates.contains(id):
+                scan.windows[id] = element
+                verifiedIDs.insert(id)
+            case .invalid:
+                invalidatedIDs.insert(expectedID)
+                scan.windows.removeValue(forKey: expectedID)
+            case .valid:
+                invalidatedIDs.insert(expectedID)
+                scan.windows.removeValue(forKey: expectedID)
+            case .unknown:
+                continue
             }
         }
         var found = verifiedIDs
@@ -95,7 +156,7 @@ final class SidebarWindowDiscovery {
                     let subrole: String? = element.getAttributeValue(.subrole)
                     if Self.isEligibleRemoteWindow(role: role, subrole: subrole),
                        AXUIElementGetPid(element, &owner) == .success, owner == pid,
-                       let id = element.getWindowID(), candidates.contains(id) {
+                       case .valid(let id) = Self.liveness(of: element), candidates.contains(id) {
                         scan.windows[id] = element
                         verifiedIDs.insert(id)
                         found.insert(id)
@@ -105,14 +166,9 @@ final class SidebarWindowDiscovery {
             }
         }
         scans[pid] = scan
-        var currentIDs = Set<CGWindowID>()
-        for element in current {
-            if let deadline, ProcessInfo.processInfo.systemUptime >= deadline { break }
-            if let id = element.getWindowID() { currentIDs.insert(id) }
-        }
         let extra = scan.windows.filter { verifiedIDs.contains($0.key) && !currentIDs.contains($0.key) }
             .sorted { $0.key < $1.key }.map(\.value)
-        return (current + extra, validationIncomplete || (createElement != nil && !candidates.isSubset(of: found)
-            && scan.examined < Int(maximumElementID)))
+        return (acceptedCurrent + extra, validationIncomplete || (createElement != nil && !candidates.isSubset(of: found)
+            && scan.examined < Int(maximumElementID)), invalidatedIDs)
     }
 }

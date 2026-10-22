@@ -164,7 +164,8 @@ final class MissionControlActions {
     }
 
     func select(_ selection: MissionControlSelection, snapshot: MissionControlSnapshot,
-                displayID: CGDirectDisplayID, isCurrent: @escaping () -> Bool,
+                displayID: CGDirectDisplayID,
+                isCurrent: @escaping () -> Bool,
                 completion: @escaping (Bool) -> Void) {
         guard task == nil else { return }
         let token = SidebarPendingAction(frontmostPID: nil)
@@ -204,58 +205,17 @@ final class MissionControlActions {
             ensureVisible: { [launcher] in await launcher.ensureVisible(environment: transition) },
             ensureHidden: { [launcher] in await launcher.ensureHidden(environment: transition) },
             focusWindow: { [weak self] in
-                guard let self, let id = selection.windowID, let requirement, !token.isCancelled,
-                      let app = NSRunningApplication(processIdentifier: id.pid), !app.isTerminated else { return false }
+                guard let self, let id = selection.windowID, let requirement, !token.isCancelled else { return false }
                 let focus = SidebarPendingAction(frontmostPID: NSWorkspace.shared.frontmostApplication?.processIdentifier,
                                                 focusTarget: id, focusRequirement: requirement)
                 self.focusToken = focus
                 defer { self.focusToken = nil }
-                guard await self.native.read({
-                    self.native.validate(selection, window: window, requirement: requirement, screens: snapshot.screens, token: token)
-                }), !token.isCancelled, isCurrent() else { return false }
-                if app.isHidden {
-                    guard app.unhide(), !token.isCancelled, isCurrent() else { return false }
-                }
-                guard await self.native.read({
-                    guard self.native.validate(selection, window: window, requirement: requirement,
-                                              screens: snapshot.screens, token: token) else { return false }
-                    let minimized: Bool? = requirement.element.getAttributeValue(.minimized)
-                    guard let minimized else { return false }
-                    return !minimized || AXUIElementSetAttributeValue(requirement.element,
-                        kAXMinimizedAttribute as CFString, kCFBooleanFalse) == .success
-                }), !token.isCancelled, isCurrent() else { return false }
-                let activated = await withCheckedContinuation { continuation in
-                    let waiter = WindowForegroundActivationWaiter(targetPID: id.pid,
-                        initialPID: focus.frontmostPID, center: NSWorkspace.shared.notificationCenter, timeout: 1,
-                        canContinue: { !token.isCancelled && !focus.isCancelled && isCurrent() && !app.isTerminated },
-                        frontmostPID: { NSWorkspace.shared.frontmostApplication?.processIdentifier }) {
-                            continuation.resume(returning: $0)
-                        }
-                    waiter.start { SidebarFocusActivation.requestForeground(app, target: id, token: focus) }
-                }
-                guard activated else { return false }
-                let expiresAt = ProcessInfo.processInfo.systemUptime + 0.8
-                let raised = await self.native.read {
-                    guard !token.isCancelled,
-                          self.native.validate(selection, window: window, requirement: requirement,
-                                               screens: snapshot.screens, token: token),
-                          focus.canFinishFocus(on: id.pid),
-                          NSWorkspace.shared.frontmostApplication?.processIdentifier == id.pid else { return false }
-                    guard SidebarFocusActivation.raise(requirement.element, id: id, token: focus,
-                                                       expiresAt: expiresAt) else { return false }
-                    return true
-                }
-                guard raised else { return false }
-                // One request and one raise; only read while exact focus settles.
-                for _ in 0..<12 {
-                    guard !token.isCancelled, isCurrent(), ProcessInfo.processInfo.systemUptime < expiresAt else { return false }
-                    let confirmed = await self.native.read {
-                        self.native.focused(id, requirement: requirement, app: app, token: token)
-                    }
-                    if confirmed { return true }
-                    try? await Task.sleep(for: .milliseconds(50))
-                }
-                return false
+                return await WindowPresentation.bringForward(id, requirement: requirement, token: focus,
+                    queue: self.native.queue, canContinue: { !token.isCancelled && isCurrent() },
+                    validate: {
+                        self.native.validate(selection, window: window, requirement: requirement,
+                                             screens: snapshot.screens, token: token)
+                    })
             })
         task = Task { [weak self] in
             let success = await Self.perform(selection, environment: env)
@@ -269,25 +229,13 @@ final class MissionControlActions {
 
 private final class MissionControlNativeActions {
     let spaces = SidebarSpaceReader()
-    private let queue = DispatchQueue(label: "com.octopus.mission-control.actions", qos: .userInitiated)
+    let queue = DispatchQueue(label: "com.octopus.mission-control.actions", qos: .userInitiated)
     var deadline: TimeInterval { ProcessInfo.processInfo.systemUptime + 0.16 }
 
     func read<T>(_ body: @escaping () -> T) async -> T {
         await withCheckedContinuation { continuation in
             queue.async { continuation.resume(returning: body()) }
         }
-    }
-
-    func focused(_ id: SidebarWindowID, requirement: SidebarFocusRequirement,
-                 app: NSRunningApplication, token: SidebarPendingAction) -> Bool {
-        guard !token.isCancelled, AXIsProcessTrusted(), !app.isTerminated, !app.isHidden,
-              NSWorkspace.shared.frontmostApplication?.processIdentifier == id.pid else { return false }
-        let application = AXUIElementCreateApplication(id.pid)
-        AXUIElementSetMessagingTimeout(application, 0.04)
-        guard let focused: AXUIElement = application.getAttributeValue(.focusedWindow) else { return false }
-        AXUIElementSetMessagingTimeout(focused, 0.04)
-        return requirement.matches(element: focused, launchDate: app.launchDate) && focused.getWindowID() == id.windowID
-            && NSWorkspace.shared.frontmostApplication?.processIdentifier == id.pid && !token.isCancelled
     }
 
     func validate(_ selection: MissionControlSelection, window: MissionControlSnapshot.Window?,

@@ -63,7 +63,9 @@ final class SidebarController {
                 let controller = SidebarDisplayController(cycleController: cycleController, displayID: id.displayID)
                 controller.setRadialPresented(radialPresented)
                 controller.setMissionControlPresented(missionControlPresented)
-                controller.onMissionControlPreview = { [weak self] in self?.missionControl.setPreviewPresented(true) }
+                controller.onMissionControlPreview = { [weak self] point in
+                    self?.missionControl.setPreviewPresented(true, at: point)
+                }
                 controller.onMissionControlPointer = { [weak self] inside in
                     self?.missionControl.updatePointer(triggerID: id, inside: inside)
                 }
@@ -135,7 +137,7 @@ private final class SidebarDisplayController {
     private var missionControlPresented = false
     private var missionControlHover = MissionControlHoverTrigger()
     var missionControlPreviewModifiers = MissionControlHoverShortcut.defaultModifiers
-    var onMissionControlPreview: (() -> Void)?
+    var onMissionControlPreview: ((CGPoint) -> Void)?
     var onMissionControlPointer: ((Bool) -> Void)?
 
     func setMissionControlPresented(_ presented: Bool) {
@@ -982,7 +984,7 @@ private final class SidebarDisplayController {
             modifiers: modifiers, required: missionControlPreviewModifiers,
             pressedButtons: Int(NSEvent.pressedMouseButtons), canPresent: canPreview)
         if requested {
-            onMissionControlPreview?()
+            onMissionControlPreview?(point)
             return
         }
         guard !radialPresented, !missionControlPresented else { return }
