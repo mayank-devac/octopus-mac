@@ -59,10 +59,25 @@ private final class MissionControlDesktopView: MissionControlButton {
     private var scale: CGFloat = 1
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
+        // The desktop is a background control, not an image-only icon cell.
+        // Give native button tracking the full tile even when it has no image.
+        imagePosition = .noImage
+        bezelStyle = .regularSquare
         invoke = { [weak self] in self?.select?(nil) }
     }
 
     required init?(coder: NSCoder) { return nil }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        let local = convert(point, from: superview)
+        guard !isHidden, bounds.contains(local) else { return nil }
+        // NSButton handles its whole cell as one target. Resolve the nested
+        // window buttons first so their clicks cannot select the desktop instead.
+        for icon in subviews.reversed() {
+            if let target = icon.hitTest(local) { return target }
+        }
+        return self
+    }
 
     func configure(tile: MissionControlLayout.Tile, scale: CGFloat, applications: [pid_t: MissionControlApplication],
                    selectableWindows: Set<SidebarWindowID>) {

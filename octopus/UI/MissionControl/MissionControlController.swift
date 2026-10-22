@@ -78,8 +78,17 @@ enum MissionControlPlacement {
     }
 }
 
+enum MissionControlPresentationSettings {
+    static let skipOpeningAnimationKey = "missionControlSkipOpeningAnimation"
+
+    static func animatesOpening(reduceMotion: Bool, defaults: UserDefaults = .standard) -> Bool {
+        !reduceMotion && !defaults.bool(forKey: skipOpeningAnimationKey)
+    }
+}
+
 @MainActor
 final class MissionControlController {
+    private static let animationDuration: TimeInterval = 0.16
     private let monitor = MissionControlMonitor()
     private let reader = MissionControlSnapshotReader()
     private let actions = MissionControlActions()
@@ -102,6 +111,7 @@ final class MissionControlController {
     private var previewModifiers = MissionControlHoverShortcut.modifiers()
     private var snapshots = MissionControlSnapshotState()
     private var refreshTimer: Timer?
+    private var cacheExpiry: DispatchWorkItem?
     private var refreshInFlight = false
 
     init(windowSeeds: @escaping () -> [SidebarWindowID: AXUIElement], onVisibilityChange: @escaping (Bool) -> Void) {
@@ -169,6 +179,9 @@ final class MissionControlController {
         hoverLifetime.reset()
         triggerIDs.removeAll()
         clearPresentation()
+        snapshots.invalidateRequests()
+        snapshots.clearCache()
+        reader.queue.async { [reader] in reader.reset(clearDiscovery: true) }
         if wasPending { onVisibilityChange(false) }
     }
 
@@ -195,12 +208,14 @@ final class MissionControlController {
         let ids = Set(targets.map(\.id))
         for id in Array(panels.keys) where !ids.contains(id) { removePanel(id) }
         if let snapshot = snapshots.snapshot, snapshot.screens != connectedScreens() {
-            snapshots.reset()
+            snapshots.invalidateRequests()
+            snapshots.clearCache()
             for id in Array(panels.keys) { removePanel(id) }
             reader.queue.async { [reader] in reader.reset() }
         }
         monitor.setEnabled(!targets.isEmpty)
-        if visible { present(); refresh() }
+        if visible { present() }
+        refresh()
     }
 
     func stop() {
@@ -220,31 +235,37 @@ final class MissionControlController {
     private func setVisible(_ visible: Bool) {
         guard self.visible != visible else { return }
         self.visible = visible
-        snapshots.reset()
-        let clearDiscovery = !AXIsProcessTrusted()
-        reader.queue.async { [reader] in reader.reset(clearDiscovery: clearDiscovery) }
         if visible {
             onVisibilityChange(true)
-            hoverLifetime.reset()
+            hoverLifetime.beginLoading(now: ProcessInfo.processInfo.systemUptime)
             let pointerTimer = Timer(timeInterval: 0.05, repeats: true) { [weak self] _ in
                 MainActor.assumeIsolated { self?.samplePointer() }
             }
             self.pointerTimer = pointerTimer
             RunLoop.main.add(pointerTimer, forMode: .common)
             let timer = Timer(timeInterval: 0.75, repeats: true) { [weak self] _ in
-                MainActor.assumeIsolated { self?.refresh() }
+                MainActor.assumeIsolated { self?.present(); self?.refresh() }
             }
             timer.tolerance = 0.1
             refreshTimer = timer
             RunLoop.main.add(timer, forMode: .common)
+            present()
             refresh()
         } else {
+            cacheExpiry?.cancel()
+            cacheExpiry = nil
+            let hasAccessibility = AXIsProcessTrusted()
+            snapshots.invalidateRequests()
+            if !hasAccessibility {
+                snapshots.clearCache()
+                reader.queue.async { [reader] in reader.reset(clearDiscovery: true) }
+            }
             previewFrames.removeAll()
             pointerTimer?.invalidate()
             pointerTimer = nil
             refreshTimer?.invalidate()
             refreshTimer = nil
-            for id in Array(panels.keys) { removePanel(id) }
+            for id in Array(panels.keys) { removePanel(id, animated: true) }
             onVisibilityChange(selection.pending)
         }
     }
@@ -260,7 +281,8 @@ final class MissionControlController {
     }
 
     private func refresh() {
-        guard visible, !selection.pressed, !selection.pending, !targets.isEmpty, !refreshInFlight, AXIsProcessTrusted() else { return }
+        guard visible, !selection.pressed, !selection.pending,
+              !targets.isEmpty, !refreshInFlight, AXIsProcessTrusted() else { return }
         let apps = NSWorkspace.shared.runningApplications.filter {
             $0.activationPolicy == .regular && !$0.isTerminated && $0.processIdentifier != ProcessInfo.processInfo.processIdentifier
         }.map { app in
@@ -277,26 +299,44 @@ final class MissionControlController {
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.refreshInFlight = false
-                guard self.visible, generation == self.snapshots.generation, screens == self.connectedScreens() else {
+                guard generation == self.snapshots.generation, screens == self.connectedScreens() else {
                     if self.visible { self.refresh() }
                     return
                 }
-                guard !self.selection.pressed, !self.selection.pending,
-                      AXIsProcessTrusted(), self.snapshots.receive(snapshot, generation: generation) else { return }
-                self.present()
+                guard !self.selection.pressed, !self.selection.pending, AXIsProcessTrusted() else { return }
+                _ = self.snapshots.receive(snapshot, generation: generation)
+                if self.visible { self.present() }
             }
         }
     }
 
-    private func removePanel(_ id: String) {
-        guard let panel = panels.removeValue(forKey: id) else { return }
+    private func removePanel(_ id: String, animated: Bool = false) {
+        guard let panel = panels[id] else { return }
+        panel.ignoresMouseEvents = true
+        if animated, panel.isVisible, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+            guard !panel.isClosing else { return }
+            panel.isClosing = true
+            panel.animationGeneration += 1
+            let generation = panel.animationGeneration
+            let frame = MissionControlPlacement.collapsed(panel.frame, side: panel.sidebarSide)
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = Self.animationDuration
+                panel.animator().setFrame(frame, display: true)
+            } completionHandler: { [weak self, panel] in
+                guard let self, self.panels[id] === panel,
+                      panel.isClosing, panel.animationGeneration == generation else { return }
+                self.removePanel(id)
+            }
+            return
+        }
+        panels.removeValue(forKey: id)
         panel.orderOut(nil)
         panel.contentView = nil
         panel.close()
     }
 
     private func select(_ target: MissionControlSelection) {
-        guard visible, !actions.isPending, let snapshot = snapshots.snapshot,
+        guard visible, !actions.isPending, let snapshot = snapshots.freshSnapshot(),
               snapshot.screens == connectedScreens(),
               let screen = targets.first(where: { $0.id == target.screenID })?.screen,
               let displayID = SidebarSettings.displayID(screen),
@@ -333,7 +373,19 @@ final class MissionControlController {
     }
 
     private func present() {
-        guard !selection.pressed, !selection.pending, let snapshot = snapshots.snapshot else { return }
+        guard visible, !selection.pressed, !selection.pending else { return }
+        cacheExpiry?.cancel()
+        cacheExpiry = nil
+        guard let snapshot = snapshots.freshSnapshot(), snapshot.screens == connectedScreens() else {
+            for id in Array(panels.keys) { removePanel(id) }
+            return
+        }
+        if let receivedAt = snapshots.receivedAt {
+            let expiry = receivedAt + MissionControlSnapshotState.maximumAge
+            let work = DispatchWorkItem { [weak self] in self?.present(); self?.refresh() }
+            cacheExpiry = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + max(0.01, expiry - ProcessInfo.processInfo.systemUptime), execute: work)
+        }
         for target in targets {
             let available = MissionControlPlacement.availableFrame(screen: target.screen.frame,
                                                                    visibleFrame: target.screen.visibleFrame)
@@ -345,14 +397,28 @@ final class MissionControlController {
             let frame = MissionControlPlacement.frame(in: available, size: layout.size,
                                                      side: target.side, position: target.position)
             if let panel = panels[target.id] {
-                if panel.frame != frame { panel.setFrame(frame, display: true) }
+                let reopening = panel.isClosing
+                panel.isClosing = false
+                panel.animationGeneration += 1
+                panel.sidebarSide = target.side
+                panel.ignoresMouseEvents = false
                 (panel.contentView as? MissionControlView)?.configure(layout: layout, applications: snapshot.applications, side: target.side,
                     selectableWindows: Set(snapshot.focusRequirements.keys))
+                if reopening && MissionControlPresentationSettings.animatesOpening(
+                    reduceMotion: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion) {
+                    NSAnimationContext.runAnimationGroup { context in
+                        context.duration = Self.animationDuration
+                        panel.animator().setFrame(frame, display: true)
+                    }
+                } else if panel.frame != frame {
+                    panel.setFrame(frame, display: true)
+                }
                 continue
             }
             let panel = MissionControlPanel(contentRect: frame, styleMask: [.borderless, .nonactivatingPanel],
                                             backing: .buffered, defer: false)
             panel.isReleasedWhenClosed = false
+            panel.sidebarSide = target.side
             panel.isOpaque = false
             panel.backgroundColor = .clear
             panel.hasShadow = false
@@ -377,13 +443,15 @@ final class MissionControlController {
                     selectableWindows: Set(snapshot.focusRequirements.keys))
             panel.contentView = view
             panels[target.id] = panel
-            if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+            hoverLifetime.didPresent()
+            if !MissionControlPresentationSettings.animatesOpening(
+                reduceMotion: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion) {
                 panel.orderFrontRegardless()
             } else {
                 panel.setFrame(MissionControlPlacement.collapsed(frame, side: target.side), display: false)
                 panel.orderFrontRegardless()
                 NSAnimationContext.runAnimationGroup { context in
-                    context.duration = 0.16
+                    context.duration = Self.animationDuration
                     panel.animator().setFrame(frame, display: true)
                 }
             }
@@ -392,6 +460,9 @@ final class MissionControlController {
 }
 
 private final class MissionControlPanel: NSPanel {
+    var sidebarSide: SidebarSide = .right
+    var isClosing = false
+    var animationGeneration = 0
     override var canBecomeKey: Bool { false }
     override var canBecomeMain: Bool { false }
 }

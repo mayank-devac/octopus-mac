@@ -33,13 +33,32 @@ struct MissionControlSelectionState {
 }
 
 struct MissionControlHoverLifetime {
-    private(set) var departure: TimeInterval?
-    mutating func update(inTrigger: Bool, inMap: Bool, pressed: Bool, now: TimeInterval) -> Bool {
-        if inTrigger || inMap || pressed { departure = nil; return false }
-        if departure == nil { departure = now }
-        return now - (departure ?? now) >= 0.3
+    private enum Phase {
+        case loading(until: TimeInterval)
+        case tracking(departure: TimeInterval?)
     }
-    mutating func reset() { departure = nil }
+    private var phase = Phase.tracking(departure: nil)
+
+    mutating func beginLoading(now: TimeInterval) { phase = .loading(until: now + 2) }
+
+    mutating func didPresent() {
+        if case .loading = phase { reset() }
+    }
+
+    mutating func update(inTrigger: Bool, inMap: Bool, pressed: Bool, now: TimeInterval) -> Bool {
+        if case .loading(let deadline) = phase {
+            if now < deadline { return false }
+            reset()
+        }
+        if inTrigger || inMap || pressed { reset(); return false }
+        guard case .tracking(let departure) = phase else { return false }
+        guard let departure else {
+            phase = .tracking(departure: now)
+            return false
+        }
+        return now - departure >= 0.3
+    }
+    mutating func reset() { phase = .tracking(departure: nil) }
 }
 
 @MainActor
@@ -52,7 +71,8 @@ final class MissionControlActions {
         var reading: () async -> MissionControlReading
         var validateWindow: () async -> Bool
         var pressDesktop: () async -> DesktopPress
-        var toggle: () async -> Bool
+        var ensureVisible: () async -> MissionControlSystemLauncher.Result
+        var ensureHidden: () async -> MissionControlSystemLauncher.Result
         var focusWindow: () async -> Bool
         var pause: () async -> Void = { try? await Task.sleep(for: .milliseconds(50)) }
     }
@@ -81,12 +101,12 @@ final class MissionControlActions {
         guard current(), initial != .unavailable else { return false }
         var opened = false
         var succeeded = false
-        let active = await env.catalog()?.activeIDs.contains(selection.desktopID) == true
-        guard current() else { return false }
+        guard let initialCatalog = await env.catalog(), current() else { return false }
+        let active = initialCatalog.activeIDs.contains(selection.desktopID)
         if active {
             if initial == .hidden {
                 succeeded = true
-            } else if await env.toggle() {
+            } else if (await env.ensureHidden()).succeeded {
                 succeeded = await wait {
                     guard let catalog = await env.catalog(), catalog.activeIDs.contains(selection.desktopID) else { return false }
                     return await env.reading() == .hidden
@@ -94,9 +114,11 @@ final class MissionControlActions {
             }
         } else {
             if initial == .hidden {
-                opened = await env.toggle()
+                let transition = await env.ensureVisible()
+                opened = transition == .changed
+                guard transition.succeeded, current() else { return false }
             }
-            if (initial == .visible || opened), await wait({ await env.reading() == .visible }), await valid() {
+            if await wait({ await env.reading() == .visible }), await valid() {
                 // Resolve the target's current native control only after MC opens.
                 var press = DesktopPress.notReady
                 _ = await wait {
@@ -119,12 +141,17 @@ final class MissionControlActions {
                await env.catalog()?.activeIDs.contains(selection.desktopID) == true { return true }
         }
         // On failure, only clean up a Mission Control session we opened ourselves.
-        // Native cleanup is allowed after cancellation, but never after permission loss.
-        if opened, env.isCurrent(), await env.reading() == .visible { _ = await env.toggle() }
+        // Do not dismiss UI after cancellation or after the user changed desktops.
+        if opened, current(), let catalog = await env.catalog(),
+           catalog.activeIDs == initialCatalog.activeIDs, catalog.desktops == initialCatalog.desktops,
+           await env.reading() == .visible, current() {
+            _ = await env.ensureHidden()
+        }
         return false
     }
 
     private let native = MissionControlNativeActions()
+    private let launcher = MissionControlSystemLauncher()
     private var task: Task<Void, Never>?
     var isPending: Bool { task != nil }
     private var cancellation: SidebarPendingAction?
@@ -144,6 +171,9 @@ final class MissionControlActions {
         cancellation = token
         let requirement = selection.windowID.flatMap { snapshot.focusRequirements[$0] }
         let window = snapshot.windows.first { $0.id == selection.windowID }
+        let transition = MissionControlSystemLauncher.Environment(
+            reading: { [native] in await native.read { MissionControlAXProbe.reading(deadline: native.deadline) } },
+            isCurrent: { !token.isCancelled && isCurrent() && AXIsProcessTrusted() })
         let env = Environment(isCurrent: isCurrent,
             catalog: { [native] in await native.read { native.spaces.readCatalog() } },
             reading: { [native] in await native.read { MissionControlAXProbe.reading(deadline: native.deadline) } },
@@ -171,7 +201,8 @@ final class MissionControlActions {
                     return AXUIElementPerformAction(buttons[index], kAXPressAction as CFString) == .success ? .submitted : .rejected
                 }
             },
-            toggle: { [native] in await native.read { AXIsProcessTrusted() && MissionControlAXProbe.toggle() } },
+            ensureVisible: { [launcher] in await launcher.ensureVisible(environment: transition) },
+            ensureHidden: { [launcher] in await launcher.ensureHidden(environment: transition) },
             focusWindow: { [weak self] in
                 guard let self, let id = selection.windowID, let requirement, !token.isCancelled,
                       let app = NSRunningApplication(processIdentifier: id.pid), !app.isTerminated else { return false }
@@ -181,6 +212,17 @@ final class MissionControlActions {
                 defer { self.focusToken = nil }
                 guard await self.native.read({
                     self.native.validate(selection, window: window, requirement: requirement, screens: snapshot.screens, token: token)
+                }), !token.isCancelled, isCurrent() else { return false }
+                if app.isHidden {
+                    guard app.unhide(), !token.isCancelled, isCurrent() else { return false }
+                }
+                guard await self.native.read({
+                    guard self.native.validate(selection, window: window, requirement: requirement,
+                                              screens: snapshot.screens, token: token) else { return false }
+                    let minimized: Bool? = requirement.element.getAttributeValue(.minimized)
+                    guard let minimized else { return false }
+                    return !minimized || AXUIElementSetAttributeValue(requirement.element,
+                        kAXMinimizedAttribute as CFString, kCFBooleanFalse) == .success
                 }), !token.isCancelled, isCurrent() else { return false }
                 let activated = await withCheckedContinuation { continuation in
                     let waiter = WindowForegroundActivationWaiter(targetPID: id.pid,
@@ -194,8 +236,12 @@ final class MissionControlActions {
                 guard activated else { return false }
                 let expiresAt = ProcessInfo.processInfo.systemUptime + 0.8
                 let raised = await self.native.read {
-                    guard self.native.validate(selection, window: window, requirement: requirement, screens: snapshot.screens, token: token),
-                          SidebarFocusActivation.raise(requirement.element, id: id, token: focus,
+                    guard !token.isCancelled,
+                          self.native.validate(selection, window: window, requirement: requirement,
+                                               screens: snapshot.screens, token: token),
+                          focus.canFinishFocus(on: id.pid),
+                          NSWorkspace.shared.frontmostApplication?.processIdentifier == id.pid else { return false }
+                    guard SidebarFocusActivation.raise(requirement.element, id: id, token: focus,
                                                        expiresAt: expiresAt) else { return false }
                     return true
                 }
@@ -249,16 +295,16 @@ private final class MissionControlNativeActions {
         guard !token.isCancelled, AXIsProcessTrusted(), let id = selection.windowID, let window, let requirement,
               let launchDate = requirement.launchDate,
               let app = NSRunningApplication(processIdentifier: id.pid), app.activationPolicy == .regular,
-              !app.isTerminated, !app.isHidden, app.launchDate == launchDate,
+              !app.isTerminated, app.launchDate == launchDate,
               id.pid != ProcessInfo.processInfo.processIdentifier else { return false }
         let element = requirement.element
         AXUIElementSetMessagingTimeout(element, 0.04)
         var pid: pid_t = 0
         let minimized: Bool? = element.getAttributeValue(.minimized)
         guard AXUIElementGetPid(element, &pid) == .success, pid == id.pid,
-              element.getWindowID() == id.windowID, minimized == false,
+              element.getWindowID() == id.windowID, minimized != nil,
               SidebarWindowPolicy.isTopLevelWindow(role: element.getAttributeValue(.role), subrole: element.getAttributeValue(.subrole)),
-              let bounds = element.getWindowFrame(), bounds == window.bounds,
+              let bounds = element.getWindowFrame(), MissionControlSnapshot.validBounds(bounds),
               let catalog = spaces.readCatalog(),
               let membership = spaces.read(windowIDs: [id.windowID], catalog: catalog.desktops)[id.windowID],
               Set(membership.map(\.id)) == window.desktopIDs,

@@ -320,9 +320,69 @@ struct MissionControlTests {
         let failed = state.receive(nil, generation: state.generation)
         #expect(!failed && state.snapshot?.windows == initial.windows)
         let oldGeneration = state.generation
-        state.reset()
+        state.invalidateRequests()
+        state.clearCache()
         let late = state.receive(initial, generation: oldGeneration)
         #expect(!late && state.snapshot == nil)
+    }
+
+    @Test func snapshotCanBeKeptForImmediatePreviewWhileInvalidatingInFlightReads() {
+        var state = MissionControlSnapshotState()
+        let cached = snapshot([record()])
+        let oldGeneration = state.generation
+        let accepted = state.receive(cached, generation: oldGeneration)
+        #expect(accepted)
+        state.invalidateRequests()
+        #expect(state.snapshot?.windows == cached.windows)
+        let staleReadAccepted = state.receive(nil, generation: oldGeneration)
+        #expect(!staleReadAccepted)
+        #expect(state.snapshot?.windows == cached.windows)
+        state.clearCache()
+        #expect(state.snapshot == nil)
+    }
+
+    @Test func snapshotExpiresWithoutFailedReadsOrRequestInvalidationRenewingIt() {
+        var item = record()
+        item.verifiedAt = 10
+        let data = snapshot([item])
+        var state = MissionControlSnapshotState()
+        let generation = state.generation
+        let accepted = state.receive(data, generation: generation, now: 10)
+        #expect(accepted && state.freshSnapshot(at: 11.99)?.windows.count == 1)
+        state.invalidateRequests()
+        let late = state.receive(data, generation: generation, now: 11)
+        let failed = state.receive(nil, generation: state.generation, now: 11.5)
+        #expect(!late && !failed)
+        #expect(state.freshSnapshot(at: 12) == nil)
+        #expect(state.freshSnapshot(at: 9) == nil)
+        let published = state.receive(data, generation: state.generation, now: 12)
+        #expect(published && state.freshSnapshot(at: 12)?.windows.count == 1)
+        state.clearCache()
+        #expect(state.snapshot == nil && state.receivedAt == nil)
+    }
+
+    @Test func partialWindowReadsDoNotRefreshOldFields() {
+        var item = record()
+        item.verifiedAt = 10
+        let originalBounds = item.bounds
+        let requirement = SidebarFocusRequirement(element: AXUIElementCreateApplication(100), launchDate: nil)
+        item.verify(bounds: CGRect(x: 300, y: 300, width: 600, height: 400), desktopIDs: [2],
+                    minimized: nil, requirement: requirement, now: 11)
+        #expect(item.verifiedAt == 10 && item.bounds == originalBounds)
+        #expect(snapshot([item]).removingExpiredWindows(at: 12).windows.isEmpty)
+        item.verify(bounds: originalBounds, desktopIDs: [2], minimized: false, requirement: requirement, now: 12)
+        #expect(item.verifiedAt == 12 && item.desktopIDs == [2])
+        #expect(snapshot([item]).removingExpiredWindows(at: 13).windows.count == 1)
+    }
+
+    @Test func openingAnimationPreferenceAlsoHonoursReduceMotion() throws {
+        let suite = "MissionControlAnimation-\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        #expect(MissionControlPresentationSettings.animatesOpening(reduceMotion: false, defaults: defaults))
+        #expect(!MissionControlPresentationSettings.animatesOpening(reduceMotion: true, defaults: defaults))
+        defaults.set(true, forKey: MissionControlPresentationSettings.skipOpeningAnimationKey)
+        #expect(!MissionControlPresentationSettings.animatesOpening(reduceMotion: false, defaults: defaults))
     }
 
     @Test @MainActor func realMapViewBindsOneAppImagePerWindowWithoutTooltips() throws {
@@ -334,9 +394,9 @@ struct MissionControlTests {
             screenSize: primary.bounds.size))
         let view = MissionControlView(frame: CGRect(origin: .zero, size: layout.size))
         view.configure(layout: layout, applications: data.applications, side: .right)
-        let images = view.subviews.flatMap(\.subviews).compactMap { $0 as? NSImageView }
-        #expect(view.subviews.count == 3 && images.count == 2)
-        #expect(images.allSatisfy { $0.image === image && $0.toolTip == nil })
+        let buttons = view.subviews.flatMap(\.subviews).compactMap { $0 as? NSButton }
+        #expect(view.subviews.count == 3 && buttons.count == 2)
+        #expect(buttons.allSatisfy { $0.image === image && $0.toolTip == nil })
     }
 
     @Test func ordinaryDesktopMapStacksVerticallyAndFitsTheSideArea() throws {
@@ -358,22 +418,32 @@ extension MissionControlTests {
     @Test func hoverReleaseDepartureAndReentryUseThreeHundredMilliseconds() {
         var lifetime = MissionControlHoverLifetime()
         // Modifier release has no bearing on ownership: trigger/map pointer state does.
-        #expect(!lifetime.update(inTrigger: true, inMap: false, pressed: false, now: 0))
-        #expect(!lifetime.update(inTrigger: false, inMap: false, pressed: false, now: 1))
-        #expect(!lifetime.update(inTrigger: false, inMap: true, pressed: false, now: 1.29))
-        #expect(!lifetime.update(inTrigger: false, inMap: true, pressed: false, now: 3))
-        #expect(!lifetime.update(inTrigger: false, inMap: false, pressed: true, now: 4))
-        #expect(!lifetime.update(inTrigger: false, inMap: false, pressed: false, now: 5))
-        #expect(!lifetime.update(inTrigger: false, inMap: false, pressed: false, now: 5.29))
-        #expect(lifetime.update(inTrigger: false, inMap: false, pressed: false, now: 5.31))
+        let onTrigger = lifetime.update(inTrigger: true, inMap: false, pressed: false, now: 0)
+        #expect(!onTrigger)
+        let crossingGap = lifetime.update(inTrigger: false, inMap: false, pressed: false, now: 1)
+        #expect(!crossingGap)
+        let enteredMap = lifetime.update(inTrigger: false, inMap: true, pressed: false, now: 1.29)
+        #expect(!enteredMap)
+        let insideMap = lifetime.update(inTrigger: false, inMap: true, pressed: false, now: 3)
+        #expect(!insideMap)
+        let duringPress = lifetime.update(inTrigger: false, inMap: false, pressed: true, now: 4)
+        #expect(!duringPress)
+        let departed = lifetime.update(inTrigger: false, inMap: false, pressed: false, now: 5)
+        #expect(!departed)
+        let beforeDeadline = lifetime.update(inTrigger: false, inMap: false, pressed: false, now: 5.29)
+        #expect(!beforeDeadline)
+        let afterDeadline = lifetime.update(inTrigger: false, inMap: false, pressed: false, now: 5.31)
+        #expect(afterDeadline)
     }
 
     @Test func pendingSelectionFreezesLayoutAndRejectsRepeatedClicks() {
         var state = MissionControlSelectionState()
         state.press(true)
         #expect(state.pressed)
-        #expect(state.begin())
-        #expect(!state.begin())
+        let firstSelection = state.begin()
+        #expect(firstSelection)
+        let repeatedSelection = state.begin()
+        #expect(!repeatedSelection)
         state.observeMissionControl(false)
         #expect(state.suppressMissionControl)
         state.finish()
@@ -394,7 +464,8 @@ extension MissionControlTests {
         #expect(state.suppressMissionControl)
         state.observeMissionControl(false)
         #expect(!state.suppressMissionControl)
-        #expect(state.begin())
+        let selectionAfterDismissal = state.begin()
+        #expect(selectionAfterDismissal)
         state.reset() // Permission loss, shutdown, or screen change.
         #expect(!state.pending && !state.pressed && !state.suppressMissionControl)
     }
@@ -446,9 +517,15 @@ extension MissionControlTests {
     }
 
     @Test @MainActor func iconTileAndOuterPaddingHaveSeparateActions() throws {
+        _ = NSApplication.shared
         let result = snapshot([record()])
         let layout = try #require(MissionControlLayout.make(snapshot: result, screenID: "primary", screenSize: primary.bounds.size))
+        let panel = NSPanel(contentRect: CGRect(origin: .zero, size: layout.size),
+                            styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+        panel.isReleasedWhenClosed = false
+        defer { panel.close() }
         let view = MissionControlView(frame: CGRect(origin: .zero, size: layout.size))
+        panel.contentView = view
         var selections: [(UInt64, SidebarWindowID?)] = []
         view.onSelection = { selections.append(($0, $1)) }
         view.configure(layout: layout, applications: result.applications, side: .right,
@@ -456,15 +533,41 @@ extension MissionControlTests {
         let tile = try #require(layout.tiles.first)
         let icon = try #require(tile.icons.first)
         let point = CGPoint(x: tile.frame.minX + icon.frame.midX, y: tile.frame.minY + icon.frame.midY)
-        let iconButton = try #require(view.hitTest(point) as? NSButton)
+        let iconButton = try #require(view.hitTest(view.convert(point, to: view.superview)) as? NSButton)
+        let desktopButton = try #require(iconButton.superview as? NSButton)
+        #expect(desktopButton.frame == tile.frame && iconButton.frame == icon.frame)
+        #expect(desktopButton.hitTest(CGPoint(x: tile.frame.minX + icon.frame.midX,
+                                             y: tile.frame.minY + icon.frame.midY)) === iconButton)
         iconButton.performClick(nil)
         #expect(selections.count == 1 && selections[0].0 == tile.desktop.id && selections[0].1 == icon.windowID)
-        let tileButton = try #require(view.hitTest(CGPoint(x: tile.frame.minX + 1, y: tile.frame.minY + 1)) as? NSButton)
+        let backgroundPoint = CGPoint(x: tile.frame.minX + 1, y: tile.frame.minY + 1)
+        let tileButton = try #require(view.hitTest(view.convert(backgroundPoint, to: view.superview)) as? NSButton)
         #expect(tileButton !== iconButton)
+        #expect(tileButton === desktopButton)
+        #expect(tileButton.isEnabled && tileButton.target === tileButton)
+        let action = try #require(tileButton.action)
+        #expect(tileButton.responds(to: action))
         tileButton.performClick(nil)
         #expect(selections.count == 2 && selections[1].0 == tile.desktop.id && selections[1].1 == nil)
-        #expect(view.hitTest(CGPoint(x: 1, y: 1)) === view)
+        #expect(view.hitTest(view.convert(CGPoint(x: 1, y: 1), to: view.superview)) === view)
         #expect(iconButton.title.isEmpty && tileButton.title.isEmpty && !iconButton.isBordered && !tileButton.isBordered)
+
+        func mouseClick(_ button: NSButton, from start: CGPoint, to end: CGPoint) throws {
+            let down = try #require(NSEvent.mouseEvent(with: .leftMouseDown,
+                location: view.convert(start, to: nil), modifierFlags: [], timestamp: 1,
+                windowNumber: panel.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 1))
+            let up = try #require(NSEvent.mouseEvent(with: .leftMouseUp,
+                location: view.convert(end, to: nil), modifierFlags: [], timestamp: 1.1,
+                windowNumber: panel.windowNumber, context: nil, eventNumber: 2, clickCount: 1, pressure: 0))
+            NSApplication.shared.postEvent(up, atStart: true)
+            button.mouseDown(with: down)
+        }
+        try mouseClick(tileButton, from: backgroundPoint, to: backgroundPoint)
+        #expect(selections.count == 3 && selections.last?.0 == tile.desktop.id && selections.last?.1 == nil)
+        try mouseClick(iconButton, from: point, to: point)
+        #expect(selections.count == 4 && selections.last?.1 == icon.windowID)
+        try mouseClick(tileButton, from: backgroundPoint, to: point)
+        #expect(selections.count == 4)
     }
 
     @Test @MainActor func releasingOutsidePressedButtonDoesNotSelect() throws {
@@ -484,7 +587,8 @@ extension MissionControlTests {
         view.configure(layout: layout, applications: result.applications, side: .right,
                        selectableWindows: Set(result.windows.map(\.id)))
         let tile = try #require(layout.tiles.first)
-        let button = try #require(view.hitTest(CGPoint(x: tile.frame.minX + 1, y: tile.frame.minY + 1)) as? NSButton)
+        let backgroundPoint = CGPoint(x: tile.frame.minX + 1, y: tile.frame.minY + 1)
+        let button = try #require(view.hitTest(view.convert(backgroundPoint, to: view.superview)) as? NSButton)
         let down = try #require(NSEvent.mouseEvent(with: .leftMouseDown,
             location: view.convert(CGPoint(x: tile.frame.minX + 1, y: tile.frame.minY + 1), to: nil),
             modifierFlags: [], timestamp: 0, windowNumber: panel.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 1))
@@ -521,10 +625,16 @@ private final class MapActionFixture {
                   self.onPress?()
                   if self.press == .submitted && self.confirmsSwitch { self.active = [2]; self.mode = .hidden }
                   return self.press
-              }, toggle: {
-                  self.events.append("toggle")
-                  self.mode = self.mode == .hidden ? .visible : .hidden
-                  return true
+              }, ensureVisible: {
+                  if self.mode == .visible { return .alreadySatisfied }
+                  self.events.append("open")
+                  self.mode = .visible
+                  return .changed
+              }, ensureHidden: {
+                  if self.mode == .hidden { return .alreadySatisfied }
+                  self.events.append("close")
+                  self.mode = .hidden
+                  return .changed
               }, focusWindow: { self.events.append("focus"); return self.confirmsFocus },
               pause: { self.onPause?() })
     }
@@ -537,7 +647,7 @@ extension MissionControlTests {
             fixture.mode = mode
             let success = await MissionControlActions.perform(fixture.selection, environment: fixture.environment)
             #expect(success)
-            #expect(fixture.events == (mode == .hidden ? ["toggle", "press", "focus"] : ["press", "focus"]))
+            #expect(fixture.events == (mode == .hidden ? ["open", "press", "focus"] : ["press", "focus"]))
         }
     }
 
@@ -547,7 +657,7 @@ extension MissionControlTests {
         desktop.windowID = nil
         fixture.windowValid = false
         #expect(await MissionControlActions.perform(desktop, environment: fixture.environment))
-        #expect(fixture.events == ["toggle", "press"])
+        #expect(fixture.events == ["open", "press"])
         fixture.events = []
         #expect(await MissionControlActions.perform(desktop, environment: fixture.environment))
         #expect(fixture.events.isEmpty)
@@ -570,7 +680,7 @@ extension MissionControlTests {
             fixture.mode = mode
             fixture.press = .rejected
             #expect(!(await MissionControlActions.perform(fixture.selection, environment: fixture.environment)))
-            #expect(fixture.events == (mode == .hidden ? ["toggle", "press", "toggle"] : ["press"]))
+            #expect(fixture.events == (mode == .hidden ? ["open", "press", "close"] : ["press"]))
             #expect(fixture.mode == mode)
         }
     }
@@ -579,7 +689,7 @@ extension MissionControlTests {
         let fixture = MapActionFixture()
         fixture.confirmsSwitch = false
         #expect(!(await MissionControlActions.perform(fixture.selection, environment: fixture.environment)))
-        #expect(fixture.events == ["toggle", "press", "toggle"])
+        #expect(fixture.events == ["open", "press", "close"])
     }
 
     @Test @MainActor func staleWindowAfterDesktopSwitchAndUnconfirmedFocusFailQuietly() async {
@@ -598,11 +708,28 @@ extension MissionControlTests {
         fixture.onPause = { fixture.current = false }
         #expect(!(await MissionControlActions.perform(fixture.selection, environment: fixture.environment)))
         #expect(!fixture.events.contains("focus"))
-        #expect(fixture.events.filter { $0 == "toggle" }.count == 1)
+        #expect(fixture.events.filter { $0 == "open" }.count == 1)
     }
 }
 
 extension MissionControlTests {
+    @Test func coldHoverPreviewWaitsForFirstPanelButDoesNotStayOpenForever() {
+        var lifetime = MissionControlHoverLifetime()
+        lifetime.beginLoading(now: 0)
+        let loading = lifetime.update(inTrigger: false, inMap: false, pressed: false, now: 0.5)
+        #expect(!loading)
+        lifetime.didPresent()
+        let inside = lifetime.update(inTrigger: false, inMap: true, pressed: false, now: 0.6)
+        let departed = lifetime.update(inTrigger: false, inMap: false, pressed: false, now: 1)
+        let dismissed = lifetime.update(inTrigger: false, inMap: false, pressed: false, now: 1.31)
+        #expect(!inside && !departed && dismissed)
+
+        lifetime.beginLoading(now: 2)
+        let stalled = lifetime.update(inTrigger: false, inMap: false, pressed: false, now: 4)
+        let timeout = lifetime.update(inTrigger: false, inMap: false, pressed: false, now: 4.31)
+        #expect(!stalled && timeout)
+    }
+
     @Test @MainActor func currentDesktopInMissionControlExitsWithoutFocusingAWindow() async {
         let fixture = MapActionFixture()
         fixture.mode = .visible
@@ -610,15 +737,119 @@ extension MissionControlTests {
         var desktop = fixture.selection
         desktop.windowID = nil
         #expect(await MissionControlActions.perform(desktop, environment: fixture.environment))
-        #expect(fixture.events == ["toggle"])
+        #expect(fixture.events == ["close"])
     }
 
-    @Test @MainActor func escapeCancellationCleansUpOwnedMissionControlWithoutFocus() async {
+    @Test @MainActor func escapeCancellationDoesNotSubmitAnotherSystemTransition() async {
         let fixture = MapActionFixture()
         fixture.press = .notReady
         let task = Task { await MissionControlActions.perform(fixture.selection, environment: fixture.environment) }
         fixture.onPause = { task.cancel() }
         #expect(!(await task.value))
-        #expect(fixture.events == ["toggle", "press", "toggle"])
+        #expect(fixture.events == ["open", "press"])
+    }
+
+    @Test @MainActor func failedSelectionDoesNotCloseAfterDesktopContextChanges() async {
+        let fixture = MapActionFixture()
+        fixture.press = .rejected
+        fixture.onPress = { fixture.active = [2] }
+        #expect(!(await MissionControlActions.perform(fixture.selection, environment: fixture.environment)))
+        #expect(fixture.events == ["open", "press"])
+    }
+}
+
+@MainActor
+private final class MapLauncherFixture {
+    var mode = MissionControlReading.hidden
+    var current = true
+    var time: TimeInterval = 0
+    var requests = 0
+    var acceptsLaunch = true
+    var completesLaunch = true
+    var launchSucceeds = true
+    var changesState = true
+    var callback: (@MainActor (Bool) -> Void)?
+    var onPause: (() -> Void)?
+
+    var environment: MissionControlSystemLauncher.Environment {
+        .init(reading: { self.mode }, isCurrent: { self.current }, requestLaunch: { callback in
+            self.requests += 1
+            self.callback = callback
+            guard self.acceptsLaunch else { return false }
+            if self.changesState { self.mode = self.mode == .hidden ? .visible : .hidden }
+            if self.completesLaunch { callback(self.launchSucceeds) }
+            return true
+        }, now: { self.time }, pause: {
+            self.time += 0.1
+            self.onPause?()
+        })
+    }
+}
+
+extension MissionControlTests {
+    @Test @MainActor func launcherObservesStateAndSendsOneRequestPerTransition() async {
+        let fixture = MapLauncherFixture()
+        let launcher = MissionControlSystemLauncher()
+        #expect(await launcher.ensureHidden(environment: fixture.environment) == .alreadySatisfied)
+        #expect(fixture.requests == 0)
+        #expect(await launcher.ensureVisible(environment: fixture.environment) == .changed)
+        #expect(fixture.requests == 1)
+        #expect(await launcher.ensureVisible(environment: fixture.environment) == .alreadySatisfied)
+        #expect(fixture.requests == 1)
+        #expect(await launcher.ensureHidden(environment: fixture.environment) == .changed)
+        #expect(fixture.requests == 2 && !launcher.automaticLaunchesDisabled)
+    }
+
+    @Test @MainActor func launchCallbackIsNotProofOfMissionControlVisibility() async {
+        let fixture = MapLauncherFixture()
+        fixture.changesState = false
+        let launcher = MissionControlSystemLauncher()
+        #expect(await launcher.ensureVisible(environment: fixture.environment) == .timedOut)
+        #expect(fixture.time >= 2 && fixture.requests == 1)
+        #expect(await launcher.ensureVisible(environment: fixture.environment) == .disabled)
+        #expect(fixture.requests == 1)
+        #expect(await launcher.ensureHidden(environment: fixture.environment) == .alreadySatisfied)
+    }
+
+    @Test @MainActor func unavailableStateAndLaunchFailuresDoNotRetry() async {
+        let unavailable = MapLauncherFixture()
+        unavailable.mode = .unavailable
+        #expect(await MissionControlSystemLauncher().ensureVisible(environment: unavailable.environment) == .unavailable)
+        #expect(unavailable.requests == 0)
+        for rejectedRequest in [true, false] {
+            let fixture = MapLauncherFixture()
+            fixture.acceptsLaunch = !rejectedRequest
+            fixture.launchSucceeds = false
+            fixture.changesState = false
+            let launcher = MissionControlSystemLauncher()
+            #expect(await launcher.ensureVisible(environment: fixture.environment) == .launchFailed)
+            #expect(launcher.automaticLaunchesDisabled)
+            #expect(await launcher.ensureVisible(environment: fixture.environment) == .disabled)
+            #expect(fixture.requests == 1)
+        }
+    }
+
+    @Test @MainActor func lateLaunchCallbackCannotResumeTimedOutSelection() async {
+        let fixture = MapLauncherFixture()
+        fixture.completesLaunch = false
+        let launcher = MissionControlSystemLauncher()
+        #expect(await launcher.ensureVisible(environment: fixture.environment) == .timedOut)
+        fixture.callback?(true)
+        #expect(launcher.automaticLaunchesDisabled && fixture.requests == 1)
+        #expect(await launcher.ensureHidden(environment: fixture.environment) == .disabled)
+        #expect(fixture.requests == 1)
+    }
+
+    @Test @MainActor func cancelledLaunchIgnoresLateCompletionAndDisablesFurtherLaunches() async {
+        let fixture = MapLauncherFixture()
+        fixture.completesLaunch = false
+        fixture.changesState = false
+        fixture.onPause = { fixture.current = false }
+        let launcher = MissionControlSystemLauncher()
+        #expect(await launcher.ensureVisible(environment: fixture.environment) == .cancelled)
+        fixture.current = true
+        fixture.callback?(true)
+        #expect(await launcher.ensureVisible(environment: fixture.environment) == .disabled)
+        #expect(fixture.requests == 1)
     }
 }

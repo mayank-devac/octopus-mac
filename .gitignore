@@ -56,3 +56,4 @@ scripts/beta-release.py
 *.log
 .vscode/
 .idea/
+plans

@@ -1,6 +1,5 @@
 import AppKit
 import ApplicationServices
-import Darwin
 
 enum MissionControlReading: Equatable {
     case hidden, visible, unavailable
@@ -166,15 +165,6 @@ enum MissionControlAXProbe {
             if next == .unavailable { result = .unavailable }
         }
         return result
-    }
-
-    // Same notification used by hs.spaces; resolve at runtime and fail closed.
-    static func toggle() -> Bool {
-        typealias Notify = @convention(c) (CFString, Int32) -> Int32
-        guard let handle = dlopen("/System/Library/Frameworks/ApplicationServices.framework/Frameworks/HIServices.framework/HIServices", RTLD_LAZY) else { return false }
-        defer { dlclose(handle) }
-        guard let symbol = dlsym(handle, "CoreDockSendNotification") else { return false }
-        return unsafeBitCast(symbol, to: Notify.self)("com.apple.expose.awake" as CFString, 0) == 0
     }
 
     // Require one exact display and one complete Spaces list. Never infer a monitor

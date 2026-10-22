@@ -19,6 +19,16 @@ struct SidebarEntryID: Hashable {
 // Resolve private symbols at runtime: a missing API disables Space metadata rather
 // than preventing octopus from launching. Signatures follow Hammerspoon's hs.spaces.
 final class SidebarSpaceReader {
+    struct WindowMembershipResult {
+        enum State {
+            case verified([SidebarDesktop])
+            case failed
+            case notRead
+        }
+
+        let state: State
+    }
+
     struct Catalog {
         let desktops: [SidebarDesktop]
         let activeIDs: Set<UInt64>
@@ -98,17 +108,56 @@ final class SidebarSpaceReader {
     }
 
     func read(windowIDs: Set<CGWindowID>, catalog: [SidebarDesktop]? = nil) -> [CGWindowID: [SidebarDesktop]] {
-        guard let connection, let windowSpaces else { return [:] }
-        let desktops = catalog ?? allDesktops()
-        let byID = Dictionary(uniqueKeysWithValues: desktops.map { ($0.id, $0) })
+        let desktops: [SidebarDesktop]
+        if let catalog {
+            desktops = catalog
+        } else {
+            guard let discovered = readCatalog()?.desktops else { return [:] }
+            desktops = discovered
+        }
         var result: [CGWindowID: [SidebarDesktop]] = [:]
         for windowID in windowIDs {
-            let windows = [NSNumber(value: windowID)] as CFArray
-            guard let ids = windowSpaces(connection(), 7, windows)?.takeRetainedValue() as? [NSNumber] else { continue }
-            let membership = Set(ids.map(\.uint64Value))
-            result[windowID] = membership.compactMap { byID[$0] }.sorted { $0.order < $1.order }
+            if case .verified(let membership) = readResult(windowID: windowID, desktops: desktops,
+                                                          deadline: nil).state {
+                result[windowID] = membership
+            }
         }
         return result
+    }
+
+    // Space membership is a per-window private API call. Keep this operation
+    // bounded when it is part of a larger snapshot read. A missing result is
+    // failure, not an empty membership, so callers can retain verified state.
+    func readResult(windowID: CGWindowID, catalog: [SidebarDesktop]? = nil,
+                   deadline: TimeInterval? = nil) -> WindowMembershipResult {
+        let desktops: [SidebarDesktop]
+        if let catalog {
+            desktops = catalog
+        } else {
+            guard let discovered = readCatalog()?.desktops else {
+                return WindowMembershipResult(state: .failed)
+            }
+            desktops = discovered
+        }
+        return readResult(windowID: windowID, desktops: desktops, deadline: deadline)
+    }
+
+    private func readResult(windowID: CGWindowID, desktops: [SidebarDesktop],
+                            deadline: TimeInterval?) -> WindowMembershipResult {
+        guard let connection, let windowSpaces else {
+            return WindowMembershipResult(state: .failed)
+        }
+        let byID = Dictionary(uniqueKeysWithValues: desktops.map { ($0.id, $0) })
+        guard deadline.map({ ProcessInfo.processInfo.systemUptime < $0 }) ?? true else {
+            return WindowMembershipResult(state: .notRead)
+        }
+        let windows = [NSNumber(value: windowID)] as CFArray
+        guard let ids = windowSpaces(connection(), 7, windows)?.takeRetainedValue() as? [NSNumber] else {
+            return WindowMembershipResult(state: .failed)
+        }
+        let membership = Set(ids.map(\.uint64Value))
+        return WindowMembershipResult(state: .verified(
+            membership.compactMap { byID[$0] }.sorted { $0.order < $1.order }))
     }
 
     // A window assigned to every desktop of a display (Finder, or any app set to

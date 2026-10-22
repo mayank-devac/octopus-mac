@@ -20,6 +20,7 @@ struct PreferencesShortcutsView: View {
     @State private var showingResetConfirmation = false
     @AppStorage(SidebarNumberShortcuts.modifiersKey) private var sidebarNumberModifierMask = Int(SidebarNumberShortcuts.defaultModifiers.rawValue)
     @AppStorage(MissionControlHoverShortcut.modifiersKey) private var desktopMapModifierMask = Int(MissionControlHoverShortcut.defaultModifiers.rawValue)
+    @AppStorage(MissionControlPresentationSettings.skipOpeningAnimationKey) private var skipDesktopMapOpeningAnimation = false
     @StateObject private var mouseShortcuts = MouseShortcutStore.shared
     @State private var recordingMouseAction: MouseShortcutAction?
     @State private var mouseShortcutError: String?
@@ -229,9 +230,12 @@ struct PreferencesShortcutsView: View {
                         desktopMapModifier(.shift, name: "Shift")
                         desktopMapModifier(.command, name: "Command")
                     }
-                    .help("Hold these keys and move onto the sidebar to preview desktops. Release a selected key to hide the preview. Clear all to disable hover preview.")
+                    .help("Hold these keys and move onto the sidebar to preview desktops. You can release the keys while using the map. Leave the map or press Escape to dismiss it. Clear all to disable hover preview.")
                 }
                 .padding(.vertical, 8)
+
+                Toggle("Skip desktop map opening animation", isOn: $skipDesktopMapOpeningAnimation)
+                    .help("Show the desktop map without its opening animation once fresh window data is ready.")
 
                 if let note = SidebarNumberShortcuts.availabilityNote {
                     Text(note).font(.caption).foregroundStyle(.secondary)
@@ -416,6 +420,7 @@ struct PreferencesShortcutsView: View {
                 modifierManager.resetToDefaults()
                 sidebarNumberModifierMask = Int(SidebarNumberShortcuts.defaultModifiers.rawValue)
                 desktopMapModifierMask = Int(MissionControlHoverShortcut.defaultModifiers.rawValue)
+                skipDesktopMapOpeningAnimation = false
             }
         } message: {
             Text(verbatim: """

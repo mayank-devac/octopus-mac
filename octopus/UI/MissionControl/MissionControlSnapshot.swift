@@ -21,6 +21,19 @@ struct MissionControlWindowRecord {
     var isMinimized: Bool?
     var isStandardWindow = true
     var focusRequirement: SidebarFocusRequirement? = nil
+    var verifiedAt = ProcessInfo.processInfo.systemUptime
+
+    // A partial AX read must not renew the lifetime of old geometry or state.
+    mutating func verify(bounds: CGRect?, desktopIDs: Set<UInt64>?, minimized: Bool?,
+                         requirement: SidebarFocusRequirement, now: TimeInterval) {
+        guard let bounds, MissionControlSnapshot.validBounds(bounds), let desktopIDs,
+              let minimized else { return }
+        self.bounds = bounds
+        self.desktopIDs = desktopIDs
+        self.isMinimized = minimized
+        focusRequirement = requirement
+        verifiedAt = now
+    }
 }
 
 struct MissionControlSnapshot {
@@ -29,6 +42,7 @@ struct MissionControlSnapshot {
         let bounds: CGRect
         let desktopIDs: Set<UInt64>
         let screenID: String
+        let verifiedAt: TimeInterval
     }
 
     let desktops: [SidebarDesktop]
@@ -37,6 +51,13 @@ struct MissionControlSnapshot {
     let windows: [Window]
     let screens: [MissionControlScreen]
     var focusRequirements: [SidebarWindowID: SidebarFocusRequirement] = [:]
+
+    func removingExpiredWindows(at now: TimeInterval) -> Self {
+        let fresh = windows.filter { MissionControlSnapshotState.isFresh(since: $0.verifiedAt, now: now) }
+        let ids = Set(fresh.map(\.id))
+        return Self(desktops: desktops, activeIDs: activeIDs, applications: applications,
+                    windows: fresh, screens: screens, focusRequirements: focusRequirements.filter { ids.contains($0.key) })
+    }
 
     func desktops(on screenID: String) -> [SidebarDesktop] {
         desktops.filter { $0.displayIdentifier == screenID || $0.displayIdentifier == "Main" }
@@ -66,7 +87,8 @@ struct MissionControlSnapshot {
                   let screenBounds = displayFrames[displayID], screenBounds.intersects(bounds),
                   members.contains(where: { $0.displayIdentifier == displayID || $0.displayIdentifier == "Main" }),
                   seen.insert(record.id).inserted else { return nil }
-            return Window(id: record.id, bounds: bounds, desktopIDs: Set(members.map(\.id)), screenID: displayID)
+            return Window(id: record.id, bounds: bounds, desktopIDs: Set(members.map(\.id)),
+                          screenID: displayID, verifiedAt: record.verifiedAt)
         }.sorted { ($0.id.pid, $0.id.windowID) < ($1.id.pid, $1.id.windowID) }
         return Self(desktops: catalog.desktops, activeIDs: catalog.activeIDs, applications: apps,
                     windows: windows, screens: screens, focusRequirements: Dictionary(records.compactMap { record in
@@ -77,17 +99,35 @@ struct MissionControlSnapshot {
 }
 
 struct MissionControlSnapshotState {
+    static let maximumAge: TimeInterval = 2
     private(set) var snapshot: MissionControlSnapshot?
+    private(set) var receivedAt: TimeInterval?
     private(set) var generation = 0
 
-    mutating func reset() {
-        generation += 1
-        snapshot = nil
+    static func isFresh(since timestamp: TimeInterval, now: TimeInterval) -> Bool {
+        now >= timestamp && now - timestamp < maximumAge
     }
 
-    mutating func receive(_ snapshot: MissionControlSnapshot?, generation: Int) -> Bool {
+    mutating func invalidateRequests() { generation += 1 }
+
+    mutating func clearCache() {
+        snapshot = nil
+        receivedAt = nil
+    }
+
+    func freshSnapshot(at now: TimeInterval = ProcessInfo.processInfo.systemUptime) -> MissionControlSnapshot? {
+        guard let receivedAt, Self.isFresh(since: receivedAt, now: now) else { return nil }
+        // The cache age applies to the whole snapshot. Individual windows may
+        // be retained across partial active-map scans and are live-validated
+        // before an action, so do not expire them a second time here.
+        return snapshot
+    }
+
+    mutating func receive(_ snapshot: MissionControlSnapshot?, generation: Int,
+                          now: TimeInterval = ProcessInfo.processInfo.systemUptime) -> Bool {
         guard generation == self.generation, let snapshot else { return false }
         self.snapshot = snapshot
+        receivedAt = now
         return true
     }
 }
@@ -95,27 +135,46 @@ struct MissionControlSnapshotState {
 // This reader never reads Mission Control thumbnails. Window frames come from
 // each application's AX windows, which retain their normal desktop coordinates.
 final class MissionControlSnapshotReader {
+    private struct Topology: Equatable {
+        let screens: [MissionControlScreen]
+        let desktops: [SidebarDesktop]
+    }
+
     let queue = DispatchQueue(label: "com.octopus.mission-control.snapshot", qos: .utility)
     private let spaces = SidebarSpaceReader()
     private let discovery = SidebarWindowDiscovery()
     private var records: [SidebarWindowID: MissionControlWindowRecord] = [:]
     private var applicationCursor = 0
     private var windowCursors: [pid_t: Int] = [:]
+    private var topology: Topology?
 
     func reset(clearDiscovery: Bool = false) {
         dispatchPrecondition(condition: .onQueue(queue))
         records.removeAll()
         windowCursors.removeAll()
         applicationCursor = 0
+        topology = nil
         if clearDiscovery { discovery.reset() }
     }
 
     func read(applications: [MissionControlApplication], screens: [MissionControlScreen],
               seeds: [SidebarWindowID: AXUIElement]) -> MissionControlSnapshot? {
         dispatchPrecondition(condition: .onQueue(queue))
-        guard AXIsProcessTrusted(), let catalog = spaces.readCatalog(), !catalog.desktops.isEmpty,
+        guard AXIsProcessTrusted() else {
+            reset(clearDiscovery: true)
+            return nil
+        }
+        guard let catalog = spaces.readCatalog(), !catalog.desktops.isEmpty,
               let raw = CGWindowListCopyWindowInfo([.optionAll, .excludeDesktopElements], kCGNullWindowID)
                 as? [[String: Any]] else { return nil }
+        let currentTopology = Topology(screens: screens, desktops: catalog.desktops)
+        if topology != currentTopology {
+            records.removeAll()
+            windowCursors.removeAll()
+            applicationCursor = 0
+            discovery.reset()
+            topology = currentTopology
+        }
         let deadline = ProcessInfo.processInfo.systemUptime + 0.6
         var owners: [CGWindowID: pid_t] = [:]
         for info in raw {
@@ -133,10 +192,6 @@ final class MissionControlSnapshotReader {
         }
         windowCursors = windowCursors.filter { pids.contains($0.key) }
         discovery.retainApplications(pids)
-        let membership = spaces.read(windowIDs: Set(owners.keys), catalog: catalog.desktops)
-        for id in Array(records.keys) {
-            if let desktops = membership[id.windowID] { records[id]?.desktopIDs = Set(desktops.map(\.id)) }
-        }
         let firstApplication = applicationCursor
         for offset in 0..<apps.count {
             guard AXIsProcessTrusted(), ProcessInfo.processInfo.systemUptime < deadline else { break }
@@ -151,6 +206,8 @@ final class MissionControlSnapshotReader {
             let candidates = Set(owners.filter { $0.value == app.pid }.keys)
             let found = discovery.read(pid: app.pid, current: (current ?? []) + known, candidates: candidates, deadline: deadline)
             var verified = Set<SidebarWindowID>()
+            var validated = Set<SidebarWindowID>()
+            var foundIDs = Set<CGWindowID>()
             var processed = 0
             let cursor = windowCursors[app.pid, default: 0]
             for offset in 0..<found.windows.count {
@@ -159,6 +216,7 @@ final class MissionControlSnapshotReader {
                 AXUIElementSetMessagingTimeout(window, 0.04)
                 processed += 1
                 guard let id = window.getWindowID(), owners[id] == app.pid else { continue }
+                foundIDs.insert(id)
                 let identity = SidebarWindowID(pid: app.pid, windowID: id)
                 guard verified.insert(identity).inserted else { continue }
                 let role: String? = window.getAttributeValue(.role)
@@ -169,20 +227,43 @@ final class MissionControlSnapshotReader {
                     continue
                 }
                 let minimized: Bool? = window.getAttributeValue(.minimized)
+                if minimized == true {
+                    records.removeValue(forKey: identity)
+                    continue
+                }
+                guard minimized != nil else { continue }
+                let desktops: Set<UInt64>
+                let membership = spaces.readResult(windowID: id, catalog: catalog.desktops, deadline: deadline)
+                switch membership.state {
+                case .verified(let members):
+                    guard !members.isEmpty else {
+                        records.removeValue(forKey: identity)
+                        continue
+                    }
+                    desktops = Set(members.map(\.id))
+                case .failed, .notRead:
+                    continue
+                }
                 let bounds = window.getWindowFrame()
-                let desktops = membership[id].map { Set($0.map(\.id)) }
-                records[identity] = MissionControlWindowRecord(id: identity,
-                    bounds: bounds ?? records[identity]?.bounds,
-                    desktopIDs: desktops ?? records[identity]?.desktopIDs,
-                    isMinimized: minimized ?? records[identity]?.isMinimized,
-                    focusRequirement: SidebarFocusRequirement(element: window, launchDate: app.launchDate))
+                guard let bounds, MissionControlSnapshot.validBounds(bounds) else { continue }
+                var record = records[identity] ?? MissionControlWindowRecord(
+                    id: identity, bounds: nil, desktopIDs: nil, isMinimized: nil)
+                record.verify(bounds: bounds, desktopIDs: desktops, minimized: minimized,
+                              requirement: SidebarFocusRequirement(element: window, launchDate: app.launchDate),
+                              now: ProcessInfo.processInfo.systemUptime)
+                records[identity] = record
+                validated.insert(identity)
             }
             windowCursors[app.pid] = cursor + processed
-            if processed == found.windows.count, !found.needsAnotherPass {
-                records = records.filter { $0.key.pid != app.pid || verified.contains($0.key) }
+            if current != nil && candidates.isSubset(of: foundIDs), processed == found.windows.count,
+               !found.needsAnotherPass {
+                records = records.filter { $0.key.pid != app.pid || validated.contains($0.key) }
             }
         }
-        guard AXIsProcessTrusted() else { return nil }
+        guard AXIsProcessTrusted() else {
+            reset(clearDiscovery: true)
+            return nil
+        }
         return MissionControlSnapshot.make(catalog: catalog, applications: applications,
                                            records: Array(records.values), screens: screens)
     }
