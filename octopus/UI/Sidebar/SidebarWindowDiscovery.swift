@@ -12,6 +12,7 @@ final class SidebarWindowDiscovery {
         var expected: Set<CGWindowID> = []
         var cursor: UInt64 = 0
         var examined = 0
+        var validationCursor = 0
         var windows: [CGWindowID: AXUIElement] = [:]
     }
     private var scans: [pid_t: Scan] = [:]
@@ -38,7 +39,7 @@ final class SidebarWindowDiscovery {
         role == (kAXWindowRole as String) && subrole == (kAXStandardWindowSubrole as String)
     }
 
-    func read(pid: pid_t, current: [AXUIElement], candidates: Set<CGWindowID>)
+    func read(pid: pid_t, current: [AXUIElement], candidates: Set<CGWindowID>, deadline: TimeInterval? = nil)
         -> (windows: [AXUIElement], needsAnotherPass: Bool) {
         var scan = scans[pid] ?? Scan()
         if scan.expected != candidates {
@@ -47,24 +48,43 @@ final class SidebarWindowDiscovery {
         }
         // Closed windows can linger in CG's list. An old handle must still expose a
         // real AX window; CG presence alone is never enough to retain it.
-        scan.windows = scan.windows.filter { id, element in
-            guard candidates.contains(id) else { return false }
+        scan.windows = scan.windows.filter { candidates.contains($0.key) }
+        let knownIDs = scan.windows.keys.sorted()
+        var verifiedIDs = Set<CGWindowID>()
+        var validationIncomplete = false
+        let validationStart = scan.validationCursor
+        for offset in 0..<knownIDs.count {
+            if let deadline, ProcessInfo.processInfo.systemUptime >= deadline {
+                validationIncomplete = true
+                break
+            }
+            let index = (validationStart + offset) % knownIDs.count
+            scan.validationCursor = (index + 1) % knownIDs.count
+            let id = knownIDs[index]
+            guard let element = scan.windows[id] else { continue }
             AXUIElementSetMessagingTimeout(element, 0.05)
             let role: String? = element.getAttributeValue(.role)
             let subrole: String? = element.getAttributeValue(.subrole)
-            return Self.isEligibleRemoteWindow(role: role, subrole: subrole)
-                && element.getWindowID() == id
+            if Self.isEligibleRemoteWindow(role: role, subrole: subrole), element.getWindowID() == id {
+                verifiedIDs.insert(id)
+            } else {
+                scan.windows.removeValue(forKey: id)
+            }
         }
         for element in current {
-            if let id = element.getWindowID(), candidates.contains(id) { scan.windows[id] = element }
+            if let deadline, ProcessInfo.processInfo.systemUptime >= deadline { break }
+            if let id = element.getWindowID(), candidates.contains(id) {
+                scan.windows[id] = element
+                verifiedIDs.insert(id)
+            }
         }
-        var found = Set(scan.windows.keys)
+        var found = verifiedIDs
         if let createElement, !candidates.isSubset(of: found), scan.examined < Int(maximumElementID) {
             var token = Data(count: 20)
             withUnsafeBytes(of: Int32(pid)) { token.replaceSubrange(0..<4, with: $0) }
             withUnsafeBytes(of: Int32(0x636f636f)) { token.replaceSubrange(8..<12, with: $0) }
-            let deadline = ProcessInfo.processInfo.systemUptime + 0.075
-            while scan.examined < Int(maximumElementID) {
+            let deadline = min(ProcessInfo.processInfo.systemUptime + 0.075, deadline ?? .infinity)
+            while scan.examined < Int(maximumElementID), ProcessInfo.processInfo.systemUptime < deadline {
                 withUnsafeBytes(of: scan.cursor) { token.replaceSubrange(12..<20, with: $0) }
                 scan.cursor = (scan.cursor + 1) % maximumElementID
                 scan.examined += 1
@@ -77,6 +97,7 @@ final class SidebarWindowDiscovery {
                        AXUIElementGetPid(element, &owner) == .success, owner == pid,
                        let id = element.getWindowID(), candidates.contains(id) {
                         scan.windows[id] = element
+                        verifiedIDs.insert(id)
                         found.insert(id)
                     }
                 }
@@ -84,9 +105,14 @@ final class SidebarWindowDiscovery {
             }
         }
         scans[pid] = scan
-        let currentIDs = Set(current.compactMap { $0.getWindowID() })
-        let extra = scan.windows.filter { !currentIDs.contains($0.key) }.sorted { $0.key < $1.key }.map(\.value)
-        return (current + extra, createElement != nil && !candidates.isSubset(of: found)
-            && scan.examined < Int(maximumElementID))
+        var currentIDs = Set<CGWindowID>()
+        for element in current {
+            if let deadline, ProcessInfo.processInfo.systemUptime >= deadline { break }
+            if let id = element.getWindowID() { currentIDs.insert(id) }
+        }
+        let extra = scan.windows.filter { verifiedIDs.contains($0.key) && !currentIDs.contains($0.key) }
+            .sorted { $0.key < $1.key }.map(\.value)
+        return (current + extra, validationIncomplete || (createElement != nil && !candidates.isSubset(of: found)
+            && scan.examined < Int(maximumElementID)))
     }
 }

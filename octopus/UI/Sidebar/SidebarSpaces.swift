@@ -19,6 +19,10 @@ struct SidebarEntryID: Hashable {
 // Resolve private symbols at runtime: a missing API disables Space metadata rather
 // than preventing octopus from launching. Signatures follow Hammerspoon's hs.spaces.
 final class SidebarSpaceReader {
+    struct Catalog {
+        let desktops: [SidebarDesktop]
+        let activeIDs: Set<UInt64>
+    }
     private typealias Connection = @convention(c) () -> Int32
     private typealias Displays = @convention(c) (Int32) -> Unmanaged<CFArray>?
     private typealias WindowSpaces = @convention(c) (Int32, Int32, CFArray) -> Unmanaged<CFArray>?
@@ -59,9 +63,25 @@ final class SidebarSpaceReader {
     }
 
     func allDesktops() -> [SidebarDesktop] {
+        readCatalog()?.desktops ?? []
+    }
+
+    func readCatalog() -> Catalog? {
         guard let connection, let displays,
-              let raw = displays(connection())?.takeRetainedValue() as? [[String: Any]] else { return [] }
-        return Self.desktops(from: raw)
+              let raw = displays(connection())?.takeRetainedValue() as? [[String: Any]] else { return nil }
+        return Self.catalog(from: raw)
+    }
+
+    static func catalog(from displays: [[String: Any]]) -> Catalog {
+        let desktops = Self.desktops(from: displays)
+        let knownIDs = Set(desktops.map(\.id))
+        let activeIDs = Set(displays.compactMap { display -> UInt64? in
+            guard let current = display["Current Space"] as? [String: Any],
+                  let id = (current["ManagedSpaceID"] as? NSNumber ?? current["id64"] as? NSNumber)?.uint64Value,
+                  knownIDs.contains(id) else { return nil }
+            return id
+        })
+        return Catalog(desktops: desktops, activeIDs: activeIDs)
     }
 
     func read(windowIDs: Set<CGWindowID>, catalog: [SidebarDesktop]? = nil) -> [CGWindowID: [SidebarDesktop]] {

@@ -8,7 +8,17 @@ final class SidebarController {
     private var displays: [SidebarDisplayTarget: SidebarDisplayController] = [:]
     private var observers: [NSObjectProtocol] = []
     private var radialPresented = false
-    var hasActiveInteraction: Bool { displays.values.contains { $0.hasActiveInteraction } }
+    private var missionControlPresented = false
+    private lazy var missionControl = MissionControlController(windowSeeds: { [weak self] in
+        self?.displays.values.reduce(into: [SidebarWindowID: AXUIElement]()) { seeds, display in
+            seeds.merge(display.missionControlWindowSeeds) { existing, _ in existing }
+        } ?? [:]
+    }) { [weak self] presented in
+        guard let self else { return }
+        self.missionControlPresented = presented
+        self.displays.values.forEach { $0.setMissionControlPresented(presented) }
+    }
+    var hasActiveInteraction: Bool { missionControlPresented || displays.values.contains { $0.hasActiveInteraction } }
 
     func setRadialPresented(_ presented: Bool) {
         radialPresented = presented
@@ -51,6 +61,7 @@ final class SidebarController {
             } else {
                 let controller = SidebarDisplayController(cycleController: cycleController, displayID: id.displayID)
                 controller.setRadialPresented(radialPresented)
+                controller.setMissionControlPresented(missionControlPresented)
                 controller.otherSidebarFrames = { [weak self] in
                     self?.displays.values.flatMap { $0.interactionFrames } ?? []
                 }
@@ -73,6 +84,7 @@ final class SidebarController {
                 displays[id] = controller
             }
         }
+        missionControl.updateTargets(displays.values.compactMap { $0.missionControlTarget })
         let enabled = defaults.bool(forKey: SidebarNumberShortcuts.enabledKey) && !displays.isEmpty
         let unavailable = enabled ? SidebarNumberShortcuts.unavailablePositions() : []
         let shortcuts = SidebarNumberShortcuts.shortcuts
@@ -84,7 +96,7 @@ final class SidebarController {
 
     private func activateNumberedApp(at index: Int) {
         guard UserDefaults.standard.bool(forKey: SidebarNumberShortcuts.enabledKey),
-              !radialPresented, !hasActiveInteraction, !cycleController.isKeyboardSwitcherVisible,
+              !radialPresented, !missionControlPresented, !hasActiveInteraction, !cycleController.isKeyboardSwitcherVisible,
               !SidebarNumberShortcuts.unavailablePositions().contains(index) else { return }
         if let single = displays[.single] {
             single.activateNumberedApp(at: index)
@@ -100,6 +112,7 @@ final class SidebarController {
         SidebarNumberShortcuts.names.forEach { SidebarNumberShortcuts.assign(nil, to: $0) }
         displays.values.forEach { $0.stop() }
         displays.removeAll()
+        missionControl.stop()
     }
 
     func focusWindow(_ id: SidebarWindowID, completion: @escaping (Bool) -> Void) -> SidebarPendingAction? {
@@ -113,6 +126,59 @@ final class SidebarController {
 private final class SidebarDisplayController {
     private let inventory = SidebarWindowInventory()
     private var radialPresented = false
+    private var missionControlPresented = false
+
+    func setMissionControlPresented(_ presented: Bool) {
+        guard missionControlPresented != presented else { return }
+        missionControlPresented = presented
+        if presented {
+            cancelInteraction()
+            anchors.values.forEach { ($0 as? SidebarPointerRegion.PointerView)?.cancelOperation(nil) }
+            desktopMenu.hide()
+            viewState.isExpanded = false
+            panel.ignoresMouseEvents = true
+            notchPanel.ignoresMouseEvents = true
+            panel.orderOut(nil)
+            notchPanel.orderOut(nil)
+        } else {
+            notchPanel.ignoresMouseEvents = false
+            layout()
+            restoreSidebarIfNeeded()
+            updatePointer()
+        }
+    }
+
+    private var targetScreen: NSScreen? {
+        if let displayID {
+            return NSScreen.screens.first { SidebarSettings.monitorID($0) == displayID }
+        }
+        return SidebarSettings.selectedScreen()
+    }
+
+    private func notchTrigger(on screen: NSScreen) -> CGRect? {
+        guard let settings, settings.idleBehavior == .notch else { return nil }
+        return SidebarLayout.notchTriggerFrame(
+            screenFrame: screen.frame, safeTopInset: screen.safeAreaInsets.top,
+            leftArea: screen.auxiliaryTopLeftArea, rightArea: screen.auxiliaryTopRightArea,
+            virtualWidth: CGFloat(settings.configuration.virtualNotchWidth))
+    }
+
+    var missionControlTarget: MissionControlTarget? {
+        guard let settings, settings.enabled, let screen = targetScreen,
+              let id = SidebarSettings.monitorID(screen) else { return nil }
+        return MissionControlTarget(id: id, screen: screen, side: settings.side, position: settings.position)
+    }
+
+    var missionControlWindowSeeds: [SidebarWindowID: AXUIElement] {
+        var seeds: [SidebarWindowID: AXUIElement] = [:]
+        for entry in inventory.entries {
+            for window in entry.windows {
+                guard let id = window.cgWindowID else { continue }
+                seeds[SidebarWindowID(pid: entry.pid, windowID: id)] = window.element
+            }
+        }
+        return seeds
+    }
     var hasActiveInteraction: Bool { dragController.isActive || positionScrollCapture.isActive || frozeForAnotherDrag }
     func setRadialPresented(_ presented: Bool) {
         radialPresented = presented
@@ -520,7 +586,7 @@ private final class SidebarDisplayController {
     private func restoreSidebarIfNeeded() {
         let menuVisible = ownsMenu && cycleController.panel.isVisible && cycleController.panel.isOnActiveSpace
         // Auto-hide applies when idle, not while this sidebar's window list is open.
-        guard settings?.enabled == true, screen != nil,
+        guard !missionControlPresented, settings?.enabled == true, screen != nil,
               presentation.restoresMainSidebar(expanded: viewState.isExpanded, menuVisible: menuVisible),
               needsSpacePresentation || !panel.isVisible || !panel.isOnActiveSpace else { return }
         // Ordering below an existing popup does not explicitly bring the sidebar
@@ -530,6 +596,7 @@ private final class SidebarDisplayController {
     }
 
     private func bringSidebarForward(keepingMenuAbove: Bool) {
+        guard !missionControlPresented else { return }
         // These calls preserve the sidebar levels and do not take keyboard focus.
         panel.orderFrontRegardless()
         if keepingMenuAbove {
@@ -543,7 +610,7 @@ private final class SidebarDisplayController {
     }
 
     private func revealSidebarFromPersistentTrigger() {
-        guard presentation.usesPersistentTrigger, settings?.enabled == true, !viewState.isExpanded,
+        guard !missionControlPresented, presentation.usesPersistentTrigger, settings?.enabled == true, !viewState.isExpanded,
               !dragController.isActive, !otherDragActive(), !cycleController.isKeyboardSwitcherVisible else { return }
         hideWork?.cancel()
         hideWork = nil
@@ -565,15 +632,8 @@ private final class SidebarDisplayController {
     }
 
     private func layout() {
-        guard let settings, settings.enabled else { return }
-        let target: NSScreen?
-        if let displayID {
-            // A missing multi-display target never falls back onto another display.
-            target = NSScreen.screens.first { SidebarSettings.monitorID($0) == displayID }
-        } else {
-            target = SidebarSettings.selectedScreen()
-        }
-        guard let target else {
+        guard !missionControlPresented, let settings, settings.enabled else { return }
+        guard let target = targetScreen else {
             screen = nil
             notchFrame = .zero
             panel.orderOut(nil)
@@ -581,10 +641,7 @@ private final class SidebarDisplayController {
             return
         }
         screen = target
-        notchFrame = settings.idleBehavior == .notch ? SidebarLayout.notchTriggerFrame(
-            screenFrame: target.frame, safeTopInset: target.safeAreaInsets.top,
-            leftArea: target.auxiliaryTopLeftArea, rightArea: target.auxiliaryTopRightArea,
-            virtualWidth: CGFloat(settings.configuration.virtualNotchWidth)) ?? .zero : .zero
+        notchFrame = notchTrigger(on: target) ?? .zero
         updateInventoryScope(settings)
         let monitors = NSScreen.screens.enumerated().compactMap { index, screen -> SidebarMonitor? in
             guard let id = SidebarSettings.monitorID(screen) else { return nil }
@@ -634,7 +691,7 @@ private final class SidebarDisplayController {
     }
 
     private func inventoryChanged() {
-        guard settings?.enabled == true else { return }
+        guard !missionControlPresented, settings?.enabled == true else { return }
         if let desktops = viewState.dragDesktops, desktops.contains(where: { desktop in
             return !inventory.desktops.contains(where: {
                 $0.id == desktop.id && $0.displayIdentifier == desktop.displayIdentifier
@@ -748,7 +805,7 @@ private final class SidebarDisplayController {
     }
 
     private func hover(_ entryID: SidebarEntryID, inside: Bool) {
-        guard settings?.enabled == true else { return }
+        guard !missionControlPresented, settings?.enabled == true else { return }
         cancelPendingHover()
         if inside {
             hoveredEntryID = entryID
@@ -783,7 +840,7 @@ private final class SidebarDisplayController {
     }
 
     private func showMenu(_ entry: SidebarEntry, icon: CGRect) {
-        guard let screen, let settings else { return }
+        guard !missionControlPresented, let screen, let settings else { return }
         guard !otherDragActive(), ownsMenu || (panel.isVisible && sidebarFrame.contains(NSEvent.mouseLocation)) else { return }
         guard !entry.windows.isEmpty,
               entry.windows.count > 1 || entry.hasOtherWindows || settings.showSingleWindowMenu else {
@@ -798,6 +855,7 @@ private final class SidebarDisplayController {
     }
 
     private func activate(_ entryID: SidebarEntryID) {
+        guard !missionControlPresented else { return }
         guard let entry = inventory.entries.first(where: { $0.id == entryID }) else { return }
         guard !inventory.hasPendingAction(for: entry.pid) else { return }
         cancelPendingHover()
@@ -810,13 +868,14 @@ private final class SidebarDisplayController {
     }
 
     func activateNumberedApp(at index: Int) {
-        guard inventory.hasPermission, !hasActiveInteraction, !radialPresented else { return }
+        guard inventory.hasPermission, !hasActiveInteraction, !radialPresented, !missionControlPresented else { return }
         let entries = viewState.displayedGroups(in: inventory).flatMap(\.sections).flatMap(\.entries)
         guard entries.indices.contains(index) else { return }
         activate(entries[index].id)
     }
 
     private func performMouseAction(_ action: MouseShortcutAction, entryID: SidebarEntryID, target: SidebarWindowID?) {
+        guard !missionControlPresented else { return }
         guard let entry = inventory.entries.first(where: { $0.id == entryID }) else { return }
         guard !inventory.hasPendingAction(for: entry.pid) else { return }
         let frontmostPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
@@ -898,7 +957,7 @@ private final class SidebarDisplayController {
     }
 
     private func handleMouse(_ event: NSEvent) {
-        guard !radialPresented else { return }
+        guard !radialPresented, !missionControlPresented else { return }
         guard !dragController.isActive, !otherDragActive() else { return }
         let point = NSEvent.mouseLocation
         // One pointer-position path owns row and button hover. Native row/button hover
@@ -929,7 +988,7 @@ private final class SidebarDisplayController {
     }
 
     private func updatePointer() {
-        guard !radialPresented else { return }
+        guard !radialPresented, !missionControlPresented else { return }
         guard settings?.enabled == true, !dragController.isActive, !otherDragActive() else { return }
         restoreSidebarIfNeeded()
         let point = NSEvent.mouseLocation
