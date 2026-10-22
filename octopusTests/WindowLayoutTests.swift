@@ -1304,6 +1304,22 @@ struct WindowLayoutTests {
         #expect(results == [true])
     }
 
+    @Test @MainActor func foregroundRequestObservesActivationAfterAnEarlyNotification() async {
+        let center = NotificationCenter()
+        var frontmost: pid_t? = 42
+        var requests = 0
+        let activated: Bool = await withCheckedContinuation { continuation in
+            let waiter = WindowForegroundActivationWaiter(targetPID: 43, initialPID: 42, center: center,
+                timeout: 1, canContinue: { true }, frontmostPID: { frontmost },
+                completion: { continuation.resume(returning: $0) })
+            waiter.start { requests += 1; return true }
+            center.post(name: NSWorkspace.didActivateApplicationNotification, object: nil)
+            // The active app changes after the notification, with no second event.
+            frontmost = 43
+        }
+        #expect(activated && requests == 1)
+    }
+
     @Test @MainActor func foregroundRequestExpiresWithoutRetryingActivation() async throws {
         var requests = 0
         var results: [Bool] = []

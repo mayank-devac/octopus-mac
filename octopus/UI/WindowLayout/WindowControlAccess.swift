@@ -430,7 +430,7 @@ final class WindowControlAccess: @unchecked Sendable {
     }
 }
 
-// A bounded, notification-driven handoff, matching the sidebar's foreground gate.
+// A bounded foreground handoff shared with the sidebar.
 // It never retries activation or raises after a canceled click or another app switch.
 @MainActor
 enum WindowPresentation {
@@ -538,6 +538,7 @@ final class WindowForegroundActivationWaiter {
     private let completion: (Bool) -> Void
     private var observer: NSObjectProtocol?
     private var expiry: DispatchWorkItem?
+    private var observationTimer: Timer?
     private var completed = false
 
     init(targetPID: pid_t, initialPID: pid_t?, center: NotificationCenter,
@@ -556,11 +557,21 @@ final class WindowForegroundActivationWaiter {
         guard !completed, observer == nil else { return }
         guard canContinue() else { finish(false); return }
         // Registration precedes the request, including apps that activate synchronously.
-        // Observer/expiry retain this short-lived request until finish removes both.
+        // All observation ends when this request finishes.
         observer = center.addObserver(forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main) { [self] _ in
             MainActor.assumeIsolated { activationChanged() }
         }
-        let work = DispatchWorkItem { [self] in finish(false) }
+        // Native activation can become observable after its notification, or without
+        // a new notification. Recheck state without issuing another focus request.
+        let timer = Timer(timeInterval: 0.05, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.activationChanged() }
+        }
+        observationTimer = timer
+        RunLoop.main.add(timer, forMode: .common)
+        let work = DispatchWorkItem { [self] in
+            activationChanged()
+            finish(false)
+        }
         expiry = work
         DispatchQueue.main.asyncAfter(deadline: .now() + timeout, execute: work)
         guard requestActivation() else { finish(false); return }
@@ -582,6 +593,8 @@ final class WindowForegroundActivationWaiter {
         observer = nil
         expiry?.cancel()
         expiry = nil
+        observationTimer?.invalidate()
+        observationTimer = nil
         completion(activated)
     }
 }
