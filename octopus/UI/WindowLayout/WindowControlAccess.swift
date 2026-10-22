@@ -1,4 +1,5 @@
 import AppKit
+import OSLog
 import os
 
 // Create the deadline before queueing work so waiting behind another AX operation uses the same time budget.
@@ -433,12 +434,22 @@ final class WindowControlAccess: @unchecked Sendable {
 // It never retries activation or raises after a canceled click or another app switch.
 @MainActor
 enum WindowPresentation {
+    private static let logger = Logger(subsystem: "com.mayank.octopus.local", category: "WindowPresentation")
+
+    private static func failed(_ stage: String, id: SidebarWindowID) -> Bool {
+        logger.error("Window presentation failed at \(stage, privacy: .public); pid=\(id.pid) window=\(id.windowID)")
+        return false
+    }
+
     static func bringForward(_ id: SidebarWindowID, requirement: SidebarFocusRequirement,
                              token: SidebarPendingAction, queue: DispatchQueue,
                              canContinue: @escaping () -> Bool,
                              validate: @escaping () -> Bool) async -> Bool {
         guard let app = NSRunningApplication(processIdentifier: id.pid),
-              let launchDate = app.launchDate, requirement.launchDate == launchDate else { return false }
+              let launchDate = app.launchDate, requirement.launchDate == launchDate else {
+            return failed("launch identity", id: id)
+        }
+        logger.notice("Window presentation requested; pid=\(id.pid) window=\(id.windowID)")
         func current() -> Bool {
             !Task.isCancelled && token.canFinishFocus(on: id.pid)
                 && canContinue() && !app.isTerminated
@@ -454,11 +465,15 @@ enum WindowPresentation {
             let element = requirement.element
             AXUIElementSetMessagingTimeout(element, 0.2)
             var pid: pid_t = 0
-            return AXUIElementGetPid(element, &pid) == .success && pid == id.pid
+            let valid = AXUIElementGetPid(element, &pid) == .success && pid == id.pid
                 && element.getWindowID() == id.windowID
                 && SidebarWindowPolicy.isTopLevelWindow(role: element.getAttributeValue(.role),
                                                         subrole: element.getAttributeValue(.subrole))
                 && validate()
+            // Caller validation may use a shorter read timeout. Do not let it
+            // shorten the following restore or raise request's timeout.
+            AXUIElementSetMessagingTimeout(element, 0.2)
+            return valid
         }
         guard current(), await read({
             guard live(), token.beginFocus(),
@@ -472,9 +487,9 @@ enum WindowPresentation {
                                                    kCFBooleanFalse) == .success else { return false }
             }
             return !token.isCancelled
-        }), current() else { return false }
+        }), current() else { return failed("validation or restoration", id: id) }
         if app.isHidden {
-            guard app.unhide(), current() else { return false }
+            guard app.unhide(), current() else { return failed("unhide", id: id) }
         }
         let activated = await withCheckedContinuation { continuation in
             let waiter = WindowForegroundActivationWaiter(targetPID: id.pid, initialPID: token.frontmostPID,
@@ -484,11 +499,12 @@ enum WindowPresentation {
                 }
             waiter.start { SidebarFocusActivation.requestForeground(app, target: id, token: token) }
         }
-        guard activated, current() else { return false }
+        guard activated, current() else { return failed("activation", id: id) }
         let deadline = ProcessInfo.processInfo.systemUptime + 0.8
         guard await read({
-            live() && SidebarFocusActivation.raise(requirement.element, id: id, token: token, expiresAt: deadline)
-        }), current() else { return false }
+            guard live() else { return failed("validation before raise", id: id) }
+            return SidebarFocusActivation.raise(requirement.element, id: id, token: token, expiresAt: deadline)
+        }), current() else { return failed("raise", id: id) }
         while current(), ProcessInfo.processInfo.systemUptime < deadline {
             let confirmed = await read {
                 guard live(), !app.isHidden,
@@ -501,10 +517,13 @@ enum WindowPresentation {
                     && focused.getWindowID() == id.windowID
                     && SidebarWindowReader.isOnScreen(id)
             }
-            if confirmed { return current() }
+            if confirmed {
+                logger.notice("Window presentation verified focused and on-screen; pid=\(id.pid) window=\(id.windowID)")
+                return current()
+            }
             try? await Task.sleep(for: .milliseconds(50))
         }
-        return false
+        return failed("focused-window confirmation", id: id)
     }
 }
 

@@ -93,3 +93,9 @@ The [source-verified review](auto-snap-review.md) found outstanding issues; thes
 - **Verification limit:** The assertion pattern was corrected and the diff inspected, but a successful rebuild/test rerun was not confirmed afterward; never present this source fix as a passing test result.
 - **Readback interpretation:** "The size request remains unconfirmed" covers several ambiguous observations, including unchanged or unstable sizes and a changed final frame; it is not proof of an app's minimum or a reason to invent one.
 - **Gesture design:** A mouse pointer already holding an app icon cannot separately drag a preview handle; Mayank selected Option-held relative pointer adjustment within the existing drag session, with zero hover writes and commit of exactly the last displayed layout.
+
+## 2026-10-23 — Confused app activation with revealing the selected window
+
+- **Mistake:** Repeatedly changed/reversed activation and raise sequences, then described fixes based on source inspection or mocked/unit tests while Mayank still reproduced app activation with the selected window behind another app. The optional sidebar bridge also left a duplicated fallback until it was consolidated.
+- **Prevention:** Keep one canonical operation; identify the failing runtime stage before changing its sequence. Record activation, target validation, AX raise result, and exact focused/visible-window confirmation separately. A changed menu-bar name, accepted native request, or passing test suite is not proof the window came forward.
+- **Artifact discipline:** Check which executable is running and rebuild/restart that exact artifact for manual verification. Preserve unrelated project/signing/version edits. Do not report the live defect fixed until the user's original case passes.

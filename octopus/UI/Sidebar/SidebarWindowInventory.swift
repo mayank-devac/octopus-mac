@@ -221,7 +221,11 @@ enum SidebarFocusActivation {
                       expiresAt: TimeInterval) -> Bool {
         guard token.canFinishFocus(on: id.pid), ProcessInfo.processInfo.systemUptime < expiresAt,
               NSWorkspace.shared.frontmostApplication?.processIdentifier == id.pid else { return false }
-        return AXUIElementPerformAction(element, kAXRaiseAction as CFString) == .success
+        let result = AXUIElementPerformAction(element, kAXRaiseAction as CFString)
+        if result != .success {
+            NSLog("Window presentation AXRaise failed: error=%d pid=%d window=%u", result.rawValue, id.pid, id.windowID)
+        }
+        return result == .success
     }
 
     static func canRequestAfterRaise(_ error: AXError) -> Bool {

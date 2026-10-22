@@ -43,3 +43,10 @@ These notes record Mayank's decisions and source inspection from this chat; rech
 - The test fix moves `gesture.update(...)` outside `#expect` and asserts the returned Boolean; source/diff checks passed, but no successful rebuild or test rerun was confirmed afterward.
 - Native Option-drag delivery, Escape cancellation and end-to-end window behaviour still need a real-app check; do not claim production readiness or a measured flicker-free result.
 - Do not run builds, tests, linters or type checks unless Mayank explicitly asks; hand off the focused commands and preserve unrelated changes.
+
+## 2026-10-23 — Existing-window presentation contract
+
+- Clicking a sidebar/map window must reveal that exact existing window, restoring it if minimized and unhiding its app if needed; changing the menu-bar app name is not success. Never create a replacement window.
+- Sidebar and map share `WindowPresentation.bringForward`; keep one canonical restore/activate/raise/verify sequence, independent of sidebar filtering.
+- Mayank reproduced app activation without window presentation across apps on the current desktop, including Brave with ChatGPT still visible. The live bug remains unresolved until that exact case succeeds.
+- Verify the actual running executable before attributing results: on 2026-10-23 it was `.build/DerivedData/Build/Products/Debug/octopus.app`, whereas prior automated verification used `/tmp/octopus-mission-control-verification`. Different paths alone do not establish a stale build.
