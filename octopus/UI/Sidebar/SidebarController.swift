@@ -655,9 +655,12 @@ private final class SidebarDisplayController {
             context.duration = animated ? SidebarEdgeMark.fadeDuration : 0
             edgeMarkPanel.animator().alphaValue = alpha
         }, completionHandler: { [weak self] in
-            // Only the latest fade may remove the panel; an older one must not cut a newer fade short.
-            guard let self, generation == self.edgeMarkFadeGeneration, self.edgeMarkEmphasis == .hidden else { return }
-            self.edgeMarkPanel.orderOut(nil)
+            // AppKit calls this on the main thread, but the handler type is Sendable.
+            MainActor.assumeIsolated {
+                // Only the latest fade may remove the panel; an older one must not cut a newer fade short.
+                guard let self, generation == self.edgeMarkFadeGeneration, self.edgeMarkEmphasis == .hidden else { return }
+                self.edgeMarkPanel.orderOut(nil)
+            }
         })
     }
 
@@ -695,10 +698,13 @@ private final class SidebarDisplayController {
 
     private func restoreSidebarIfNeeded() {
         let menuVisible = ownsMenu && cycleController.panel.isVisible && cycleController.panel.isOnActiveSpace
+        // A panel left on screen by another mode (e.g. Compact's closed strip) still needs its Dock opened.
+        let dockClosed = !viewState.isDockOpen && dockCloseWork == nil
+            && presentation.showsMainSidebar(expanded: viewState.isExpanded)
         // Auto-hide applies when idle, not while this sidebar's window list is open.
         guard !missionControlPresented, settings?.enabled == true, screen != nil,
               presentation.restoresMainSidebar(expanded: viewState.isExpanded, menuVisible: menuVisible),
-              needsSpacePresentation || !panel.isVisible || !panel.isOnActiveSpace else { return }
+              needsSpacePresentation || !panel.isVisible || !panel.isOnActiveSpace || dockClosed else { return }
         // Ordering below an existing popup does not explicitly bring the sidebar
         // forward. Establish both windows' order, even while another app is active.
         bringSidebarForward(keepingMenuAbove: menuVisible)
@@ -812,6 +818,11 @@ private final class SidebarDisplayController {
         compactFrame = frames.compact
         edgeFrame = frames.edgeTrigger
         if viewState.topContentWidth != frames.topContentWidth { viewState.topContentWidth = frames.topContentWidth }
+        let notchSize = CGSize(width: notchFrame.width, height: frames.notchInset)
+        if viewState.notchBarNotchSize != notchSize { viewState.notchBarNotchSize = notchSize }
+        // A Dock notch bar covers the menu bar, so it needs the notch's window level.
+        let panelLevel = frames.notchInset > 0 ? SidebarWindowLevels.notch : SidebarWindowLevels.sidebar
+        if panel.level != panelLevel { panel.level = panelLevel }
         let bottomPadding = policy.hasTopTrigger ? sidebarFrame.minY - frames.drawing.minY : 0
         if viewState.topDrawingBottomPadding != bottomPadding { viewState.topDrawingBottomPadding = bottomPadding }
         if panel.frame != frames.drawing { panel.setFrame(frames.drawing, display: true) }

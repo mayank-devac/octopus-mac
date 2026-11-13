@@ -39,12 +39,13 @@ struct SidebarTests {
         #expect(SidebarDockReveal.stripIconScale < SidebarDockReveal.compactIconScale)
     }
 
-    @Test func notchDockGrowsFromAShortSliverToTheFullBar() {
+    @Test func notchDockGrowsFromTheNotchToTheFullBar() {
         let full = CGSize(width: 400, height: 94)
-        #expect(SidebarDockReveal.notchBarSize(full: full, isOpen: true) == full)
-        let closed = SidebarDockReveal.notchBarSize(full: full, isOpen: false)
-        #expect(closed.width == 400 * SidebarDockReveal.notchClosedWidthFraction)
-        #expect(closed.height == SidebarDockReveal.closedWidth)
+        let notch = CGSize(width: 200, height: 42)
+        #expect(SidebarDockReveal.notchBarSize(full: full, isOpen: true, notch: notch) == full)
+        #expect(SidebarDockReveal.notchBarSize(full: full, isOpen: false, notch: notch) == notch)
+        let narrow = SidebarDockReveal.notchBarSize(full: CGSize(width: 120, height: 30), isOpen: false, notch: notch)
+        #expect(narrow == CGSize(width: 120, height: 30))
     }
 
     @MainActor @Test func compactDockKeepsItsOpenFramesSoIconsGrowInPlace() {
@@ -65,6 +66,23 @@ struct SidebarTests {
             // Input still stays on the strip while closed.
             #expect(policy.pointerFrame(sidebar: closed.sidebar, compact: closed.compact, expanded: false) == closed.compact)
         }
+    }
+
+    @Test func sidebarStyleReadsPreRenameValuesAndFallsBackToDock() throws {
+        #expect(SidebarStyle.saved("inside") == .dock)
+        #expect(SidebarStyle.saved("outside") == .floating)
+        #expect(SidebarStyle.saved("floating") == .floating)
+        #expect(SidebarStyle.saved("unknown") == .dock)
+        #expect(SidebarStyle.saved(nil) == .dock)
+        func decode(_ json: String) throws -> SidebarConfiguration {
+            try JSONDecoder().decode(SidebarConfiguration.self, from: Data(json.utf8))
+        }
+        #expect(try decode("{\"style\":\"outside\",\"side\":\"left\"}").style == .floating)
+        // An unrecognised style must not discard the rest of the saved configuration.
+        let unknown = try decode("{\"style\":\"unknown\",\"side\":\"left\"}")
+        #expect(unknown.style == .dock)
+        #expect(unknown.side == .left)
+        #expect(try decode("{\"side\":\"left\"}").style == SidebarConfiguration.factoryDefaults.style)
     }
 
     @Test func sidebarNumberModifiersKeepDefaultsAndRememberSelection() throws {
@@ -230,10 +248,14 @@ struct SidebarTests {
     @MainActor @Test func notchTriggerExposesAWorkingAccessibilityPress() async throws {
         // Ask only this test application to materialise its accessibility tree, as VoiceOver does.
         // This does not enable VoiceOver or change the user's system accessibility settings.
+        // AXEnhancedUserInterface has no NSAccessibility property, so call the attribute methods by
+        // selector; the direct Swift calls are deprecated with no replacement for private attributes.
         let enhancedUI = NSAccessibility.Attribute(rawValue: "AXEnhancedUserInterface")
-        let previous = NSApp.accessibilityAttributeValue(enhancedUI) ?? false
-        NSApp.accessibilitySetValue(true, forAttribute: enhancedUI)
-        defer { NSApp.accessibilitySetValue(previous, forAttribute: enhancedUI) }
+        let readSelector = NSSelectorFromString("accessibilityAttributeValue:")
+        let writeSelector = NSSelectorFromString("accessibilitySetValue:forAttribute:")
+        let previous: Any = NSApp.perform(readSelector, with: enhancedUI)?.takeUnretainedValue() ?? false
+        _ = NSApp.perform(writeSelector, with: true, with: enhancedUI)
+        defer { _ = NSApp.perform(writeSelector, with: previous, with: enhancedUI) }
         var opened = false
         let host = NSHostingView(rootView: SidebarNotchTriggerView(onReveal: { opened = true }))
         host.sizingOptions = []
@@ -476,6 +498,14 @@ struct SidebarTests {
         #expect(clipped.content.minY == screen.minY)
         #expect(clipped.content.maxY == virtual.minY)
         #expect(clipped.panel.minY == screen.minY)
+
+        // A top extension reaches the screen top and leaves the bar's own height unchanged.
+        let extended = SidebarLayout.notchSidebarFrames(
+            contentSize: twoApps, below: virtual, availableFrame: available, topExtension: 30)
+        #expect(extended.content.maxY == virtual.minY + 30)
+        #expect(extended.content.height == sidebar.content.height + 30)
+        #expect(extended.content.minY == sidebar.content.minY)
+        #expect(extended.panel.maxY == extended.content.maxY)
     }
 
     @Test func notchVisibilitySurvivesSingleAndDisplayPreferenceReloads() throws {
@@ -789,7 +819,7 @@ struct SidebarTests {
         // Reset uses factory defaults, not the customized single-sidebar settings.
         let factory = SidebarConfiguration.factoryDefaults
         #expect(factory.enabled && factory.desktopScope == .allDesktops && factory.side == .right)
-        #expect(factory.position == 0.5 && factory.idleBehavior == .compact && factory.showSingleWindowMenu)
+        #expect(factory.position == 0.5 && factory.idleBehavior == .hide && factory.showSingleWindowMenu)
         #expect(factory.appSpacing == SidebarSettings.defaultAppSpacing)
         #expect(factory.fontSize == SidebarSettings.defaultFontSize)
         #expect(factory.shadowOpacity == SidebarSettings.defaultShadowOpacity)
@@ -959,8 +989,8 @@ struct SidebarTests {
         SidebarSettings.migrateLegacyAutoHide(in: defaults)
         #expect(defaults.string(forKey: SidebarSettings.idleBehaviorKey) == "stayVisible")
 
-        #expect(SidebarIdleBehavior.saved(nil) == .compact)
-        #expect(SidebarIdleBehavior.saved("bogus") == .compact)
+        #expect(SidebarIdleBehavior.saved(nil) == .hide)
+        #expect(SidebarIdleBehavior.saved("bogus") == .hide)
     }
 
     @Test func windowOnEveryDesktopOfADisplayCollapsesToTheVisibleDesktop() {

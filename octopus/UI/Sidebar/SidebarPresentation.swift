@@ -43,6 +43,8 @@ struct SidebarPresentation {
         let drawing: CGRect
         let edgeTrigger: CGRect
         let topContentWidth: CGFloat?
+        // Height of the notch zone at the top of a Dock notch bar; zero for other styles.
+        let notchInset: CGFloat
     }
 
     func layout(configuration: SidebarConfiguration, notch: CGRect, available: CGRect,
@@ -68,6 +70,7 @@ struct SidebarPresentation {
         let sidebar: CGRect
         let compact: CGRect
         let drawing: CGRect
+        var notchInset: CGFloat = 0
         switch mode {
         case .compact:
             // The Dock's closed pill is wider than the number strip so its icons stay readable.
@@ -83,8 +86,10 @@ struct SidebarPresentation {
         case .notch:
             let notchSize = SidebarLayout.notchBarSize(count: displayedCount, appSpacing: spacing,
                 availableFrame: available, groupedWidth: SidebarMonitorGroup.notchContentWidth(groups, spacing: spacing))
+            // Dock style reaches the screen top, over the menu bar, so the bar grows out of the notch.
+            notchInset = style == .dock ? max(0, screen.maxY - notch.minY) : 0
             let frames = SidebarLayout.notchSidebarFrames(contentSize: notchSize, below: notch,
-                                                         availableFrame: available)
+                availableFrame: available, topExtension: notchInset)
             sidebar = frames.content
             compact = .zero
             drawing = frames.panel
@@ -96,7 +101,13 @@ struct SidebarPresentation {
         }
         let edgeTrigger = hasTopTrigger ? CGRect.zero : CGRect(
             x: side == .left ? screen.minX : screen.maxX - 3, y: edge.minY, width: 3, height: edge.height)
-        return Layout(sidebar: sidebar, compact: compact, drawing: drawing.intersection(available),
-                      edgeTrigger: edgeTrigger, topContentWidth: hasTopTrigger ? sidebar.width : nil)
+        // The notch zone sits above the usable area, which excludes the menu bar.
+        let drawingBounds = notchInset > 0
+            ? CGRect(x: available.minX, y: available.minY, width: available.width,
+                     height: screen.maxY - available.minY)
+            : available
+        return Layout(sidebar: sidebar, compact: compact, drawing: drawing.intersection(drawingBounds),
+                      edgeTrigger: edgeTrigger, topContentWidth: hasTopTrigger ? sidebar.width : nil,
+                      notchInset: notchInset)
     }
 }

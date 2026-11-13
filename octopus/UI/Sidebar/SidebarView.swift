@@ -19,6 +19,8 @@ final class SidebarViewState: ObservableObject {
     @Published var isTopCentered = false
     @Published var topContentWidth: CGFloat?
     @Published var topDrawingBottomPadding: CGFloat = 0
+    // Dock notch bar: the notch's size, which the bar opens from and keeps clear of icons.
+    @Published var notchBarNotchSize = CGSize.zero
     var dragDesktops: [SidebarDesktop]?
 
     func displayedGroups(in inventory: SidebarWindowInventory) -> [SidebarMonitorGroup] {
@@ -36,7 +38,11 @@ struct SidebarView: View {
     private var appSpacing: Double { state.configuration.appSpacing }
     private var labelFontSize: Double { state.configuration.fontSize }
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.colorScheme) private var systemColorScheme
+    // The Dock notch bar is always black, so it uses the dark-on-black colours in both appearances.
+    private var colorScheme: ColorScheme {
+        state.isTopCentered && state.configuration.style == .dock ? .dark : systemColorScheme
+    }
     var onClick: (SidebarEntryID) -> Void
     var onAnchor: (SidebarEntryID, SidebarAnchorChange) -> Void
     var onIconAnchor: (SidebarEntryID, SidebarAnchorChange) -> Void = { _, _ in }
@@ -281,9 +287,22 @@ struct SidebarView: View {
         let radius = SidebarLayout.dockCornerRadius
         let shape = UnevenRoundedRectangle(bottomLeadingRadius: radius, bottomTrailingRadius: radius,
                                            style: .continuous)
+        let flare = SidebarDockReveal.notchFlareRadius
         return GeometryReader { proxy in
-            let size = SidebarDockReveal.notchBarSize(full: proxy.size, isOpen: state.isDockOpen)
-            dockSurface(shape)
+            let size = SidebarDockReveal.notchBarSize(full: proxy.size, isOpen: state.isDockOpen,
+                                                      notch: state.notchBarNotchSize)
+            // Solid notch black, so the bar reads as the notch itself widening.
+            shape.fill(Color.black)
+                .overlay(alignment: .topLeading) {
+                    SidebarNotchFlare(mirrored: true).fill(Color.black)
+                        .frame(width: flare, height: flare).offset(x: -flare)
+                        .opacity(state.isDockOpen ? 1 : 0)
+                }
+                .overlay(alignment: .topTrailing) {
+                    SidebarNotchFlare().fill(Color.black)
+                        .frame(width: flare, height: flare).offset(x: flare)
+                        .opacity(state.isDockOpen ? 1 : 0)
+                }
                 .frame(width: size.width, height: size.height)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         }
@@ -356,6 +375,8 @@ struct SidebarView: View {
                 }
             }
             .padding(SidebarLayout.notchBarPadding)
+            // Icons sit below the notch zone that the bar grows out of.
+            .padding(.top, growsFromNotch ? state.notchBarNotchSize.height : 0)
             // Icons settle in after the bar has grown, and leave before it shrinks.
             .opacity(growsFromNotch && !state.isDockOpen ? 0 : 1)
             .background { if growsFromNotch { notchDockBar } }
@@ -363,6 +384,8 @@ struct SidebarView: View {
         }
         .scrollIndicators(.hidden)
         .scrollClipDisabled()
+        // Child views such as the label frost read the environment, not the property above.
+        .environment(\.colorScheme, colorScheme)
     }
 
     private func notchGroup(_ group: SidebarMonitorGroup, indices: [SidebarEntryID: Int]) -> some View {
@@ -640,6 +663,22 @@ struct SidebarNotchTriggerView: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel("Open app bar")
+    }
+}
+
+// Concave corner that joins the bar's side edge to the screen top. The right flare curves from
+// its top-right back to the bar edge at its bottom-left; `mirrored` gives the left one.
+struct SidebarNotchFlare: Shape {
+    var mirrored = false
+
+    func path(in rect: CGRect) -> Path {
+        let x: (CGFloat) -> CGFloat = { mirrored ? rect.maxX - $0 : rect.minX + $0 }
+        return Path { path in
+            path.move(to: CGPoint(x: x(0), y: rect.minY))
+            path.addLine(to: CGPoint(x: x(rect.width), y: rect.minY))
+            path.addQuadCurve(to: CGPoint(x: x(0), y: rect.maxY), control: CGPoint(x: x(0), y: rect.minY))
+            path.closeSubpath()
+        }
     }
 }
 

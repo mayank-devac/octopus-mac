@@ -90,9 +90,25 @@ enum SidebarStyle: String, CaseIterable, Codable {
     case dock, floating
 
     static let key = "sidebarStyle"
+    static let defaultStyle: Self = .dock
+
+    // Builds before the rename stored Dock as "inside" and Floating as "outside".
+    init?(storedValue: String) {
+        switch storedValue {
+        case "inside": self = .dock
+        case "outside": self = .floating
+        default: self.init(rawValue: storedValue)
+        }
+    }
+
+    // An unknown value falls back to the default style instead of failing the whole saved configuration.
+    init(from decoder: Decoder) throws {
+        let value = try decoder.singleValueContainer().decode(String.self)
+        self = Self(storedValue: value) ?? Self.defaultStyle
+    }
 
     static func saved(_ value: String?) -> Self {
-        value.flatMap(Self.init(rawValue:)) ?? .dock
+        value.flatMap(Self.init(storedValue:)) ?? defaultStyle
     }
 
     var rowHeight: CGFloat {
@@ -176,8 +192,7 @@ struct SidebarConfiguration: Codable, Equatable {
         side = try saved.decodeIfPresent(SidebarSide.self, forKey: .side) ?? side
         position = try saved.decodeIfPresent(Double.self, forKey: .position) ?? position
         idleBehavior = try saved.decodeIfPresent(SidebarIdleBehavior.self, forKey: .idleBehavior) ?? idleBehavior
-        // Profiles saved before this option keep the original floating look.
-        style = try saved.decodeIfPresent(SidebarStyle.self, forKey: .style) ?? .floating
+        style = try saved.decodeIfPresent(SidebarStyle.self, forKey: .style) ?? style
         compactShowsIcons = try saved.decodeIfPresent(Bool.self, forKey: .compactShowsIcons) ?? false
         autoHideShowsEdgeMark = try saved.decodeIfPresent(Bool.self, forKey: .autoHideShowsEdgeMark) ?? true
         showSingleWindowMenu = try saved.decodeIfPresent(Bool.self, forKey: .showSingleWindowMenu) ?? showSingleWindowMenu
@@ -287,7 +302,7 @@ enum SidebarSettings {
             "sidebarPosition": 0.5,
             "sidebarMonitor": "primary",
             "sidebarShowSingleWindowMenu": true,
-            SidebarStyle.key: SidebarStyle.dock.rawValue,
+            SidebarStyle.key: SidebarStyle.defaultStyle.rawValue,
             "sidebarAppSpacing": defaultAppSpacing,
             "sidebarFontSize": defaultFontSize,
             "sidebarShadowOpacity": defaultShadowOpacity,
@@ -413,7 +428,7 @@ enum SidebarLayout {
     static let virtualNotchWidthRange: ClosedRange<CGFloat> = 160...240
     static let virtualNotchHeightRange: ClosedRange<CGFloat> = 24...36
     static let notchBarMaximumScreenFraction: CGFloat = 0.72
-    static let notchBarPadding: CGFloat = 4
+    static let notchBarPadding: CGFloat = 8
     static let notchMonitorWidth: CGFloat = 40
     static let notchCloseDelay: TimeInterval = 0.25
     static let notchWindowMenuOffset: CGFloat = 40
@@ -522,13 +537,16 @@ enum SidebarLayout {
                       width: width, height: height)
     }
 
-    static func notchSidebarFrames(contentSize: CGSize, below notch: CGRect,
-                                   availableFrame: CGRect) -> (content: CGRect, panel: CGRect) {
+    // `topExtension` stretches the content up from the notch to the screen top, so the Dock bar
+    // can start as the notch itself and widen from there.
+    static func notchSidebarFrames(contentSize: CGSize, below notch: CGRect, availableFrame: CGRect,
+                                   topExtension: CGFloat = 0) -> (content: CGRect, panel: CGRect) {
         let width = min(max(0, contentSize.width), availableFrame.width)
         let availableHeight = max(0, notch.minY - availableFrame.minY)
-        let height = min(max(0, contentSize.height), availableHeight)
+        let barHeight = min(max(0, contentSize.height), availableHeight)
+        let height = barHeight + max(0, topExtension)
         let x = min(max(notch.midX - width / 2, availableFrame.minX), availableFrame.maxX - width)
-        let content = CGRect(x: x, y: notch.minY - height, width: width, height: height)
+        let content = CGRect(x: x, y: notch.minY - barHeight, width: width, height: height)
         let panelWidth = min(width + drawingPadding * 2, availableFrame.width)
         let panelX = min(max(content.midX - panelWidth / 2, availableFrame.minX),
                          availableFrame.maxX - panelWidth)

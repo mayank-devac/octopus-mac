@@ -34,13 +34,14 @@ enum SidebarDockReveal {
         return CGSize(width: min(closedWidth, full.width), height: full.height * closedHeightFraction)
     }
 
-    // The Mac Notch bar opens from a short sliver under the notch, then widens and drops to full size.
-    static let notchClosedWidthFraction: CGFloat = 0.3
-
-    static func notchBarSize(full: CGSize, isOpen: Bool) -> CGSize {
+    // The Mac Notch bar starts as the notch itself, then widens and drops to full size.
+    static func notchBarSize(full: CGSize, isOpen: Bool, notch: CGSize) -> CGSize {
         guard !isOpen else { return full }
-        return CGSize(width: full.width * notchClosedWidthFraction, height: min(closedWidth, full.height))
+        return CGSize(width: min(notch.width, full.width), height: min(notch.height, full.height))
     }
+
+    // Radius of the concave fillets that blend the open bar into the screen top beside the notch.
+    static let notchFlareRadius: CGFloat = 12
 }
 
 // Behind-window blur so the dock reads as frosted glass over the desktop, like the sidebar.
