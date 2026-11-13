@@ -564,7 +564,7 @@ struct SidebarView: View {
             .overlay(alignment: .topLeading) {
                 // Placed on the icon so it scales with magnification and the Dock strip.
                 if windowCount > 1 {
-                    SidebarWindowCountBadge(count: windowCount).offset(x: -5, y: -4).allowsHitTesting(false)
+                    SidebarWindowCountBadge(count: windowCount).offset(x: -2, y: -1).allowsHitTesting(false)
                 }
             }
             .scaleEffect(isDockStripClosed ? dockIconScale : dockIconScale * scale(for: index))

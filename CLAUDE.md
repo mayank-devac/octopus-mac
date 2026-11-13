@@ -78,7 +78,7 @@ Read the relevant `.agent/*.md` file before touching that area; recheck current 
 - Settings are `UserDefaults`/`@AppStorage` keys registered in the relevant `*Settings` type (`SidebarSettings.registerDefaults()` runs at launch).
 - `plans/` (git-ignored) holds numbered implementation plans with status tables; update `plans/README.md` when changing a plan's status.
 
-- **Clarity and maintainability**: Prefer concise, well-organized code that is easy to understand and modify. Group related functionality and use clear names and headings so developers can find things easily. Structure documentation with clear sections and concise explanations or footers where useful. In way that developers find it graspable. in way so the developer have chnage/edit less code and takes less time to achieve goals.
+- **Clarity and maintainability**: Prefer concise, well-organized code that is easy to understand and modify. Group related functionality and use clear names and headings so developers can find things easily. Structure documentation with clear sections and concise explanations or footers where useful. In way that developers find it graspable. in way so the developer have chnage/edit less code and takes less time to achieve goals. you should create files to just oranise and keep findable , specific files for specific thing - so that devleoper kwnowns where to go.  
 
 - **Comment example**: Use descriptive headers and explanatory closing comments for long functions or substantial blocks, not as boilerplate around every function.
   ```swift
