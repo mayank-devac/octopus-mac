@@ -51,17 +51,19 @@ struct SidebarPresentation {
         let spacing = CGFloat(configuration.appSpacing)
         let displayedCount = groups.flatMap(\.sections).reduce(0) { $0 + $1.entries.count }
         let collapsedCompact = usesCompactStrip && !expanded
+        let style = configuration.style
         let contentHeight: CGFloat?
         if collapsedCompact {
-            contentHeight = SidebarLayout.compactContentHeight(count: displayedCount, appSpacing: spacing)
+            contentHeight = SidebarLayout.compactContentHeight(count: displayedCount, appSpacing: spacing,
+                                                               itemHeight: style.rowHeight)
         } else if configuration.desktopScope == .allDesktops {
-            contentHeight = SidebarMonitorGroup.contentHeight(groups, spacing: spacing)
+            contentHeight = SidebarMonitorGroup.contentHeight(groups, spacing: spacing, style: style)
         } else {
             contentHeight = nil
         }
         let edge = SidebarLayout.sidebarFrame(in: available, count: entryCount, side: side,
             position: configuration.position, appSpacing: spacing, contentHeight: contentHeight,
-            minimumHeight: collapsedCompact ? 0 : SidebarLayout.rowHeight)
+            minimumHeight: collapsedCompact ? 0 : style.rowHeight, itemHeight: style.rowHeight)
         let sidebar: CGRect
         let compact: CGRect
         let drawing: CGRect

@@ -49,6 +49,9 @@ struct SidebarView: View {
     var onReveal: () -> Void = {}
 
     private var isCompact: Bool { state.configuration.idleBehavior == .compact }
+    // The horizontal Mac Notch bar keeps its own layout; Dock applies to the vertical sidebar.
+    private var isDock: Bool { state.configuration.style == .inside && !state.isTopCentered }
+    private var rowHeight: CGFloat { isDock ? SidebarLayout.dockRowHeight : SidebarLayout.rowHeight }
     private var showsMainSidebar: Bool { !isCompact || state.isExpanded }
     private var compactContentOffset: CGFloat {
         isCompact ? (state.side == .right ? 11 : -11) : 0
@@ -106,7 +109,19 @@ struct SidebarView: View {
                     VStack(spacing: CGFloat(appSpacing)) {
                         ForEach(groups) { group in
                             VStack(spacing: 0) {
-                                if let monitor = group.monitor {
+                                if let monitor = group.monitor, isDock {
+                                    sidebarRow {
+                                        SidebarDesktopSeparator(title: monitor.title, shadowOpacity: 0,
+                                                                inset: SidebarLayout.dockSeparatorInset, showsFrost: false)
+                                            .overlay {
+                                                SidebarGeometryAnchor(id: monitor.id, onAnchor: onMonitorAnchor)
+                                                    .allowsHitTesting(false)
+                                            }
+                                            .offset(x: compactContentOffset)
+                                    } compact: {
+                                        Color.clear.frame(width: SidebarLayout.compactWidth, height: SidebarLayout.desktopSeparatorHeight)
+                                    }
+                                } else if let monitor = group.monitor {
                                     sidebarRow {
                                         Text(monitor.title)
                                             .font(.system(size: max(CGFloat(labelFontSize) - 1, 8), weight: .medium))
@@ -142,7 +157,9 @@ struct SidebarView: View {
                                     if index > 0 {
                                         sidebarRow {
                                             SidebarDesktopSeparator(title: section.desktop?.title ?? "Other apps",
-                                                                    shadowOpacity: state.configuration.shadowOpacity)
+                                                                    shadowOpacity: state.configuration.shadowOpacity,
+                                                                    inset: isDock ? SidebarLayout.dockSeparatorInset : 8,
+                                                                    showsFrost: !isDock)
                                                 .offset(x: compactContentOffset)
                                         } compact: {
                                             Color.clear.frame(width: SidebarLayout.compactWidth, height: SidebarLayout.desktopSeparatorHeight)
@@ -155,6 +172,7 @@ struct SidebarView: View {
                         }
                     }
                     .padding(.vertical, SidebarLayout.verticalPadding)
+                    .background { if isDock { dockBar } }
                 }
                 .scrollIndicators(.hidden)
                 .scrollClipDisabled()
@@ -179,6 +197,19 @@ struct SidebarView: View {
         .frame(maxWidth: .infinity, alignment: sidebarAlignment)
         .padding(.bottom, state.isTopCentered ? state.topDrawingBottomPadding : 0)
         .accessibilityAction(named: Text("Expand sidebar"), onReveal)
+    }
+
+    // Dock style: the app icons sit inside one rounded bar.
+    private var dockBar: some View {
+        let isDark = colorScheme == .dark
+        let shape = RoundedRectangle(cornerRadius: 14, style: .continuous)
+        return shape
+            .fill(isDark ? Color(red: 0.11, green: 0.12, blue: 0.17).opacity(0.92) : Color(white: 0.97).opacity(0.92))
+            .overlay { shape.strokeBorder((isDark ? Color.white : Color.black).opacity(0.1), lineWidth: 1) }
+            .shadow(color: .black.opacity(isDark ? 0.45 : 0.18), radius: 8, y: 2)
+            .frame(width: SidebarLayout.dockBarWidth)
+            .offset(x: isCompact ? (state.side == .right ? 1 : -1) : 0)
+            .allowsHitTesting(false)
     }
 
     // Both columns share a scroll view so the compact strip stays aligned with app rows.
@@ -216,7 +247,7 @@ struct SidebarView: View {
 
     private func compactEntries(indices: [SidebarEntryID: Int]) -> some View {
         ScrollView(.vertical) {
-            VStack(spacing: SidebarLayout.labelHeight + CGFloat(appSpacing)) {
+            VStack(spacing: max(0, rowHeight - SidebarLayout.iconSlotHeight) + CGFloat(appSpacing)) {
                 ForEach(displayedEntries) { entry in
                     compactEntry(entry, index: indices[entry.id] ?? 0, reservesLabelSpace: false)
                 }
@@ -338,8 +369,8 @@ struct SidebarView: View {
             }
         }
             .frame(width: SidebarLayout.compactWidth, height: SidebarLayout.iconSlotHeight)
-            .frame(height: reservesLabelSpace ? SidebarLayout.rowHeight : SidebarLayout.iconSlotHeight,
-                   alignment: .top)
+            .frame(height: reservesLabelSpace ? rowHeight : SidebarLayout.iconSlotHeight,
+                   alignment: isDock ? .center : .top)
             .contentShape(Rectangle())
             .onTapGesture(perform: onReveal)
             .accessibilityLabel(Text(accessibilityDescription))
@@ -394,32 +425,34 @@ struct SidebarView: View {
             .offset(x: compactContentOffset)
             .frame(height: SidebarLayout.iconSlotHeight)
 
-            Text(title)
-                .font(.system(size: CGFloat(labelFontSize), weight: .medium))
-                .foregroundStyle(labelColor)
-                .lineLimit(2)
-                .allowsTightening(true)
-                .multilineTextAlignment(.center)
-                .fixedSize(horizontal: false, vertical: true)
-                .padding(.horizontal, labelPadding)
-                .padding(.vertical, hasNoWindows ? 1 : 2)
-                .background {
-                    if hasNoWindows {
-                        RoundedRectangle(cornerRadius: 5)
-                            .fill(Color(white: colorScheme == .dark ? 0.16 : 0.88))
-                            .allowsHitTesting(false)
-                    } else {
-                        SidebarFrostBackground(shadowOpacity: state.configuration.shadowOpacity)
+            if !isDock {
+                Text(title)
+                    .font(.system(size: CGFloat(labelFontSize), weight: .medium))
+                    .foregroundStyle(labelColor)
+                    .lineLimit(2)
+                    .allowsTightening(true)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, labelPadding)
+                    .padding(.vertical, hasNoWindows ? 1 : 2)
+                    .background {
+                        if hasNoWindows {
+                            RoundedRectangle(cornerRadius: 5)
+                                .fill(Color(white: colorScheme == .dark ? 0.16 : 0.88))
+                                .allowsHitTesting(false)
+                        } else {
+                            SidebarFrostBackground(shadowOpacity: state.configuration.shadowOpacity)
+                        }
                     }
-                }
-                .scaleEffect(scale(for: index), anchor: .top)
-                .frame(width: labelWidth + labelPadding * 2)
-                .frame(height: SidebarLayout.labelHeight, alignment: .top)
-                .padding(.horizontal, 3)
-                .offset(x: compactContentOffset)
+                    .scaleEffect(scale(for: index), anchor: .top)
+                    .frame(width: labelWidth + labelPadding * 2)
+                    .frame(height: SidebarLayout.labelHeight, alignment: .top)
+                    .padding(.horizontal, 3)
+                    .offset(x: compactContentOffset)
+            }
         }
         .frame(maxWidth: .infinity, alignment: .center)
-        .frame(height: SidebarLayout.rowHeight)
+        .frame(height: rowHeight)
         // Keep windowless names legible; only their icons retain the inactive dimming.
         .opacity(entry.visibleIDs.isEmpty && !hasNoWindows ? 0.65 : 1)
         .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: scale(for: index))
@@ -572,6 +605,8 @@ private struct SidebarDesktopSeparator: View {
     @Environment(\.colorScheme) private var colorScheme
     let title: String
     let shadowOpacity: Double
+    var inset: CGFloat = 8
+    var showsFrost = true
 
     var body: some View {
         let lineColor: Color = colorScheme == .dark ? .white : .black
@@ -583,10 +618,12 @@ private struct SidebarDesktopSeparator: View {
         .padding(.horizontal, 4)
         .frame(height: SidebarLayout.desktopSeparatorHeight)
         .background {
-            SidebarFrostBackground(shadowOpacity: shadowOpacity)
-                .opacity(0.55)
+            if showsFrost {
+                SidebarFrostBackground(shadowOpacity: shadowOpacity)
+                    .opacity(0.55)
+            }
         }
-        .padding(.horizontal, 8)
+        .padding(.horizontal, inset)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(title)
         .allowsHitTesting(false)

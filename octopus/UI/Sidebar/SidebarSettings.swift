@@ -65,8 +65,12 @@ enum SidebarActiveAppClickAction: String, CaseIterable {
 enum SidebarIdleBehavior: String, CaseIterable, Codable {
     case fade, hide, stayVisible, compact, notch
 
+    /// Behavior used when the user has not chosen one yet ("Auto-Hide" in Preferences).
+    static let defaultBehavior: Self = .hide
+
+    /// Decodes a persisted raw value, falling back to `defaultBehavior` when it is missing or unknown.
     static func saved(_ value: String?) -> Self {
-        value.flatMap(Self.init(rawValue:)) ?? .compact
+        value.flatMap(Self.init(rawValue:)) ?? defaultBehavior
     }
 
     var title: String {
@@ -77,6 +81,30 @@ enum SidebarIdleBehavior: String, CaseIterable, Codable {
         case .compact: return "Compact"
         case .notch: return "Mac Notch"
         }
+    }
+}
+
+// Outside ("Floating"): icons and window titles float over the desktop.
+// Inside ("Dock"): icons only, held inside a rounded bar.
+enum SidebarStyle: String, CaseIterable, Codable {
+    case inside, outside
+
+    static let key = "sidebarStyle"
+
+    static func saved(_ value: String?) -> Self {
+        value.flatMap(Self.init(rawValue:)) ?? .outside
+    }
+
+    var rowHeight: CGFloat {
+        self == .inside ? SidebarLayout.dockRowHeight : SidebarLayout.rowHeight
+    }
+
+    var monitorHeaderHeight: CGFloat {
+        self == .inside ? SidebarLayout.desktopSeparatorHeight : SidebarMonitor.headerHeight
+    }
+
+    var emptyHeight: CGFloat {
+        self == .inside ? 0 : SidebarMonitor.emptyHeight
     }
 }
 
@@ -100,6 +128,7 @@ struct SidebarConfiguration: Codable, Equatable {
     var side: SidebarSide
     var position: Double
     var idleBehavior: SidebarIdleBehavior
+    var style: SidebarStyle
     var compactShowsIcons: Bool
     var autoHideShowsEdgeMark: Bool
     var showSingleWindowMenu: Bool
@@ -116,6 +145,7 @@ struct SidebarConfiguration: Codable, Equatable {
         side = SidebarSide(rawValue: defaults?.string(forKey: "sidebarSide") ?? "") ?? .right
         position = defaults?.object(forKey: "sidebarPosition") as? Double ?? 0.5
         idleBehavior = .saved(defaults?.string(forKey: SidebarSettings.idleBehaviorKey))
+        style = .saved(defaults?.string(forKey: SidebarStyle.key))
         compactShowsIcons = defaults?.bool(forKey: SidebarSettings.compactIconsKey) ?? false
         autoHideShowsEdgeMark = defaults?.object(forKey: SidebarSettings.edgeMarkKey) as? Bool ?? true
         showSingleWindowMenu = defaults?.object(forKey: "sidebarShowSingleWindowMenu") as? Bool ?? true
@@ -132,7 +162,7 @@ struct SidebarConfiguration: Codable, Equatable {
     static var factoryDefaults: Self { Self(defaults: nil) }
 
     private enum CodingKeys: String, CodingKey {
-        case enabled, desktopScope, displayScope, side, position, idleBehavior, compactShowsIcons, autoHideShowsEdgeMark
+        case enabled, desktopScope, displayScope, side, position, idleBehavior, style, compactShowsIcons, autoHideShowsEdgeMark
         case showSingleWindowMenu, appSpacing, fontSize, shadowOpacity, snapDistance, virtualNotchWidth
     }
 
@@ -146,6 +176,8 @@ struct SidebarConfiguration: Codable, Equatable {
         side = try saved.decodeIfPresent(SidebarSide.self, forKey: .side) ?? side
         position = try saved.decodeIfPresent(Double.self, forKey: .position) ?? position
         idleBehavior = try saved.decodeIfPresent(SidebarIdleBehavior.self, forKey: .idleBehavior) ?? idleBehavior
+        // Profiles saved before this option keep the original floating look.
+        style = try saved.decodeIfPresent(SidebarStyle.self, forKey: .style) ?? .outside
         compactShowsIcons = try saved.decodeIfPresent(Bool.self, forKey: .compactShowsIcons) ?? false
         autoHideShowsEdgeMark = try saved.decodeIfPresent(Bool.self, forKey: .autoHideShowsEdgeMark) ?? true
         showSingleWindowMenu = try saved.decodeIfPresent(Bool.self, forKey: .showSingleWindowMenu) ?? showSingleWindowMenu
@@ -178,6 +210,7 @@ struct SidebarConfiguration: Codable, Equatable {
             "sidebarDisplayScope": displayScope.rawValue,
             "sidebarSide": side.rawValue, "sidebarPosition": position,
             SidebarSettings.idleBehaviorKey: idleBehavior.rawValue,
+            SidebarStyle.key: style.rawValue,
             SidebarSettings.compactIconsKey: compactShowsIcons,
             SidebarSettings.edgeMarkKey: autoHideShowsEdgeMark,
             "sidebarShowSingleWindowMenu": showSingleWindowMenu, "sidebarAppSpacing": appSpacing,
@@ -254,6 +287,7 @@ enum SidebarSettings {
             "sidebarPosition": 0.5,
             "sidebarMonitor": "primary",
             "sidebarShowSingleWindowMenu": true,
+            SidebarStyle.key: SidebarStyle.outside.rawValue,
             "sidebarAppSpacing": defaultAppSpacing,
             "sidebarFontSize": defaultFontSize,
             "sidebarShadowOpacity": defaultShadowOpacity,
@@ -391,6 +425,11 @@ enum SidebarLayout {
     static let menuGap: CGFloat = 2
     // Keep the icon and title close together so the sidebar reads as a compact dock.
     static let rowHeight: CGFloat = 86
+    // Dock style shows icons only, so each row needs just the enlarged icon's height.
+    static let dockRowHeight: CGFloat = 54
+    static let dockBarWidth: CGFloat = 58
+    // Keeps separator lines within the dock bar's rounded edges.
+    static let dockSeparatorInset: CGFloat = 20
     static let desktopSeparatorHeight: CGFloat = 12
     static let iconSize: CGFloat = 40
     static let iconSlotHeight: CGFloat = 46
@@ -409,11 +448,12 @@ enum SidebarLayout {
 
     static func sidebarFrame(in visibleFrame: CGRect, count: Int, side: SidebarSide, position: Double,
                              appSpacing: CGFloat = SidebarLayout.appSpacing, separatorCount: Int = 0,
-                             contentHeight: CGFloat? = nil, minimumHeight: CGFloat = rowHeight) -> CGRect {
+                             contentHeight: CGFloat? = nil, minimumHeight: CGFloat = rowHeight,
+                             itemHeight: CGFloat = rowHeight) -> CGRect {
         let gaps = CGFloat(max(0, count - 1)) * appSpacing
         let separators = CGFloat(max(0, separatorCount)) * (desktopSeparatorHeight + appSpacing)
         let height = min(max(minimumHeight,
-            contentHeight ?? (CGFloat(count) * rowHeight + gaps + separators + 16)), visibleFrame.height)
+            contentHeight ?? (CGFloat(count) * itemHeight + gaps + separators + 16)), visibleFrame.height)
         let width = min(Self.width, visibleFrame.width)
         return CGRect(
             x: side == .left ? visibleFrame.minX : visibleFrame.maxX - width,
@@ -422,10 +462,10 @@ enum SidebarLayout {
         )
     }
 
-    static func compactContentHeight(count: Int, appSpacing: CGFloat) -> CGFloat {
-        guard count > 0 else { return rowHeight }
+    static func compactContentHeight(count: Int, appSpacing: CGFloat, itemHeight: CGFloat = rowHeight) -> CGFloat {
+        guard count > 0 else { return itemHeight }
         let numberSlots = CGFloat(count) * iconSlotHeight
-        let gaps = CGFloat(count - 1) * (labelHeight + appSpacing)
+        let gaps = CGFloat(count - 1) * (max(0, itemHeight - iconSlotHeight) + appSpacing)
         return numberSlots + gaps + verticalPadding * 2
     }
 

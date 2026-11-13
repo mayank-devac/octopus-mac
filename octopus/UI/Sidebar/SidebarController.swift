@@ -285,8 +285,9 @@ private final class SidebarDisplayController {
     }
 
     private var ownsMenu: Bool { cycleController.sidebarOwnerID == menuOwnerID }
+    /// Presentation for the current settings; uses the default idle behavior until settings load.
     private var presentation: SidebarPresentation {
-        SidebarPresentation(behavior: settings?.idleBehavior ?? .compact,
+        SidebarPresentation(behavior: settings?.idleBehavior ?? .defaultBehavior,
                             hasNotchTrigger: !notchFrame.isEmpty, fullScreen: isFullScreen)
     }
     private var pointerFrame: CGRect {
@@ -889,7 +890,9 @@ private final class SidebarDisplayController {
         guard rect.intersects(sidebarFrame), !view.visibleRect.isEmpty else { return nil }
         // Reserve the enlarged icon's width so it cannot grow over the menu.
         let contentHeight = SidebarLayout.iconSlotHeight + SidebarLayout.labelHeight
-        let iconCenterY = rect.maxY - (SidebarLayout.rowHeight - contentHeight) / 2 - SidebarLayout.iconSlotHeight / 2
+        let isDock = viewState.configuration.style == .inside && !viewState.isTopCentered
+        let iconCenterY = isDock ? rect.midY
+            : rect.maxY - (SidebarLayout.rowHeight - contentHeight) / 2 - SidebarLayout.iconSlotHeight / 2
         let size = SidebarLayout.iconSize * (1 + SidebarLayout.magnificationGrowth)
         return CGRect(x: rect.midX - size / 2, y: iconCenterY - size / 2, width: size, height: size)
     }

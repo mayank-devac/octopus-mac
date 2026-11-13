@@ -185,6 +185,19 @@ struct PreferencesSidebarView: View {
             .disabled(!enabled)
 
             Section("Sidebar UI") {
+                Picker("UI", selection: setting(\.style)) {
+                    Text("Inside").tag(SidebarStyle.inside)
+                    Text("Outside").tag(SidebarStyle.outside)
+                }
+                .pickerStyle(.segmented)
+                .disabled(!editingEnabled || configuration.idleBehavior == .notch)
+                .help(configuration.idleBehavior == .notch
+                    ? "Mac Notch uses its own horizontal bar."
+                    : "Inside (Dock) shows only app icons inside a rounded bar. Outside (Floating) shows icons with window titles floating over the desktop.")
+                Text(configuration.style == .inside
+                     ? "Dock — app icons inside a bar"
+                     : "Floating — icons and window titles over the desktop")
+                    .font(.caption).foregroundStyle(.secondary)
                 Picker("Visibility", selection: setting(\.idleBehavior)) {
                     ForEach(SidebarIdleBehavior.allCases, id: \.rawValue) { behavior in
                         Text(behavior.title).tag(behavior)
@@ -262,6 +275,7 @@ struct PreferencesSidebarView: View {
                         .foregroundStyle(.secondary)
                         .frame(width: 38, alignment: .trailing)
                 }
+                .disabled(configuration.style == .inside && configuration.idleBehavior != .notch)
                 HStack {
                     Text("Shadow opacity")
                     Slider(value: Binding(

@@ -367,7 +367,7 @@ struct SidebarTests {
         #expect(SidebarSettings.configuration(for: "B", in: restarted) == other)
         #expect(SidebarIdleBehavior.saved("compact") == .compact)
         #expect(SidebarIdleBehavior.saved("notch") == .notch)
-        #expect(SidebarConfiguration.factoryDefaults.idleBehavior == .compact)
+        #expect(SidebarConfiguration.factoryDefaults.idleBehavior == .hide)
     }
 
     @Test func notchTriggerUsesHardwareGeometryOrProportionalVirtualNotch() throws {

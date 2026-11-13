@@ -111,7 +111,7 @@ struct SidebarMonitorGroup: Identifiable {
         return groups
     }
 
-    static func contentHeight(_ groups: [Self], spacing: CGFloat) -> CGFloat {
+    static func contentHeight(_ groups: [Self], spacing: CGFloat, style: SidebarStyle = .outside) -> CGFloat {
         let rows = groups.flatMap(\.sections).reduce(0) { $0 + $1.entries.count }
         let headers = groups.filter { $0.monitor != nil }.count
         let separators = groups.reduce(0) { $0 + max(0, $1.sections.count - 1) }
@@ -119,8 +119,8 @@ struct SidebarMonitorGroup: Identifiable {
             count + max(0, group.sections.reduce(0) { $0 + $1.entries.count } - 1)
         } + max(0, groups.count - 1)
         let empties = groups.filter { $0.monitor != nil && $0.sections.allSatisfy { $0.entries.isEmpty } }.count
-        return CGFloat(rows) * SidebarLayout.rowHeight + CGFloat(headers) * SidebarMonitor.headerHeight
-            + CGFloat(empties) * SidebarMonitor.emptyHeight
+        return CGFloat(rows) * style.rowHeight + CGFloat(headers) * style.monitorHeaderHeight
+            + CGFloat(empties) * style.emptyHeight
             + CGFloat(separators) * SidebarLayout.desktopSeparatorHeight
             + CGFloat(gaps) * spacing + SidebarLayout.verticalPadding * 2
     }
