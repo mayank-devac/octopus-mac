@@ -122,11 +122,20 @@ struct SidebarDesktopTransferTests {
                                               monitors: monitors, scope: .allDesktops)
         let line = SidebarLayout.desktopSeparatorHeight
         let spacing: CGFloat = 6
-        // Top: padding + hidden first line. Middle: gap, visible line, gap. Bottom: padding + matching space.
-        let top = SidebarLayout.verticalPadding + line
+        // Ends: padding only, as the hidden first line takes no space. Middle: gap, visible line, gap.
+        let top = SidebarLayout.verticalPadding
         let middle = spacing + line + spacing
-        let bottom = SidebarLayout.verticalPadding + line
+        let bottom = SidebarLayout.verticalPadding
         #expect(SidebarMonitorGroup.contentHeight(groups, spacing: spacing, style: .dock) == top + middle + bottom)
+    }
+
+    @MainActor @Test func dockLastRowDropsOnlyAnUnusedTitleLine() {
+        let app = Application(NSRunningApplication.current)
+        let entry = SidebarEntry(pid: 1, application: app, windows: [], preferredID: nil)
+        let trim = SidebarLayout.dockLastRowTrim(for: entry, fontSize: 10)
+        // A short app name takes one of the two reserved lines.
+        #expect(trim > 0)
+        #expect(trim < SidebarLayout.titleHeight(fontSize: 10) / 2 + 1)
     }
 
     @Test func threeMonitorsUseDistinctNumbersAndFilteredDisplaysKeepTheirNumber() {

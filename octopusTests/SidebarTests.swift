@@ -136,11 +136,11 @@ struct SidebarTests {
     @Test func choosingAStyleAppliesItsTitleAndSingleWindowMenuDefaults() throws {
         var config = SidebarConfiguration.factoryDefaults
         #expect(config.style == .dock && config.showsWindowTitles && !config.showSingleWindowMenu)
-        // The vertical Dock fits one title line under the icon; the Mac Notch bar keeps two.
-        let oneLineRow = SidebarLayout.iconSlotHeight + SidebarLayout.oneLineTitleHeight(fontSize: config.fontSize)
-        #expect(config.rowHeight == oneLineRow && oneLineRow < SidebarLayout.rowHeight)
+        // The vertical Dock sizes its two title lines to the font; the Mac Notch bar keeps a fixed row.
+        let titledRow = SidebarLayout.iconSlotHeight + SidebarLayout.titleHeight(fontSize: config.fontSize)
+        #expect(config.rowHeight == titledRow && titledRow < SidebarLayout.rowHeight)
         config.fontSize = SidebarSettings.maximumFontSize
-        #expect(config.rowHeight > oneLineRow)
+        #expect(config.rowHeight > titledRow)
         config.idleBehavior = .notch
         #expect(config.rowHeight == SidebarLayout.rowHeight)
 

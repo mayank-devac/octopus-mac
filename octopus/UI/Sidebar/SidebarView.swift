@@ -65,7 +65,6 @@ struct SidebarView: View {
     private var isDock: Bool { state.usesDockBar }
     private var showsTitles: Bool { state.configuration.showsWindowTitles }
     private var rowHeight: CGFloat { state.configuration.rowHeight }
-    private var oneLineTitles: Bool { state.configuration.usesOneLineTitles }
     private var showsMainSidebar: Bool { !isCompact || state.isExpanded }
     private var showsNoWindows: Bool {
         groups.isEmpty || (inventory.desktopScope == .visibleDesktops && inventory.entries.isEmpty)
@@ -159,6 +158,9 @@ struct SidebarView: View {
                                     }
                                     // A visible display line gets the same gap below it as the group gap above it.
                                     .padding(.bottom, group.id == groups.first?.id ? 0 : CGFloat(appSpacing))
+                                    // The hidden first line sits above the first icon without taking space,
+                                    // so the bar's ends keep only the normal padding.
+                                    .padding(.top, group.id == groups.first?.id ? -SidebarLayout.desktopSeparatorHeight : 0)
                                 } else if let monitor = group.monitor {
                                     sidebarRow {
                                         Text(monitorTitle(monitor, full: monitor.title))
@@ -212,8 +214,6 @@ struct SidebarView: View {
                         }
                     }
                     .padding(.vertical, SidebarLayout.verticalPadding)
-                    // The first display's hidden line still takes space at the top, so match it at the bottom.
-                    .padding(.bottom, isDock && groups.first?.monitor != nil ? SidebarLayout.desktopSeparatorHeight : 0)
                     // Compact Dock's column is narrower than the window, so pin it to the screen edge
                     // instead of letting the scroll view centre it.
                     .frame(maxWidth: .infinity, alignment: sidebarAlignment)
@@ -447,8 +447,8 @@ struct SidebarView: View {
     }
 
     private func item(_ entry: SidebarEntry, index: Int) -> some View {
-        let title = entry.preferredWindow?.title ?? entry.application.title
-        let hasNoWindows = entry.windows.isEmpty && entry.preferredID == nil && !entry.hasOtherWindows
+        let title = entry.sidebarTitle
+        let hasNoWindows = entry.showsAsWindowless
         let labelColor: Color = hasNoWindows
             ? Color(white: colorScheme == .dark ? 0.72 : 0.32)
             : (colorScheme == .dark ? .white : .black)
@@ -457,12 +457,17 @@ struct SidebarView: View {
         let maximumLabelScale: CGFloat = reduceMotion ? 1 : 1 + SidebarLayout.magnificationGrowth
         // Reserve width for the largest zoom so labels keep the same wrapping during hover.
         // The Dock draws no frost pill behind window titles, so they get that padding back as text width.
-        let labelPadding: CGFloat = hasNoWindows ? 2 : isDock ? 0 : 4
+        let labelPadding: CGFloat = isDock ? SidebarLayout.dockTitlePadding(windowless: hasNoWindows) : hasNoWindows ? 2 : 4
         // Dock titles wrap within the bar rather than the wider panel column.
         let itemWidth = state.isTopCentered ? SidebarLayout.notchItemWidth
             : isDock ? dock.barWidth : SidebarLayout.width
         let labelWidth = (itemWidth - 6) / maximumLabelScale - labelPadding * 2
         let windowCount = entry.windows.count
+        // The vertical Dock's last row drops its unused title line so the bar's ends match.
+        let rowTrim: CGFloat = showsTitles && state.configuration.usesFontSizedTitleRows
+            && entry.id == displayedEntries.last?.id
+            ? SidebarLayout.dockLastRowTrim(for: entry, fontSize: labelFontSize, maximumScale: maximumLabelScale)
+            : 0
         return VStack(alignment: .center, spacing: 0) {
             Group {
                 if let icon = entry.application.runningApplication?.icon {
@@ -507,15 +512,13 @@ struct SidebarView: View {
                 Text(title)
                     .font(.system(size: CGFloat(labelFontSize), weight: .medium))
                     .foregroundStyle(labelColor)
-                    .lineLimit(oneLineTitles ? 1 : 2)
+                    .lineLimit(SidebarLayout.titleLineLimit)
                     .truncationMode(.tail)
                     .allowsTightening(true)
-                    // A one-line title shrinks slightly before truncating, so it shows more letters.
-                    .minimumScaleFactor(oneLineTitles ? 0.85 : 1)
                     .multilineTextAlignment(.center)
                     .fixedSize(horizontal: false, vertical: true)
                     .padding(.horizontal, labelPadding)
-                    .padding(.vertical, hasNoWindows ? 1 : SidebarLayout.oneLineTitleVerticalPadding)
+                    .padding(.vertical, hasNoWindows ? 1 : SidebarLayout.titleVerticalPadding)
                     .background {
                         if hasNoWindows {
                             RoundedRectangle(cornerRadius: 5)
@@ -529,7 +532,7 @@ struct SidebarView: View {
                     .scaleEffect(scale(for: index), anchor: .top)
                     .frame(width: labelWidth + labelPadding * 2)
                     // The title gets whatever the row leaves below the icon slot.
-                    .frame(height: rowHeight - SidebarLayout.iconSlotHeight, alignment: .top)
+                    .frame(height: rowHeight - SidebarLayout.iconSlotHeight - rowTrim, alignment: .top)
                     .padding(.horizontal, 3)
                     .offset(x: compactContentOffset)
                     // The closed Compact Dock strip is icons only.
@@ -537,7 +540,7 @@ struct SidebarView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .center)
-        .frame(height: rowHeight)
+        .frame(height: rowHeight - rowTrim)
         // Keep windowless names legible; only their icons retain the inactive dimming.
         .opacity(entry.visibleIDs.isEmpty && !hasNoWindows ? 0.65 : 1)
         .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: scale(for: index))

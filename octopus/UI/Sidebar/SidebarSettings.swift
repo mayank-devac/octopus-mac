@@ -216,15 +216,16 @@ struct SidebarConfiguration: Codable, Equatable {
     //// Switching back and forth never loses a user's change.
     //////////////////
 
-    // Rows reserve space for the title below the icon only while titles are shown. The vertical Dock
-    // uses a one-line title sized to the font; Floating and the Mac Notch bar keep two lines.
+    // Rows reserve space for the title below the icon only while titles are shown. Titles take up to
+    // two lines everywhere; the vertical Dock sizes those lines to the font, while Floating and the
+    // Mac Notch bar keep a fixed row.
     var rowHeight: CGFloat {
         guard showsWindowTitles else { return SidebarLayout.iconOnlyRowHeight }
-        guard usesOneLineTitles else { return SidebarLayout.rowHeight }
-        return SidebarLayout.iconSlotHeight + SidebarLayout.oneLineTitleHeight(fontSize: fontSize)
+        guard usesFontSizedTitleRows else { return SidebarLayout.rowHeight }
+        return SidebarLayout.iconSlotHeight + SidebarLayout.titleHeight(fontSize: fontSize)
     }
 
-    var usesOneLineTitles: Bool { style == .dock && idleBehavior != .notch }
+    var usesFontSizedTitleRows: Bool { style == .dock && idleBehavior != .notch }
 
     private enum CodingKeys: String, CodingKey {
         case enabled, desktopScope, displayScope, side, position, idleBehavior, style, compactShowsIcons, autoHideShowsEdgeMark
@@ -505,7 +506,7 @@ enum SidebarLayout {
     static let iconOnlyRowHeight: CGFloat = 46
     static let dockBarWidth: CGFloat = 58
     // A titled Dock bar is wide enough to wrap titles like the Floating sidebar does.
-    static let dockTitledBarWidth: CGFloat = 80
+    static let dockTitledBarWidth: CGFloat = 70
     static let badgeFontSize: CGFloat = 9
     static let badgeMinimumWidth: CGFloat = 15
     static let dockCornerRadius: CGFloat = 16
@@ -515,12 +516,14 @@ enum SidebarLayout {
     static let iconSize: CGFloat = 40
     static let iconSlotHeight: CGFloat = 46
     static let labelHeight: CGFloat = 40
-    static let oneLineTitleVerticalPadding: CGFloat = 2
+    static let titleVerticalPadding: CGFloat = 2
+    static let titleLineLimit = 2
 
-    // One line of the medium-weight title font, plus its padding above and below.
-    static func oneLineTitleHeight(fontSize: Double) -> CGFloat {
+    // All title lines of the medium-weight title font, plus their padding above and below.
+    static func titleHeight(fontSize: Double) -> CGFloat {
         let font = NSFont.systemFont(ofSize: CGFloat(fontSize), weight: .medium)
-        return (font.ascender - font.descender + font.leading).rounded(.up) + oneLineTitleVerticalPadding * 2
+        let lineHeight = (font.ascender - font.descender + font.leading).rounded(.up)
+        return lineHeight * CGFloat(titleLineLimit) + titleVerticalPadding * 2
     }
     static let magnificationGrowth: CGFloat = 0.32
     static let verticalPadding: CGFloat = 4

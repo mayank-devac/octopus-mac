@@ -61,8 +61,13 @@ struct SidebarPresentation {
             contentHeight = SidebarLayout.compactContentHeight(count: displayedCount, appSpacing: spacing,
                                                                itemHeight: rowHeight)
         } else if configuration.desktopScope == .allDesktops {
+            // The vertical Dock's last row drops its unused title line, matching the view.
+            let lastEntry = groups.flatMap(\.sections).flatMap(\.entries).last
+            let lastRowTrim = configuration.showsWindowTitles && configuration.usesFontSizedTitleRows
+                ? lastEntry.map { SidebarLayout.dockLastRowTrim(for: $0, fontSize: configuration.fontSize) } ?? 0
+                : 0
             contentHeight = SidebarMonitorGroup.contentHeight(groups, spacing: spacing, style: style,
-                                                              rowHeight: rowHeight)
+                                                              rowHeight: rowHeight) - lastRowTrim
         } else {
             contentHeight = nil
         }
