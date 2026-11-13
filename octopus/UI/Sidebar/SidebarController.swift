@@ -263,7 +263,7 @@ private final class SidebarDisplayController {
         var side: SidebarSide { configuration.side }
         var position: Double { configuration.position }
         var idleBehavior: SidebarIdleBehavior { configuration.idleBehavior }
-        var showSingleWindowMenu: Bool { configuration.showSingleWindowMenu }
+        var showsMenuForSingleWindow: Bool { configuration.showsMenuForSingleWindow }
         var appSpacing: Double { configuration.appSpacing }
 
         init(displayID: String?) {
@@ -940,8 +940,8 @@ private final class SidebarDisplayController {
         guard rect.intersects(sidebarFrame), !view.visibleRect.isEmpty else { return nil }
         // Reserve the enlarged icon's width so it cannot grow over the menu.
         let contentHeight = SidebarLayout.iconSlotHeight + SidebarLayout.labelHeight
-        let isDock = viewState.configuration.style == .dock && !viewState.isTopCentered
-        let iconCenterY = isDock ? rect.midY
+        // An icon-only row is centred on its icon; a titled row keeps its icon at the top.
+        let iconCenterY = !viewState.configuration.showsWindowTitles ? rect.midY
             : rect.maxY - (SidebarLayout.rowHeight - contentHeight) / 2 - SidebarLayout.iconSlotHeight / 2
         let size = SidebarLayout.iconSize * (1 + SidebarLayout.magnificationGrowth)
         return CGRect(x: rect.midX - size / 2, y: iconCenterY - size / 2, width: size, height: size)
@@ -1005,7 +1005,7 @@ private final class SidebarDisplayController {
         guard !missionControlPresented, let screen, let settings else { return }
         guard !otherDragActive(), ownsMenu || (panel.isVisible && sidebarFrame.contains(NSEvent.mouseLocation)) else { return }
         guard !entry.windows.isEmpty,
-              entry.windows.count > 1 || entry.hasOtherWindows || settings.showSingleWindowMenu else {
+              entry.windows.count > 1 || entry.hasOtherWindows || settings.showsMenuForSingleWindow else {
             dismissSidebar()
             return
         }

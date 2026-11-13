@@ -84,8 +84,9 @@ enum SidebarIdleBehavior: String, CaseIterable, Codable {
     }
 }
 
-// Floating: icons and window titles float over the desktop.
-// Dock: icons only, held inside a rounded bar.
+// Floating: icons float over the desktop.
+// Dock: icons held inside a rounded bar.
+// Each style keeps its own window-title choice (see SidebarConfiguration.showsWindowTitles).
 enum SidebarStyle: String, CaseIterable, Codable {
     case dock, floating
 
@@ -109,10 +110,6 @@ enum SidebarStyle: String, CaseIterable, Codable {
 
     static func saved(_ value: String?) -> Self {
         value.flatMap(Self.init(storedValue:)) ?? defaultStyle
-    }
-
-    var rowHeight: CGFloat {
-        self == .dock ? SidebarLayout.dockRowHeight : SidebarLayout.rowHeight
     }
 
     var monitorHeaderHeight: CGFloat {
@@ -147,7 +144,11 @@ struct SidebarConfiguration: Codable, Equatable {
     var style: SidebarStyle
     var compactShowsIcons: Bool
     var autoHideShowsEdgeMark: Bool
+    // Floating style's choice; Dock keeps its own in `dockShowSingleWindowMenu`.
     var showSingleWindowMenu: Bool
+    var dockShowSingleWindowMenu: Bool
+    var floatingShowsWindowTitles: Bool
+    var dockShowsWindowTitles: Bool
     var appSpacing: Double
     var fontSize: Double
     var shadowOpacity: Double
@@ -165,6 +166,9 @@ struct SidebarConfiguration: Codable, Equatable {
         compactShowsIcons = defaults?.bool(forKey: SidebarSettings.compactIconsKey) ?? false
         autoHideShowsEdgeMark = defaults?.object(forKey: SidebarSettings.edgeMarkKey) as? Bool ?? true
         showSingleWindowMenu = defaults?.object(forKey: "sidebarShowSingleWindowMenu") as? Bool ?? true
+        dockShowSingleWindowMenu = defaults?.object(forKey: SidebarSettings.dockSingleWindowMenuKey) as? Bool ?? false
+        floatingShowsWindowTitles = defaults?.object(forKey: SidebarSettings.floatingWindowTitlesKey) as? Bool ?? false
+        dockShowsWindowTitles = defaults?.object(forKey: SidebarSettings.dockWindowTitlesKey) as? Bool ?? true
         appSpacing = defaults?.object(forKey: "sidebarAppSpacing") as? Double ?? SidebarSettings.defaultAppSpacing
         fontSize = defaults?.object(forKey: "sidebarFontSize") as? Double ?? SidebarSettings.defaultFontSize
         shadowOpacity = defaults?.object(forKey: "sidebarShadowOpacity") as? Double ?? SidebarSettings.defaultShadowOpacity
@@ -177,9 +181,24 @@ struct SidebarConfiguration: Codable, Equatable {
     // Passing no preference store uses the same fallbacks as a fresh installation.
     static var factoryDefaults: Self { Self(defaults: nil) }
 
+    // The current style's choice; Preferences edits the value of whichever style is selected.
+    var showsWindowTitles: Bool {
+        get { style == .dock ? dockShowsWindowTitles : floatingShowsWindowTitles }
+        set { if style == .dock { dockShowsWindowTitles = newValue } else { floatingShowsWindowTitles = newValue } }
+    }
+
+    var showsMenuForSingleWindow: Bool {
+        get { style == .dock ? dockShowSingleWindowMenu : showSingleWindowMenu }
+        set { if style == .dock { dockShowSingleWindowMenu = newValue } else { showSingleWindowMenu = newValue } }
+    }
+
+    // Rows reserve space for the title below the icon only while titles are shown.
+    var rowHeight: CGFloat { showsWindowTitles ? SidebarLayout.rowHeight : SidebarLayout.iconOnlyRowHeight }
+
     private enum CodingKeys: String, CodingKey {
         case enabled, desktopScope, displayScope, side, position, idleBehavior, style, compactShowsIcons, autoHideShowsEdgeMark
-        case showSingleWindowMenu, appSpacing, fontSize, shadowOpacity, snapDistance, virtualNotchWidth
+        case showSingleWindowMenu, dockShowSingleWindowMenu, floatingShowsWindowTitles, dockShowsWindowTitles
+        case appSpacing, fontSize, shadowOpacity, snapDistance, virtualNotchWidth
     }
 
     init(from decoder: Decoder) throws {
@@ -196,6 +215,11 @@ struct SidebarConfiguration: Codable, Equatable {
         compactShowsIcons = try saved.decodeIfPresent(Bool.self, forKey: .compactShowsIcons) ?? false
         autoHideShowsEdgeMark = try saved.decodeIfPresent(Bool.self, forKey: .autoHideShowsEdgeMark) ?? true
         showSingleWindowMenu = try saved.decodeIfPresent(Bool.self, forKey: .showSingleWindowMenu) ?? showSingleWindowMenu
+        dockShowSingleWindowMenu = try saved.decodeIfPresent(Bool.self, forKey: .dockShowSingleWindowMenu)
+            ?? dockShowSingleWindowMenu
+        floatingShowsWindowTitles = try saved.decodeIfPresent(Bool.self, forKey: .floatingShowsWindowTitles)
+            ?? floatingShowsWindowTitles
+        dockShowsWindowTitles = try saved.decodeIfPresent(Bool.self, forKey: .dockShowsWindowTitles) ?? dockShowsWindowTitles
         appSpacing = try saved.decodeIfPresent(Double.self, forKey: .appSpacing) ?? appSpacing
         fontSize = try saved.decodeIfPresent(Double.self, forKey: .fontSize) ?? fontSize
         shadowOpacity = try saved.decodeIfPresent(Double.self, forKey: .shadowOpacity) ?? shadowOpacity
@@ -228,7 +252,11 @@ struct SidebarConfiguration: Codable, Equatable {
             SidebarStyle.key: style.rawValue,
             SidebarSettings.compactIconsKey: compactShowsIcons,
             SidebarSettings.edgeMarkKey: autoHideShowsEdgeMark,
-            "sidebarShowSingleWindowMenu": showSingleWindowMenu, "sidebarAppSpacing": appSpacing,
+            "sidebarShowSingleWindowMenu": showSingleWindowMenu,
+            SidebarSettings.dockSingleWindowMenuKey: dockShowSingleWindowMenu,
+            SidebarSettings.floatingWindowTitlesKey: floatingShowsWindowTitles,
+            SidebarSettings.dockWindowTitlesKey: dockShowsWindowTitles,
+            "sidebarAppSpacing": appSpacing,
             "sidebarFontSize": fontSize, "sidebarShadowOpacity": shadowOpacity,
             "sidebarSnapDistance": snapDistance,
             SidebarSettings.virtualNotchWidthKey: virtualNotchWidth
@@ -255,6 +283,9 @@ enum SidebarDisplayTarget: Hashable {
 enum SidebarSettings {
     static let compactIconsKey = "sidebarCompactShowsIcons"
     static let edgeMarkKey = "sidebarAutoHideEdgeMark"
+    static let dockSingleWindowMenuKey = "sidebarDockShowSingleWindowMenu"
+    static let floatingWindowTitlesKey = "sidebarFloatingShowsWindowTitles"
+    static let dockWindowTitlesKey = "sidebarDockShowsWindowTitles"
     static let virtualNotchWidthKey = "sidebarVirtualNotchWidth"
     static let defaultVirtualNotchWidth: Double = 200
     static let virtualNotchWidthRange: ClosedRange<Double> = 100...400
@@ -302,6 +333,9 @@ enum SidebarSettings {
             "sidebarPosition": 0.5,
             "sidebarMonitor": "primary",
             "sidebarShowSingleWindowMenu": true,
+            dockSingleWindowMenuKey: false,
+            floatingWindowTitlesKey: false,
+            dockWindowTitlesKey: true,
             SidebarStyle.key: SidebarStyle.defaultStyle.rawValue,
             "sidebarAppSpacing": defaultAppSpacing,
             "sidebarFontSize": defaultFontSize,
@@ -440,9 +474,13 @@ enum SidebarLayout {
     static let menuGap: CGFloat = 2
     // Keep the icon and title close together so the sidebar reads as a compact dock.
     static let rowHeight: CGFloat = 86
-    // Dock style shows icons only, so each row needs just the enlarged icon's height.
-    static let dockRowHeight: CGFloat = 46
+    // Without window titles, each row needs just the enlarged icon's height.
+    static let iconOnlyRowHeight: CGFloat = 46
     static let dockBarWidth: CGFloat = 58
+    // A titled Dock bar is wide enough to wrap titles like the Floating sidebar does.
+    static let dockTitledBarWidth: CGFloat = 80
+    static let badgeFontSize: CGFloat = 9
+    static let badgeMinimumWidth: CGFloat = 15
     static let dockCornerRadius: CGFloat = 16
     // Keeps separator lines within the dock bar's rounded edges.
     static let dockSeparatorInset: CGFloat = 20
@@ -557,15 +595,15 @@ enum SidebarLayout {
                                 width: panelWidth, height: height + bottomPadding))
     }
 
-    static func notchBarSize(count: Int, appSpacing: CGFloat,
-                             availableFrame: CGRect, groupedWidth: CGFloat? = nil) -> CGSize {
+    static func notchBarSize(count: Int, appSpacing: CGFloat, availableFrame: CGRect,
+                             groupedWidth: CGFloat? = nil, itemHeight: CGFloat = rowHeight) -> CGSize {
         let itemCount = max(1, count)
         let idealWidth = max(width, groupedWidth ?? (CGFloat(itemCount) * notchItemWidth
             + CGFloat(max(0, itemCount - 1)) * appSpacing)) + notchBarPadding * 2
         let maximumWidth = min(availableFrame.width,
             max(width + notchBarPadding * 2, availableFrame.width * notchBarMaximumScreenFraction))
         return CGSize(width: min(idealWidth, maximumWidth),
-                      height: min(rowHeight + notchBarPadding * 2, availableFrame.height))
+                      height: min(itemHeight + notchBarPadding * 2, availableFrame.height))
     }
 
     static func acceptsSidebarPointer(at point: CGPoint, sidebar: CGRect, menu: CGRect?) -> Bool {

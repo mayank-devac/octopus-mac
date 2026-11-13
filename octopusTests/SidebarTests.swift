@@ -85,6 +85,34 @@ struct SidebarTests {
         #expect(try decode("{\"side\":\"left\"}").style == SidebarConfiguration.factoryDefaults.style)
     }
 
+    @Test func windowTitlesAndSingleWindowMenuDefaultPerStyleAndPersist() throws {
+        var config = SidebarConfiguration.factoryDefaults
+        config.style = .dock
+        #expect(config.showsWindowTitles && !config.showsMenuForSingleWindow)
+        #expect(config.rowHeight == SidebarLayout.rowHeight)
+        config.style = .floating
+        #expect(!config.showsWindowTitles && config.showsMenuForSingleWindow)
+        #expect(config.rowHeight == SidebarLayout.iconOnlyRowHeight)
+
+        // Editing one style leaves the other style's choice alone.
+        config.showsWindowTitles = true
+        config.style = .dock
+        config.showsWindowTitles = false
+        #expect(config.floatingShowsWindowTitles && !config.dockShowsWindowTitles)
+
+        // Profiles saved before these settings get the per-style defaults.
+        let older = try JSONDecoder().decode(SidebarConfiguration.self, from: Data("{\"side\":\"left\"}".utf8))
+        #expect(older.dockShowsWindowTitles && !older.floatingShowsWindowTitles && !older.dockShowSingleWindowMenu)
+
+        let suite = "SidebarTitles-\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        config.saveSingleSidebar(in: defaults)
+        #expect(SidebarConfiguration(defaults: defaults) == config)
+        let decoded = try JSONDecoder().decode(SidebarConfiguration.self, from: JSONEncoder().encode(config))
+        #expect(decoded == config)
+    }
+
     @Test func sidebarNumberModifiersKeepDefaultsAndRememberSelection() throws {
         let suite = "SidebarModifiers-\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: suite))

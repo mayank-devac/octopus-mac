@@ -54,19 +54,21 @@ struct SidebarPresentation {
         let displayedCount = groups.flatMap(\.sections).reduce(0) { $0 + $1.entries.count }
         let collapsedCompact = usesCompactStrip && !expanded
         let style = configuration.style
+        let rowHeight = configuration.rowHeight
         let contentHeight: CGFloat?
         // A Dock strip keeps its open height so each small icon grows in place into its Dock icon.
         if collapsedCompact && style != .dock {
             contentHeight = SidebarLayout.compactContentHeight(count: displayedCount, appSpacing: spacing,
-                                                               itemHeight: style.rowHeight)
+                                                               itemHeight: rowHeight)
         } else if configuration.desktopScope == .allDesktops {
-            contentHeight = SidebarMonitorGroup.contentHeight(groups, spacing: spacing, style: style)
+            contentHeight = SidebarMonitorGroup.contentHeight(groups, spacing: spacing, style: style,
+                                                              rowHeight: rowHeight)
         } else {
             contentHeight = nil
         }
         let edge = SidebarLayout.sidebarFrame(in: available, count: entryCount, side: side,
             position: configuration.position, appSpacing: spacing, contentHeight: contentHeight,
-            minimumHeight: collapsedCompact && style != .dock ? 0 : style.rowHeight, itemHeight: style.rowHeight)
+            minimumHeight: collapsedCompact && style != .dock ? 0 : rowHeight, itemHeight: rowHeight)
         let sidebar: CGRect
         let compact: CGRect
         let drawing: CGRect
@@ -85,7 +87,8 @@ struct SidebarPresentation {
                 : frames.panel
         case .notch:
             let notchSize = SidebarLayout.notchBarSize(count: displayedCount, appSpacing: spacing,
-                availableFrame: available, groupedWidth: SidebarMonitorGroup.notchContentWidth(groups, spacing: spacing))
+                availableFrame: available, groupedWidth: SidebarMonitorGroup.notchContentWidth(groups, spacing: spacing),
+                itemHeight: rowHeight)
             // Dock style reaches the screen top, over the menu bar, so the bar grows out of the notch.
             notchInset = style == .dock ? max(0, screen.maxY - notch.minY) : 0
             let frames = SidebarLayout.notchSidebarFrames(contentSize: notchSize, below: notch,

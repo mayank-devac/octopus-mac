@@ -59,7 +59,8 @@ struct SidebarView: View {
     private var isCompact: Bool { state.configuration.idleBehavior == .compact }
     // The horizontal Mac Notch bar keeps its own layout; Dock applies to the vertical sidebar.
     private var isDock: Bool { state.configuration.style == .dock && !state.isTopCentered }
-    private var rowHeight: CGFloat { isDock ? SidebarLayout.dockRowHeight : SidebarLayout.rowHeight }
+    private var showsTitles: Bool { state.configuration.showsWindowTitles }
+    private var rowHeight: CGFloat { state.configuration.rowHeight }
     private var showsMainSidebar: Bool { !isCompact || state.isExpanded }
     private var showsNoWindows: Bool {
         groups.isEmpty || (inventory.desktopScope == .visibleDesktops && inventory.entries.isEmpty)
@@ -74,7 +75,10 @@ struct SidebarView: View {
         guard isDockStripClosed else { return 0 }
         return state.side == .right ? SidebarDockReveal.stripIconShift : -SidebarDockReveal.stripIconShift
     }
-    private var dockBarWidth: CGFloat { isCompactDock ? SidebarDockReveal.compactBarWidth : SidebarLayout.dockBarWidth }
+    private var dockBarWidth: CGFloat {
+        if showsTitles { return SidebarLayout.dockTitledBarWidth }
+        return isCompactDock ? SidebarDockReveal.compactBarWidth : SidebarLayout.dockBarWidth
+    }
     // Keeps separator lines inside the bar's rounded edges, whichever bar width is in use.
     private var dockSeparatorInset: CGFloat {
         SidebarLayout.dockSeparatorInset + (SidebarLayout.dockBarWidth - dockBarWidth) / 2
@@ -162,7 +166,7 @@ struct SidebarView: View {
                                     }
                                 } else if let monitor = group.monitor {
                                     sidebarRow {
-                                        Text(monitor.title)
+                                        Text(monitorTitle(monitor, full: monitor.title))
                                             .font(.system(size: max(CGFloat(labelFontSize) - 1, 8), weight: .medium))
                                             .foregroundStyle(colorScheme == .dark ? Color.white : Color.black)
                                             .multilineTextAlignment(.center).lineLimit(3)
@@ -395,7 +399,7 @@ struct SidebarView: View {
                     .padding(.trailing, CGFloat(appSpacing))
                 if group.sections.allSatisfy({ $0.entries.isEmpty }) {
                     Text("Empty").font(.caption).foregroundStyle(.secondary)
-                        .frame(width: SidebarLayout.notchEmptyWidth, height: SidebarLayout.rowHeight)
+                        .frame(width: SidebarLayout.notchEmptyWidth, height: rowHeight)
                 }
             }
             ForEach(Array(group.sections.enumerated()), id: \.element.id) { index, section in
@@ -409,7 +413,7 @@ struct SidebarView: View {
     }
 
     private func notchMonitorLabel(_ monitor: SidebarMonitor) -> some View {
-        let title = monitor.numberedTitle
+        let title = monitorTitle(monitor, full: monitor.numberedTitle)
         return Text(title)
             .font(.system(size: CGFloat(max(labelFontSize - 1, 8)), weight: .medium))
             .foregroundStyle(colorScheme == .dark ? Color.white : Color.black)
@@ -418,14 +422,19 @@ struct SidebarView: View {
             .padding(.horizontal, 6)
             .padding(.vertical, 2)
             .background { SidebarFrostBackground(shadowOpacity: state.configuration.shadowOpacity) }
-            .frame(width: SidebarLayout.rowHeight - 8, height: SidebarLayout.notchMonitorWidth)
+            .frame(width: rowHeight - 8, height: SidebarLayout.notchMonitorWidth)
             .rotationEffect(.degrees(-90))
-            .frame(width: SidebarLayout.notchMonitorWidth, height: SidebarLayout.rowHeight)
+            .frame(width: SidebarLayout.notchMonitorWidth, height: rowHeight)
             .contentShape(Rectangle())
             .overlay {
                 SidebarGeometryAnchor(id: monitor.id, onAnchor: onMonitorAnchor).allowsHitTesting(false)
             }
-            .help(title).accessibilityLabel(title)
+            .help(monitor.numberedTitle).accessibilityLabel(monitor.numberedTitle)
+    }
+
+    // Without window titles, display headings shrink to just the display number.
+    private func monitorTitle(_ monitor: SidebarMonitor, full: String) -> String {
+        showsTitles ? full : monitor.numberTitle
     }
 
     private func notchDesktopSeparator(title: String) -> some View {
@@ -434,7 +443,7 @@ struct SidebarView: View {
             .init(color: .clear, location: 0), .init(color: lineColor.opacity(0.65), location: 0.2),
             .init(color: lineColor.opacity(0.65), location: 0.8), .init(color: .clear, location: 1)
         ], startPoint: .top, endPoint: .bottom)
-        .frame(width: 1, height: SidebarLayout.rowHeight - 8)
+        .frame(width: 1, height: rowHeight - 8)
         .frame(width: SidebarLayout.notchSeparatorWidth)
         .background { SidebarFrostBackground(shadowOpacity: state.configuration.shadowOpacity).opacity(0.55) }
         .accessibilityElement(children: .ignore)
@@ -487,7 +496,7 @@ struct SidebarView: View {
         }
             .frame(width: SidebarLayout.compactWidth, height: SidebarLayout.iconSlotHeight)
             .frame(height: reservesLabelSpace ? rowHeight : SidebarLayout.iconSlotHeight,
-                   alignment: isDock ? .center : .top)
+                   alignment: showsTitles ? .top : .center)
             .contentShape(Rectangle())
             .onTapGesture(perform: onReveal)
             .accessibilityLabel(Text(accessibilityDescription))
@@ -506,8 +515,11 @@ struct SidebarView: View {
         let maximumLabelScale: CGFloat = reduceMotion ? 1 : 1 + SidebarLayout.magnificationGrowth
         // Reserve width for the largest zoom so labels keep the same wrapping during hover.
         let labelPadding: CGFloat = hasNoWindows ? 2 : 4
-        let itemWidth = state.isTopCentered ? SidebarLayout.notchItemWidth : SidebarLayout.width
+        // Dock titles wrap within the bar rather than the wider panel column.
+        let itemWidth = state.isTopCentered ? SidebarLayout.notchItemWidth
+            : isDock ? dockBarWidth : SidebarLayout.width
         let labelWidth = (itemWidth - 6) / maximumLabelScale - labelPadding * 2
+        let windowCount = entry.windows.count
         return VStack(alignment: .center, spacing: 0) {
             Group {
                 if let icon = entry.application.runningApplication?.icon {
@@ -538,11 +550,17 @@ struct SidebarView: View {
                         .padding(-3).allowsHitTesting(false)
                 }
             }
+            .overlay(alignment: .topTrailing) {
+                // Placed on the icon so it scales with magnification and the Dock strip.
+                if windowCount > 1 {
+                    SidebarWindowCountBadge(count: windowCount).offset(x: 5, y: -4).allowsHitTesting(false)
+                }
+            }
             .scaleEffect(isDockStripClosed ? dockIconScale : dockIconScale * scale(for: index))
             .offset(x: compactContentOffset + stripIconOffset)
             .frame(height: SidebarLayout.iconSlotHeight)
 
-            if !isDock {
+            if showsTitles {
                 Text(title)
                     .font(.system(size: CGFloat(labelFontSize), weight: .medium))
                     .foregroundStyle(labelColor)
@@ -557,7 +575,8 @@ struct SidebarView: View {
                             RoundedRectangle(cornerRadius: 5)
                                 .fill(Color(white: colorScheme == .dark ? 0.16 : 0.88))
                                 .allowsHitTesting(false)
-                        } else {
+                        } else if !isDock {
+                            // The Dock's glass already backs its titles.
                             SidebarFrostBackground(shadowOpacity: state.configuration.shadowOpacity)
                         }
                     }
@@ -566,6 +585,8 @@ struct SidebarView: View {
                     .frame(height: SidebarLayout.labelHeight, alignment: .top)
                     .padding(.horizontal, 3)
                     .offset(x: compactContentOffset)
+                    // The closed Compact Dock strip is icons only.
+                    .opacity(isDockStripClosed ? 0 : 1)
             }
         }
         .frame(maxWidth: .infinity, alignment: .center)
@@ -594,7 +615,8 @@ struct SidebarView: View {
             }
         }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("\(entry.application.title): \(title), \(entry.desktop?.title ?? "Other apps")")
+        .accessibilityLabel("\(entry.application.title): \(title), \(entry.desktop?.title ?? "Other apps")"
+            + (windowCount > 1 ? ", \(windowCount) windows" : ""))
         .accessibilityHint(entry.preferredID == nil ? "Activate app"
             : entry.isHidden || entry.preferredID.flatMap { entry.windowStates[$0.windowID]?.isMinimized } == true
                 ? "Restore window" : "Focus window")
@@ -737,6 +759,24 @@ private struct SidebarIconDropBorder: View {
             }
         }
         .accessibilityHidden(true)
+    }
+}
+
+// Dock-style count of an app's windows in this row.
+private struct SidebarWindowCountBadge: View {
+    let count: Int
+
+    var body: some View {
+        Text(String(count))
+            .font(.system(size: SidebarLayout.badgeFontSize, weight: .bold, design: .rounded))
+            .monospacedDigit()
+            .foregroundStyle(Color.white)
+            .padding(.horizontal, 4)
+            .frame(minWidth: SidebarLayout.badgeMinimumWidth, minHeight: SidebarLayout.badgeMinimumWidth)
+            .background(Capsule().fill(Color.red))
+            .overlay(Capsule().stroke(Color.white.opacity(0.8), lineWidth: 1))
+            .fixedSize()
+            .accessibilityHidden(true)
     }
 }
 

@@ -184,8 +184,9 @@ struct PreferencesSidebarView: View {
                 }
                 .disabled(!editingEnabled)
                 .help("Current display shows only windows belonging to the display where this sidebar appears. Show windows still controls which desktops are included.")
-                Toggle("Show menu for apps with one window", isOn: setting(\.showSingleWindowMenu))
+                Toggle("Show menu for apps with one window", isOn: setting(\.showsMenuForSingleWindow))
                     .disabled(!editingEnabled)
+                    .help("Saved separately for Dock and Floating styles.")
             }
             .disabled(!enabled)
 
@@ -199,7 +200,10 @@ struct PreferencesSidebarView: View {
                 .disabled(!editingEnabled || configuration.idleBehavior == .notch)
                 .help(configuration.idleBehavior == .notch
                     ? "Mac Notch uses its own horizontal bar."
-                    : "Dock shows only app icons in a rounded bar. Floating shows icons with window titles floating over the desktop.")
+                    : "Dock shows app icons in a rounded bar. Floating shows icons floating over the desktop.")
+                Toggle("Show window titles", isOn: setting(\.showsWindowTitles).animation())
+                    .disabled(!editingEnabled)
+                    .help("Show each window’s title under its icon. Saved separately for Dock and Floating styles; when off, display names shrink to their numbers.")
                 Picker("Visibility", selection: setting(\.idleBehavior)) {
                     ForEach(SidebarIdleBehavior.allCases, id: \.rawValue) { behavior in
                         Text(behavior.title).tag(behavior)
@@ -277,7 +281,9 @@ struct PreferencesSidebarView: View {
                         .foregroundStyle(.secondary)
                         .frame(width: 38, alignment: .trailing)
                 }
-                .disabled(configuration.style == .dock && configuration.idleBehavior != .notch)
+                // Vertical Dock without titles draws no text; Floating headings and the notch bar still do.
+                .disabled(configuration.style == .dock && configuration.idleBehavior != .notch
+                          && !configuration.showsWindowTitles)
                 HStack {
                     Text("Shadow opacity")
                     Slider(value: Binding(
