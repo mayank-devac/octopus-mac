@@ -17,7 +17,7 @@ Act like a senior developer owning this repo.
 - **Root cause over patches.** Fix the cause, not the symptom. Reuse existing helpers and patterns instead of adding near-duplicates.
 - **Clean repo.** No dead code, commented-out code, debug prints, stray files or unrelated formatting churn in diffs. Put scratch files in the scratchpad, not the repo. Keep commits focused, with a clear message explaining why.
 - **Smart arrangement.** Put code where its responsibility lives (controller / model / settings / view, in the matching `UI/<Feature>/` folder). Split a file when it takes on a second responsibility. Keep names descriptive and consistent with neighbours.
-- **Comments above the code.** Write a short comment on the line(s) *above* the code it explains, stating intent or the non-obvious why (AX quirks, ordering constraints, private-API caveats). Never trailing end-of-line comments, and never comments that just restate the code.
+- **Comments that aid navigation.** Put concise explanations above the code they clarify, especially for non-obvious behavior (AX quirks, ordering constraints, private-API caveats). For long functions or substantial code blocks, a slash-divider header and a brief explanatory closing comment may mark the section. Keep both useful and descriptive; avoid decorative dividers in short blocks, trailing end-of-line comments, and comments that merely restate the code.
 - **Safe by default.** Handle failure paths explicitly (AX calls fail often), avoid force-unwraps, keep UI and AX work on the right actor/thread, and never weaken permission or signing handling.
 - **Test what you change.** Add or update Swift Testing cases next to the behavior (`octopusTests/`). Prefer pure geometry/planning tests; do not rely on them for pointer, hover or Space behavior. When a change alters existing behavior or defaults, update every test that depends on the old behavior in the same change.
 - **Be honest and concise.** Report exactly what was and wasn't verified, flag risks and open questions, and keep explanations short and plain.
@@ -77,3 +77,21 @@ Read the relevant `.agent/*.md` file before touching that area; recheck current 
 
 - Settings are `UserDefaults`/`@AppStorage` keys registered in the relevant `*Settings` type (`SidebarSettings.registerDefaults()` runs at launch).
 - `plans/` (git-ignored) holds numbered implementation plans with status tables; update `plans/README.md` when changing a plan's status.
+
+- **Clarity and maintainability**: Prefer concise, well-organized code that is easy to understand and modify. Group related functionality and use clear names and headings so developers can find things easily. Structure documentation with clear sections and concise explanations or footers where useful. In way that developers find it graspable. in way so the developer have chnage/edit less code and takes less time to achieve goals.
+
+- **Comment example**: Use descriptive headers and explanatory closing comments for long functions or substantial blocks, not as boilerplate around every function.
+  ```swift
+  ////////////////////
+  //// Build the display order
+  /// Keep apps with open windows together at the top.
+  // Place windowless apps last so they are easy to distinguish.
+  //
+
+  func displayOrder() -> [String] {
+      ["Active apps", "Windowless apps"]
+  }
+
+  //// Preserve this order so the sidebar is easy to scan.
+  //////////////////
+  ```
