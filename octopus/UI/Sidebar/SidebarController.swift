@@ -233,6 +233,7 @@ private final class SidebarDisplayController {
     private var dismissWork: DispatchWorkItem?
     private var revealWork: DispatchWorkItem?
     private var hideWork: DispatchWorkItem?
+    private var dockCloseWork: DispatchWorkItem?
     private var anchors: [SidebarEntryID: NSView] = [:]
     private var iconAnchors: [SidebarEntryID: NSView] = [:]
     private var frozeForAnotherDrag = false
@@ -707,10 +708,48 @@ private final class SidebarDisplayController {
     private func bringSidebarForward(keepingMenuAbove: Bool) {
         guard !missionControlPresented else { return }
         // These calls preserve the sidebar levels and do not take keyboard focus.
-        panel.orderFrontRegardless()
+        orderSidebarFront()
         if keepingMenuAbove {
             cycleController.panel.orderFrontRegardless()
         }
+    }
+
+    private var usesDockReveal: Bool {
+        viewState.configuration.style == .dock
+    }
+
+    // Show the panel with the dock collapsed, then open it on the next turn so it grows out of the edge.
+    // Showing again while a close is running cancels that close and reopens in place.
+    private func orderSidebarFront() {
+        let wasShown = panel.isVisible && panel.isOnActiveSpace
+        dockCloseWork?.cancel()
+        dockCloseWork = nil
+        if !wasShown, viewState.isDockOpen {
+            viewState.isDockOpen = false
+            // Apply the collapsed state before the window appears so the full bar never flashes.
+            panel.contentView?.layoutSubtreeIfNeeded()
+        }
+        panel.orderFrontRegardless()
+        guard !viewState.isDockOpen else { return }
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.dockCloseWork == nil, self.panel.isVisible,
+                  self.presentation.showsMainSidebar(expanded: self.viewState.isExpanded) else { return }
+            self.viewState.isDockOpen = true
+        }
+    }
+
+    // Shrink the dock into the edge, then run the hide. Other styles and Reduce Motion hide at once.
+    private func closeDock(then finish: @escaping () -> Void) {
+        let animates = usesDockReveal && viewState.isDockOpen && panel.isVisible
+            && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        viewState.isDockOpen = false
+        guard animates else { finish(); return }
+        let work = DispatchWorkItem { [weak self] in
+            self?.dockCloseWork = nil
+            finish()
+        }
+        dockCloseWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + SidebarDockReveal.closeDuration, execute: work)
     }
 
     private var isFullScreen: Bool {
@@ -890,7 +929,7 @@ private final class SidebarDisplayController {
         guard rect.intersects(sidebarFrame), !view.visibleRect.isEmpty else { return nil }
         // Reserve the enlarged icon's width so it cannot grow over the menu.
         let contentHeight = SidebarLayout.iconSlotHeight + SidebarLayout.labelHeight
-        let isDock = viewState.configuration.style == .inside && !viewState.isTopCentered
+        let isDock = viewState.configuration.style == .dock && !viewState.isTopCentered
         let iconCenterY = isDock ? rect.midY
             : rect.maxY - (SidebarLayout.rowHeight - contentHeight) / 2 - SidebarLayout.iconSlotHeight / 2
         let size = SidebarLayout.iconSize * (1 + SidebarLayout.magnificationGrowth)
@@ -1175,7 +1214,7 @@ private final class SidebarDisplayController {
                     guard self.settings?.enabled == true, self.edgeFrame.contains(NSEvent.mouseLocation),
                           !self.otherDragActive(),
                           !self.cycleController.isKeyboardSwitcherVisible else { return }
-                    self.panel.orderFrontRegardless()
+                    self.orderSidebarFront()
                     self.inventory.refresh()
                     self.updatePointer()
                 }
@@ -1189,9 +1228,10 @@ private final class SidebarDisplayController {
         }
 
         // Hide the sidebar only after its window menu has closed.
+        // A running dock close already owns the hide; scheduling another would cut its animation short.
         if presentation.closesWhenOutside(expanded: viewState.isExpanded), panel.isVisible,
            !positionScrollCapture.isActive, !inSidebar, !inCompact, !inNotch, !inMenu, !inEdge,
-           sidebarEntryID == nil, !isPeeking {
+           sidebarEntryID == nil, !isPeeking, dockCloseWork == nil {
             if hideWork == nil {
                 let work = DispatchWorkItem { [weak self] in
                     guard let self else { return }
@@ -1204,13 +1244,16 @@ private final class SidebarDisplayController {
                           !self.dragController.isActive, !self.otherDragActive(),
                           !self.pointerFrame.contains(point), !inNotch,
                           !self.edgeFrame.contains(point) else { return }
-                    if self.presentation.usesPersistentTrigger { self.viewState.isExpanded = false }
-                    if self.presentation.usesCompactStrip { self.layout() }
-                    else { self.panel.orderOut(nil) }
-                    self.dismissSidebar()
-                    self.hoveredEntryID = nil
-                    self.viewState.highlightedEntryID = nil
-                    self.updateEdgeMark()
+                    self.closeDock { [weak self] in
+                        guard let self else { return }
+                        if self.presentation.usesPersistentTrigger { self.viewState.isExpanded = false }
+                        if self.presentation.usesCompactStrip { self.layout() }
+                        else { self.panel.orderOut(nil) }
+                        self.dismissSidebar()
+                        self.hoveredEntryID = nil
+                        self.viewState.highlightedEntryID = nil
+                        self.updateEdgeMark()
+                    }
                 }
                 hideWork = work
                 if presentation.closeDelay > 0 {

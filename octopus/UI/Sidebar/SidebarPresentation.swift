@@ -53,7 +53,8 @@ struct SidebarPresentation {
         let collapsedCompact = usesCompactStrip && !expanded
         let style = configuration.style
         let contentHeight: CGFloat?
-        if collapsedCompact {
+        // A Dock strip keeps its open height so each small icon grows in place into its Dock icon.
+        if collapsedCompact && style != .dock {
             contentHeight = SidebarLayout.compactContentHeight(count: displayedCount, appSpacing: spacing,
                                                                itemHeight: style.rowHeight)
         } else if configuration.desktopScope == .allDesktops {
@@ -63,16 +64,22 @@ struct SidebarPresentation {
         }
         let edge = SidebarLayout.sidebarFrame(in: available, count: entryCount, side: side,
             position: configuration.position, appSpacing: spacing, contentHeight: contentHeight,
-            minimumHeight: collapsedCompact ? 0 : style.rowHeight, itemHeight: style.rowHeight)
+            minimumHeight: collapsedCompact && style != .dock ? 0 : style.rowHeight, itemHeight: style.rowHeight)
         let sidebar: CGRect
         let compact: CGRect
         let drawing: CGRect
         switch mode {
         case .compact:
-            let frames = SidebarLayout.compactFrames(beside: edge, side: side, expanded: expanded)
+            // The Dock's closed pill is wider than the number strip so its icons stay readable.
+            let stripWidth = style == .dock ? SidebarDockReveal.stripWidth : SidebarLayout.compactWidth
+            let frames = SidebarLayout.compactFrames(beside: edge, side: side, expanded: expanded, stripWidth: stripWidth)
             sidebar = frames.main
             compact = frames.compact
-            drawing = frames.panel
+            // The Dock grows inside its window, so the window keeps its open size; pointer input
+            // still follows pointerFrame, which stays the strip while closed.
+            drawing = style == .dock
+                ? SidebarLayout.compactFrames(beside: edge, side: side, expanded: true, stripWidth: stripWidth).panel
+                : frames.panel
         case .notch:
             let notchSize = SidebarLayout.notchBarSize(count: displayedCount, appSpacing: spacing,
                 availableFrame: available, groupedWidth: SidebarMonitorGroup.notchContentWidth(groups, spacing: spacing))

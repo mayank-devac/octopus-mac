@@ -81,14 +81,19 @@ struct PreferencesSidebarView: View {
         }
     }
 
+    // Each save writes many defaults keys and every write triggers a reload, so only assign state that
+    // actually changed; redundant assignments re-render controls mid-animation (e.g. the Style picker slide).
     private func reload() {
-        screens = NSScreen.screens
-        savedDisplays = SidebarSettings.displayPreferences()
+        let latestScreens = NSScreen.screens
+        if latestScreens != screens { screens = latestScreens }
+        let latestDisplays = SidebarSettings.displayPreferences()
+        if latestDisplays != savedDisplays { savedDisplays = latestDisplays }
         if !displayChoices.contains(where: { $0.id == selectedDisplayID }) {
             selectedDisplayID = displayChoices.first(where: { $0.id == monitor })?.id
                 ?? displayChoices.first?.id ?? ""
         }
-        configuration = SidebarSettings.configuration(for: multiDisplay ? selectedDisplayID : nil)
+        let latestConfiguration = SidebarSettings.configuration(for: multiDisplay ? selectedDisplayID : nil)
+        if latestConfiguration != configuration { configuration = latestConfiguration }
     }
 
     private func enableCompactIconsForConnectedDisplays() {
@@ -185,19 +190,16 @@ struct PreferencesSidebarView: View {
             .disabled(!enabled)
 
             Section("Sidebar UI") {
-                Picker("UI", selection: setting(\.style)) {
-                    Text("Inside").tag(SidebarStyle.inside)
-                    Text("Outside").tag(SidebarStyle.outside)
+                // Animate the switch so rows that depend on the style (e.g. Font size) change smoothly with the segment slide.
+                Picker("Style", selection: setting(\.style).animation()) {
+                    Text("Dock").tag(SidebarStyle.dock)
+                    Text("Floating").tag(SidebarStyle.floating)
                 }
                 .pickerStyle(.segmented)
                 .disabled(!editingEnabled || configuration.idleBehavior == .notch)
                 .help(configuration.idleBehavior == .notch
                     ? "Mac Notch uses its own horizontal bar."
-                    : "Inside (Dock) shows only app icons inside a rounded bar. Outside (Floating) shows icons with window titles floating over the desktop.")
-                Text(configuration.style == .inside
-                     ? "Dock — app icons inside a bar"
-                     : "Floating — icons and window titles over the desktop")
-                    .font(.caption).foregroundStyle(.secondary)
+                    : "Dock shows only app icons in a rounded bar. Floating shows icons with window titles floating over the desktop.")
                 Picker("Visibility", selection: setting(\.idleBehavior)) {
                     ForEach(SidebarIdleBehavior.allCases, id: \.rawValue) { behavior in
                         Text(behavior.title).tag(behavior)
@@ -275,7 +277,7 @@ struct PreferencesSidebarView: View {
                         .foregroundStyle(.secondary)
                         .frame(width: 38, alignment: .trailing)
                 }
-                .disabled(configuration.style == .inside && configuration.idleBehavior != .notch)
+                .disabled(configuration.style == .dock && configuration.idleBehavior != .notch)
                 HStack {
                     Text("Shadow opacity")
                     Slider(value: Binding(

@@ -14,6 +14,8 @@ final class SidebarViewState: ObservableObject {
     @Published var monitors: [SidebarMonitor] = []
     @Published var configuration = SidebarConfiguration()
     @Published var isExpanded = false
+    // Dock style only: the controller opens this after the panel is shown and closes it before hiding.
+    @Published var isDockOpen = false
     @Published var isTopCentered = false
     @Published var topContentWidth: CGFloat?
     @Published var topDrawingBottomPadding: CGFloat = 0
@@ -50,15 +52,41 @@ struct SidebarView: View {
 
     private var isCompact: Bool { state.configuration.idleBehavior == .compact }
     // The horizontal Mac Notch bar keeps its own layout; Dock applies to the vertical sidebar.
-    private var isDock: Bool { state.configuration.style == .inside && !state.isTopCentered }
+    private var isDock: Bool { state.configuration.style == .dock && !state.isTopCentered }
     private var rowHeight: CGFloat { isDock ? SidebarLayout.dockRowHeight : SidebarLayout.rowHeight }
     private var showsMainSidebar: Bool { !isCompact || state.isExpanded }
+    private var showsNoWindows: Bool {
+        groups.isEmpty || (inventory.desktopScope == .visibleDesktops && inventory.entries.isEmpty)
+    }
+    // Compact Dock has no separate number strip: the closed Dock is the strip, and its icons grow in place.
+    private var isCompactDock: Bool { isCompact && isDock && inventory.hasPermission && !showsNoWindows }
+    private var isDockStripClosed: Bool { isCompactDock && !state.isDockOpen }
     private var compactContentOffset: CGFloat {
-        isCompact ? (state.side == .right ? 11 : -11) : 0
+        isCompact && !isCompactDock ? (state.side == .right ? 11 : -11) : 0
+    }
+    private var stripIconOffset: CGFloat {
+        guard isDockStripClosed else { return 0 }
+        return state.side == .right ? SidebarDockReveal.stripIconShift : -SidebarDockReveal.stripIconShift
+    }
+    private var dockBarWidth: CGFloat { isCompactDock ? SidebarDockReveal.compactBarWidth : SidebarLayout.dockBarWidth }
+    // Keeps separator lines inside the bar's rounded edges, whichever bar width is in use.
+    private var dockSeparatorInset: CGFloat {
+        SidebarLayout.dockSeparatorInset + (SidebarLayout.dockBarWidth - dockBarWidth) / 2
+    }
+    private var dockIconScale: CGFloat {
+        if isDockStripClosed { return SidebarDockReveal.stripIconScale }
+        return isCompactDock ? SidebarDockReveal.compactIconScale : 1
     }
     private var contentWidth: CGFloat? {
         state.isTopCentered ? state.topContentWidth
-            : (showsMainSidebar ? SidebarLayout.width : 0) + (isCompact ? SidebarLayout.compactWidth : 0)
+            : (showsMainSidebar || isCompactDock ? SidebarLayout.width : 0)
+                + (isCompactDock ? SidebarDockReveal.stripWidth : isCompact ? SidebarLayout.compactWidth : 0)
+    }
+    // Dock separators appear last when opening and vanish first when closing.
+    private var dockSeparatorOpacity: Double { isDock && !state.isDockOpen ? 0 : 1 }
+    private var dockSeparatorAnimation: Animation? {
+        guard isDock, !reduceMotion else { return nil }
+        return state.isDockOpen ? SidebarDockReveal.separatorOpenAnimation : SidebarDockReveal.separatorCloseAnimation
     }
     private var sidebarAlignment: Alignment {
         state.isTopCentered ? .center : state.side == .left ? .leading : .trailing
@@ -90,7 +118,7 @@ struct SidebarView: View {
                         .accessibilityLabel("Allow Accessibility access")
                         .frame(width: SidebarLayout.compactWidth, height: 76)
                 }
-            } else if groups.isEmpty || (inventory.desktopScope == .visibleDesktops && inventory.entries.isEmpty) {
+            } else if showsNoWindows {
                 sidebarRow {
                     Text("No windows")
                         .font(.caption)
@@ -100,7 +128,7 @@ struct SidebarView: View {
                     Text("–").frame(width: SidebarLayout.compactWidth, height: 76)
                         .accessibilityLabel("No windows")
                 }
-            } else if isCompact && !showsMainSidebar {
+            } else if isCompact && !showsMainSidebar && !isCompactDock {
                 compactEntries(indices: indices)
             } else if state.isTopCentered {
                 notchEntries(indices: indices)
@@ -111,13 +139,18 @@ struct SidebarView: View {
                             VStack(spacing: 0) {
                                 if let monitor = group.monitor, isDock {
                                     sidebarRow {
+                                        // The first display has nothing above it to separate, so its line stays hidden;
+                                        // the row remains as that display's drop target.
                                         SidebarDesktopSeparator(title: monitor.title, shadowOpacity: 0,
-                                                                inset: SidebarLayout.dockSeparatorInset, showsFrost: false)
+                                                                inset: dockSeparatorInset, showsFrost: false)
+                                            .opacity(group.id == groups.first?.id ? 0 : 1)
                                             .overlay {
                                                 SidebarGeometryAnchor(id: monitor.id, onAnchor: onMonitorAnchor)
                                                     .allowsHitTesting(false)
                                             }
                                             .offset(x: compactContentOffset)
+                                            .opacity(dockSeparatorOpacity)
+                                            .animation(dockSeparatorAnimation, value: state.isDockOpen)
                                     } compact: {
                                         Color.clear.frame(width: SidebarLayout.compactWidth, height: SidebarLayout.desktopSeparatorHeight)
                                     }
@@ -158,9 +191,11 @@ struct SidebarView: View {
                                         sidebarRow {
                                             SidebarDesktopSeparator(title: section.desktop?.title ?? "Other apps",
                                                                     shadowOpacity: state.configuration.shadowOpacity,
-                                                                    inset: isDock ? SidebarLayout.dockSeparatorInset : 8,
+                                                                    inset: isDock ? dockSeparatorInset : 8,
                                                                     showsFrost: !isDock)
                                                 .offset(x: compactContentOffset)
+                                                .opacity(dockSeparatorOpacity)
+                                                .animation(dockSeparatorAnimation, value: state.isDockOpen)
                                         } compact: {
                                             Color.clear.frame(width: SidebarLayout.compactWidth, height: SidebarLayout.desktopSeparatorHeight)
                                         }
@@ -172,17 +207,24 @@ struct SidebarView: View {
                         }
                     }
                     .padding(.vertical, SidebarLayout.verticalPadding)
+                    // Compact Dock's column is narrower than the window, so pin it to the screen edge
+                    // instead of letting the scroll view centre it.
+                    .frame(maxWidth: .infinity, alignment: sidebarAlignment)
+                    // Compact Dock keeps its icons visible in the strip; the other Dock modes fade them in.
+                    .opacity(isDock && !isCompact && !state.isDockOpen ? 0 : 1)
+                    .offset(x: dockContentOffset)
                     .background { if isDock { dockBar } }
+                    .animation(dockAnimation, value: state.isDockOpen)
                 }
                 .scrollIndicators(.hidden)
                 .scrollClipDisabled()
             }
         }
         .foregroundStyle(colorScheme == .dark ? Color.white : Color.black)
-        .frame(width: contentWidth)
+        .frame(width: contentWidth, alignment: sidebarAlignment)
         .frame(maxHeight: .infinity, alignment: state.isTopCentered ? .top : .center)
         .background(alignment: sidebarAlignment) {
-            if isCompact {
+            if isCompact && !isCompactDock {
                 UnevenRoundedRectangle(
                     topLeadingRadius: state.side == .right ? 12 : 0,
                     bottomLeadingRadius: state.side == .right ? 12 : 0,
@@ -199,26 +241,73 @@ struct SidebarView: View {
         .accessibilityAction(named: Text("Expand sidebar"), onReveal)
     }
 
-    // Dock style: the app icons sit inside one rounded bar.
+    private var dockAnimation: Animation? {
+        guard state.configuration.style == .dock, !reduceMotion else { return nil }
+        return state.isDockOpen ? SidebarDockReveal.openAnimation : SidebarDockReveal.closeAnimation
+    }
+
+    // Moves the icon column toward the screen edge so it is centred in the bar; the closed
+    // non-compact Dock tucks it a little further in while the bar is a sliver.
+    private var dockContentOffset: CGFloat {
+        guard isDock else { return 0 }
+        let tuckedIn = !isCompact && !state.isDockOpen ? SidebarDockReveal.closedContentOffset : 0
+        let shift = SidebarDockReveal.edgeShift(barWidth: dockBarWidth) + tuckedIn
+        return state.side == .right ? shift : -shift
+    }
+
+    // Dock style: one frosted panel attached to the screen edge; only its inner corners are rounded.
+    // It grows out of the edge from a thin, vertically centred sliver.
     private var dockBar: some View {
+        let isRight = state.side == .right
+        let radius = SidebarLayout.dockCornerRadius
+        let shape = UnevenRoundedRectangle(
+            topLeadingRadius: isRight ? radius : 0, bottomLeadingRadius: isRight ? radius : 0,
+            bottomTrailingRadius: isRight ? 0 : radius, topTrailingRadius: isRight ? 0 : radius,
+            style: .continuous)
+        // The icon column is shifted to the edge (see dockContentOffset), so the bar is just wide enough for it.
+        let width = dockBarWidth
+        return GeometryReader { proxy in
+            let size = SidebarDockReveal.barSize(full: CGSize(width: width, height: proxy.size.height),
+                                                 isOpen: state.isDockOpen, strip: isCompactDock)
+            dockSurface(shape)
+                .frame(width: size.width, height: size.height)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: isRight ? .trailing : .leading)
+        }
+        .allowsHitTesting(false)
+    }
+
+    // Mac Notch + Dock style: the bar hangs from the top edge and grows down and out from a thin sliver.
+    private var notchDockBar: some View {
+        let radius = SidebarLayout.dockCornerRadius
+        let shape = UnevenRoundedRectangle(bottomLeadingRadius: radius, bottomTrailingRadius: radius,
+                                           style: .continuous)
+        return GeometryReader { proxy in
+            let size = SidebarDockReveal.notchBarSize(full: proxy.size, isOpen: state.isDockOpen)
+            dockSurface(shape)
+                .frame(width: size.width, height: size.height)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        }
+        .allowsHitTesting(false)
+    }
+
+    private func dockSurface(_ shape: UnevenRoundedRectangle) -> some View {
         let isDark = colorScheme == .dark
-        let shape = RoundedRectangle(cornerRadius: 14, style: .continuous)
-        return shape
-            .fill(isDark ? Color(red: 0.11, green: 0.12, blue: 0.17).opacity(0.92) : Color(white: 0.97).opacity(0.92))
-            .overlay { shape.strokeBorder((isDark ? Color.white : Color.black).opacity(0.1), lineWidth: 1) }
-            .shadow(color: .black.opacity(isDark ? 0.45 : 0.18), radius: 8, y: 2)
-            .frame(width: SidebarLayout.dockBarWidth)
-            .offset(x: isCompact ? (state.side == .right ? 1 : -1) : 0)
-            .allowsHitTesting(false)
+        return SidebarDockGlass()
+            .clipShape(shape)
+            .background { shape.fill(Color.black.opacity(isDark ? 0.4 : 0.14)).blur(radius: 6).offset(y: 2) }
     }
 
     // Both columns share a scroll view so the compact strip stays aligned with app rows.
     private func sidebarRow<Main: View, Compact: View>(@ViewBuilder main: () -> Main,
                                                       @ViewBuilder compact: () -> Compact) -> some View {
         HStack(spacing: 0) {
-            if isCompact && state.side == .left { compact() }
-            if showsMainSidebar { main().frame(width: SidebarLayout.width) }
-            if isCompact && state.side == .right { compact() }
+            if isCompactDock {
+                main().frame(width: SidebarLayout.width)
+            } else {
+                if isCompact && state.side == .left { compact() }
+                if showsMainSidebar { main().frame(width: SidebarLayout.width) }
+                if isCompact && state.side == .right { compact() }
+            }
         }
     }
 
@@ -259,13 +348,18 @@ struct SidebarView: View {
     }
 
     private func notchEntries(indices: [SidebarEntryID: Int]) -> some View {
-        ScrollView(.horizontal) {
+        let growsFromNotch = state.configuration.style == .dock
+        return ScrollView(.horizontal) {
             HStack(spacing: CGFloat(appSpacing)) {
                 ForEach(groups) { group in
                     notchGroup(group, indices: indices)
                 }
             }
             .padding(SidebarLayout.notchBarPadding)
+            // Icons settle in after the bar has grown, and leave before it shrinks.
+            .opacity(growsFromNotch && !state.isDockOpen ? 0 : 1)
+            .background { if growsFromNotch { notchDockBar } }
+            .animation(dockAnimation, value: state.isDockOpen)
         }
         .scrollIndicators(.hidden)
         .scrollClipDisabled()
@@ -421,8 +515,8 @@ struct SidebarView: View {
                         .padding(-3).allowsHitTesting(false)
                 }
             }
-            .scaleEffect(scale(for: index))
-            .offset(x: compactContentOffset)
+            .scaleEffect(isDockStripClosed ? dockIconScale : dockIconScale * scale(for: index))
+            .offset(x: compactContentOffset + stripIconOffset)
             .frame(height: SidebarLayout.iconSlotHeight)
 
             if !isDock {
@@ -469,6 +563,12 @@ struct SidebarView: View {
                 onDoubleClick: { if let id = dragTarget { onPlacement(id, .maximize) } },
                 doubleClickTarget: dragTarget
             )
+        }
+        .overlay {
+            // A click on a strip icon opens the Dock, matching the number strip, rather than focusing the app.
+            if isDockStripClosed {
+                Color.clear.contentShape(Rectangle()).onTapGesture(perform: onReveal)
+            }
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("\(entry.application.title): \(title), \(entry.desktop?.title ?? "Other apps")")

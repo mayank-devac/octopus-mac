@@ -15,6 +15,58 @@ import Testing
 @testable import octopus
 
 struct SidebarTests {
+    @Test func dockRevealGrowsFromAThinCentredSliverToTheFullBar() {
+        let full = CGSize(width: 72, height: 300)
+        #expect(SidebarDockReveal.barSize(full: full, isOpen: true) == full)
+        let closed = SidebarDockReveal.barSize(full: full, isOpen: false)
+        #expect(closed.width == SidebarDockReveal.closedWidth)
+        #expect(closed.height == 300 * SidebarDockReveal.closedHeightFraction)
+        // A bar narrower than the sliver never grows when closing.
+        #expect(SidebarDockReveal.barSize(full: CGSize(width: 2, height: 10), isOpen: false).width == 2)
+        // Compact mode closes into a full-height edge pill.
+        #expect(SidebarDockReveal.barSize(full: full, isOpen: false, strip: true)
+            == CGSize(width: SidebarDockReveal.stripWidth, height: 300))
+    }
+
+    @Test func compactDockIconsStayCentredInTheSmallerBarAndStrip() {
+        // Distances from the screen edge; the icon column starts centred in the full sidebar width.
+        let columnCentre = SidebarLayout.width / 2
+        let openCentre = columnCentre - SidebarDockReveal.edgeShift(barWidth: SidebarDockReveal.compactBarWidth)
+        #expect(openCentre == SidebarDockReveal.compactBarWidth / 2)
+        #expect(openCentre - SidebarDockReveal.stripIconShift == SidebarDockReveal.stripWidth / 2)
+        #expect(SidebarDockReveal.compactBarWidth < SidebarLayout.dockBarWidth)
+        #expect(SidebarDockReveal.compactIconScale < 1)
+        #expect(SidebarDockReveal.stripIconScale < SidebarDockReveal.compactIconScale)
+    }
+
+    @Test func notchDockGrowsFromAShortSliverToTheFullBar() {
+        let full = CGSize(width: 400, height: 94)
+        #expect(SidebarDockReveal.notchBarSize(full: full, isOpen: true) == full)
+        let closed = SidebarDockReveal.notchBarSize(full: full, isOpen: false)
+        #expect(closed.width == 400 * SidebarDockReveal.notchClosedWidthFraction)
+        #expect(closed.height == SidebarDockReveal.closedWidth)
+    }
+
+    @MainActor @Test func compactDockKeepsItsOpenFramesSoIconsGrowInPlace() {
+        let screen = CGRect(x: 0, y: 0, width: 1440, height: 900)
+        var config = SidebarConfiguration.factoryDefaults
+        config.idleBehavior = .compact
+        config.style = .dock
+        let policy = SidebarPresentation(behavior: .compact, hasNotchTrigger: false, fullScreen: false)
+        for side in SidebarSide.allCases {
+            config.side = side
+            let open = policy.layout(configuration: config, notch: .zero, available: screen,
+                screen: screen, groups: [], entryCount: 3, expanded: true)
+            let closed = policy.layout(configuration: config, notch: .zero, available: screen,
+                screen: screen, groups: [], entryCount: 3, expanded: false)
+            #expect(closed.drawing == open.drawing)
+            #expect(closed.compact == open.compact)
+            #expect(closed.compact.height == open.sidebar.height)
+            // Input still stays on the strip while closed.
+            #expect(policy.pointerFrame(sidebar: closed.sidebar, compact: closed.compact, expanded: false) == closed.compact)
+        }
+    }
+
     @Test func sidebarNumberModifiersKeepDefaultsAndRememberSelection() throws {
         let suite = "SidebarModifiers-\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: suite))

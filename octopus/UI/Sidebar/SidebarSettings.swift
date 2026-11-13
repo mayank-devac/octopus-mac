@@ -84,27 +84,27 @@ enum SidebarIdleBehavior: String, CaseIterable, Codable {
     }
 }
 
-// Outside ("Floating"): icons and window titles float over the desktop.
-// Inside ("Dock"): icons only, held inside a rounded bar.
+// Floating: icons and window titles float over the desktop.
+// Dock: icons only, held inside a rounded bar.
 enum SidebarStyle: String, CaseIterable, Codable {
-    case inside, outside
+    case dock, floating
 
     static let key = "sidebarStyle"
 
     static func saved(_ value: String?) -> Self {
-        value.flatMap(Self.init(rawValue:)) ?? .outside
+        value.flatMap(Self.init(rawValue:)) ?? .dock
     }
 
     var rowHeight: CGFloat {
-        self == .inside ? SidebarLayout.dockRowHeight : SidebarLayout.rowHeight
+        self == .dock ? SidebarLayout.dockRowHeight : SidebarLayout.rowHeight
     }
 
     var monitorHeaderHeight: CGFloat {
-        self == .inside ? SidebarLayout.desktopSeparatorHeight : SidebarMonitor.headerHeight
+        self == .dock ? SidebarLayout.desktopSeparatorHeight : SidebarMonitor.headerHeight
     }
 
     var emptyHeight: CGFloat {
-        self == .inside ? 0 : SidebarMonitor.emptyHeight
+        self == .dock ? 0 : SidebarMonitor.emptyHeight
     }
 }
 
@@ -177,7 +177,7 @@ struct SidebarConfiguration: Codable, Equatable {
         position = try saved.decodeIfPresent(Double.self, forKey: .position) ?? position
         idleBehavior = try saved.decodeIfPresent(SidebarIdleBehavior.self, forKey: .idleBehavior) ?? idleBehavior
         // Profiles saved before this option keep the original floating look.
-        style = try saved.decodeIfPresent(SidebarStyle.self, forKey: .style) ?? .outside
+        style = try saved.decodeIfPresent(SidebarStyle.self, forKey: .style) ?? .floating
         compactShowsIcons = try saved.decodeIfPresent(Bool.self, forKey: .compactShowsIcons) ?? false
         autoHideShowsEdgeMark = try saved.decodeIfPresent(Bool.self, forKey: .autoHideShowsEdgeMark) ?? true
         showSingleWindowMenu = try saved.decodeIfPresent(Bool.self, forKey: .showSingleWindowMenu) ?? showSingleWindowMenu
@@ -287,7 +287,7 @@ enum SidebarSettings {
             "sidebarPosition": 0.5,
             "sidebarMonitor": "primary",
             "sidebarShowSingleWindowMenu": true,
-            SidebarStyle.key: SidebarStyle.outside.rawValue,
+            SidebarStyle.key: SidebarStyle.dock.rawValue,
             "sidebarAppSpacing": defaultAppSpacing,
             "sidebarFontSize": defaultFontSize,
             "sidebarShadowOpacity": defaultShadowOpacity,
@@ -426,8 +426,9 @@ enum SidebarLayout {
     // Keep the icon and title close together so the sidebar reads as a compact dock.
     static let rowHeight: CGFloat = 86
     // Dock style shows icons only, so each row needs just the enlarged icon's height.
-    static let dockRowHeight: CGFloat = 54
+    static let dockRowHeight: CGFloat = 46
     static let dockBarWidth: CGFloat = 58
+    static let dockCornerRadius: CGFloat = 16
     // Keeps separator lines within the dock bar's rounded edges.
     static let dockSeparatorInset: CGFloat = 20
     static let desktopSeparatorHeight: CGFloat = 12
@@ -482,11 +483,11 @@ enum SidebarLayout {
     }
 
     // The number strip stays at the display edge; the app column opens toward the desktop.
-    static func compactFrames(beside frame: CGRect, side: SidebarSide,
-                              expanded: Bool) -> (main: CGRect, compact: CGRect, panel: CGRect) {
-        let compact = CGRect(x: side == .left ? frame.minX : frame.maxX - compactWidth,
-                             y: frame.minY, width: compactWidth, height: frame.height)
-        let main = frame.offsetBy(dx: side == .left ? compactWidth : -compactWidth, dy: 0)
+    static func compactFrames(beside frame: CGRect, side: SidebarSide, expanded: Bool,
+                              stripWidth: CGFloat = compactWidth) -> (main: CGRect, compact: CGRect, panel: CGRect) {
+        let compact = CGRect(x: side == .left ? frame.minX : frame.maxX - stripWidth,
+                             y: frame.minY, width: stripWidth, height: frame.height)
+        let main = frame.offsetBy(dx: side == .left ? stripWidth : -stripWidth, dy: 0)
         let drawing = CGRect(x: side == .left ? main.minX : main.minX - drawingPadding,
                              y: main.minY, width: main.width + drawingPadding, height: main.height)
         return (main, compact, expanded ? drawing.union(compact) : compact)
