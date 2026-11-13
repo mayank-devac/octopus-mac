@@ -80,7 +80,7 @@ Read the relevant `.agent/*.md` file before touching that area; recheck current 
 - `plans/` (git-ignored) holds numbered implementation plans with status tables; update `plans/README.md` when changing a plan's status.
 
 - **Clarity and maintainability**: Prefer concise, well-organized code that is easy to understand and modify. Group related functionality and use clear names and headings so developers can find things easily. Structure documentation with clear sections and concise explanations or footers where useful. 
-- In way that developers find it graspable. in way so the developer have chnage/edit less code and takes less time to achieve goals.
+- In way that developers find it graspable. in way so the developer have chnage/edit less code and takes less time to achieve goals. less pieces for next chnage .
 - you very allowed to create files instead of putting everything on one file .you should create files to just oranise and keep findable .
 - specific files for specific thing - so that devleoper know where to go. use inport where the files is needed.
 

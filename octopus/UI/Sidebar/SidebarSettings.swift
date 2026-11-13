@@ -111,9 +111,13 @@ enum SidebarStyle: String, CaseIterable, Codable {
         value.flatMap(Self.init(storedValue:)) ?? defaultStyle
     }
 
-    // Applied when the style is chosen and when nothing is saved yet.
+    // Applied the first time a style is chosen and when nothing is saved yet.
     var defaultShowsWindowTitles: Bool { self == .dock }
     var defaultShowsSingleWindowMenu: Bool { self == .floating }
+    var defaultChoices: SidebarStyleChoices {
+        SidebarStyleChoices(showsWindowTitles: defaultShowsWindowTitles,
+                            showSingleWindowMenu: defaultShowsSingleWindowMenu)
+    }
 
     var monitorHeaderHeight: CGFloat {
         self == .dock ? SidebarLayout.desktopSeparatorHeight : SidebarMonitor.headerHeight
@@ -122,6 +126,12 @@ enum SidebarStyle: String, CaseIterable, Codable {
     var emptyHeight: CGFloat {
         self == .dock ? 0 : SidebarMonitor.emptyHeight
     }
+}
+
+// The title and single-window menu choices one style remembers while another style is active.
+struct SidebarStyleChoices: Codable, Equatable {
+    var showsWindowTitles: Bool
+    var showSingleWindowMenu: Bool
 }
 
 struct SidebarClickGate {
@@ -149,6 +159,8 @@ struct SidebarConfiguration: Codable, Equatable {
     var autoHideShowsEdgeMark: Bool
     var showSingleWindowMenu: Bool
     var showsWindowTitles: Bool
+    // Choices of the styles that are not active, keyed by style raw value.
+    var inactiveStyleChoices: [String: SidebarStyleChoices]
     var appSpacing: Double
     var fontSize: Double
     var shadowOpacity: Double
@@ -169,6 +181,8 @@ struct SidebarConfiguration: Codable, Equatable {
             ?? style.defaultShowsSingleWindowMenu
         showsWindowTitles = defaults?.object(forKey: SidebarSettings.windowTitlesKey) as? Bool
             ?? style.defaultShowsWindowTitles
+        inactiveStyleChoices = defaults?.data(forKey: SidebarSettings.inactiveStyleChoicesKey)
+            .flatMap { try? JSONDecoder().decode([String: SidebarStyleChoices].self, from: $0) } ?? [:]
         appSpacing = defaults?.object(forKey: "sidebarAppSpacing") as? Double ?? SidebarSettings.defaultAppSpacing
         fontSize = defaults?.object(forKey: "sidebarFontSize") as? Double ?? SidebarSettings.defaultFontSize
         shadowOpacity = defaults?.object(forKey: "sidebarShadowOpacity") as? Double ?? SidebarSettings.defaultShadowOpacity
@@ -181,17 +195,26 @@ struct SidebarConfiguration: Codable, Equatable {
     // Passing no preference store uses the same fallbacks as a fresh installation.
     static var factoryDefaults: Self { Self(defaults: nil) }
 
-    // Choosing a style resets its titles and single-window menu to that style's defaults;
-    // either can still be changed afterwards.
+    ////////////////////
+    //// Switch style
+    /// Each style keeps its own titles and single-window menu choices.
+    // The outgoing style's choices are stored; the incoming style restores its own, or its defaults.
+
     var selectedStyle: SidebarStyle {
         get { style }
         set {
             guard newValue != style else { return }
+            inactiveStyleChoices[style.rawValue] = SidebarStyleChoices(
+                showsWindowTitles: showsWindowTitles, showSingleWindowMenu: showSingleWindowMenu)
+            let choices = inactiveStyleChoices.removeValue(forKey: newValue.rawValue) ?? newValue.defaultChoices
             style = newValue
-            showsWindowTitles = newValue.defaultShowsWindowTitles
-            showSingleWindowMenu = newValue.defaultShowsSingleWindowMenu
+            showsWindowTitles = choices.showsWindowTitles
+            showSingleWindowMenu = choices.showSingleWindowMenu
         }
     }
+
+    //// Switching back and forth never loses a user's change.
+    //////////////////
 
     // Rows reserve space for the title below the icon only while titles are shown. The vertical Dock
     // uses a one-line title sized to the font; Floating and the Mac Notch bar keep two lines.
@@ -205,7 +228,7 @@ struct SidebarConfiguration: Codable, Equatable {
 
     private enum CodingKeys: String, CodingKey {
         case enabled, desktopScope, displayScope, side, position, idleBehavior, style, compactShowsIcons, autoHideShowsEdgeMark
-        case showSingleWindowMenu, showsWindowTitles, appSpacing, fontSize, shadowOpacity, snapDistance, virtualNotchWidth
+        case showSingleWindowMenu, showsWindowTitles, inactiveStyleChoices, appSpacing, fontSize, shadowOpacity, snapDistance, virtualNotchWidth
     }
 
     init(from decoder: Decoder) throws {
@@ -225,6 +248,8 @@ struct SidebarConfiguration: Codable, Equatable {
         showSingleWindowMenu = try saved.decodeIfPresent(Bool.self, forKey: .showSingleWindowMenu)
             ?? style.defaultShowsSingleWindowMenu
         showsWindowTitles = try saved.decodeIfPresent(Bool.self, forKey: .showsWindowTitles) ?? style.defaultShowsWindowTitles
+        inactiveStyleChoices = try saved.decodeIfPresent([String: SidebarStyleChoices].self,
+                                                         forKey: .inactiveStyleChoices) ?? [:]
         appSpacing = try saved.decodeIfPresent(Double.self, forKey: .appSpacing) ?? appSpacing
         fontSize = try saved.decodeIfPresent(Double.self, forKey: .fontSize) ?? fontSize
         shadowOpacity = try saved.decodeIfPresent(Double.self, forKey: .shadowOpacity) ?? shadowOpacity
@@ -265,6 +290,7 @@ struct SidebarConfiguration: Codable, Equatable {
             SidebarSettings.virtualNotchWidthKey: virtualNotchWidth
         ]
         for (key, value) in values { defaults.set(value, forKey: key) }
+        defaults.set(try? JSONEncoder().encode(inactiveStyleChoices), forKey: SidebarSettings.inactiveStyleChoicesKey)
     }
 }
 
@@ -288,6 +314,7 @@ enum SidebarSettings {
     static let edgeMarkKey = "sidebarAutoHideEdgeMark"
     static let singleWindowMenuKey = "sidebarShowSingleWindowMenu"
     static let windowTitlesKey = "sidebarShowWindowTitles"
+    static let inactiveStyleChoicesKey = "sidebarInactiveStyleChoices"
     static let virtualNotchWidthKey = "sidebarVirtualNotchWidth"
     static let defaultVirtualNotchWidth: Double = 200
     static let virtualNotchWidthRange: ClosedRange<Double> = 100...400

@@ -148,12 +148,17 @@ struct SidebarTests {
         #expect(!config.showsWindowTitles && config.showSingleWindowMenu)
         #expect(config.rowHeight == SidebarLayout.iconOnlyRowHeight)
 
-        // A user change survives until the style is chosen again.
+        // Each style remembers its own changes across style switches.
         config.showsWindowTitles = true
         config.selectedStyle = .floating
         #expect(config.showsWindowTitles)
         config.selectedStyle = .dock
-        #expect(config.showsWindowTitles && !config.showSingleWindowMenu)
+        config.showsWindowTitles = false
+        #expect(!config.showSingleWindowMenu)
+        config.selectedStyle = .floating
+        #expect(config.showsWindowTitles && config.showSingleWindowMenu)
+        config.selectedStyle = .dock
+        #expect(!config.showsWindowTitles)
 
         // Profiles saved before window titles existed get their saved style's defaults.
         func decode(_ json: String) throws -> SidebarConfiguration {

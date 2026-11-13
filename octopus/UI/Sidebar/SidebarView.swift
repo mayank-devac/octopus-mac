@@ -456,7 +456,8 @@ struct SidebarView: View {
         let mouseBindings = mouseShortcuts.bindings
         let maximumLabelScale: CGFloat = reduceMotion ? 1 : 1 + SidebarLayout.magnificationGrowth
         // Reserve width for the largest zoom so labels keep the same wrapping during hover.
-        let labelPadding: CGFloat = hasNoWindows ? 2 : 4
+        // The Dock draws no frost pill behind window titles, so they get that padding back as text width.
+        let labelPadding: CGFloat = hasNoWindows ? 2 : isDock ? 0 : 4
         // Dock titles wrap within the bar rather than the wider panel column.
         let itemWidth = state.isTopCentered ? SidebarLayout.notchItemWidth
             : isDock ? dock.barWidth : SidebarLayout.width
@@ -509,6 +510,8 @@ struct SidebarView: View {
                     .lineLimit(oneLineTitles ? 1 : 2)
                     .truncationMode(.tail)
                     .allowsTightening(true)
+                    // A one-line title shrinks slightly before truncating, so it shows more letters.
+                    .minimumScaleFactor(oneLineTitles ? 0.85 : 1)
                     .multilineTextAlignment(.center)
                     .fixedSize(horizontal: false, vertical: true)
                     .padding(.horizontal, labelPadding)
