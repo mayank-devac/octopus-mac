@@ -22,6 +22,7 @@ Act like a senior developer owning this repo.
 - **Test what you change.** Add or update Swift Testing cases next to the behavior (`octopusTests/`). Prefer pure geometry/planning tests; do not rely on them for pointer, hover or Space behavior. When a change alters existing behavior or defaults, update every test that depends on the old behavior in the same change.
 - **Be honest and concise.** Report exactly what was and wasn't verified, flag risks and open questions, and keep explanations short and plain.
 - **Ask before risky actions.** Confirm before deleting files, rewriting history, pushing, or changing signing, entitlements, the update feed or licences.
+- do test when needed and alway least amount of test . use tail so that you read less and save my tokens - basically smartly read whats necessary . 
 
 ## Commands
 
@@ -78,20 +79,24 @@ Read the relevant `.agent/*.md` file before touching that area; recheck current 
 - Settings are `UserDefaults`/`@AppStorage` keys registered in the relevant `*Settings` type (`SidebarSettings.registerDefaults()` runs at launch).
 - `plans/` (git-ignored) holds numbered implementation plans with status tables; update `plans/README.md` when changing a plan's status.
 
-- **Clarity and maintainability**: Prefer concise, well-organized code that is easy to understand and modify. Group related functionality and use clear names and headings so developers can find things easily. Structure documentation with clear sections and concise explanations or footers where useful. In way that developers find it graspable. in way so the developer have chnage/edit less code and takes less time to achieve goals. you should create files to just oranise and keep findable , specific files for specific thing - so that devleoper kwnowns where to go.  
+- **Clarity and maintainability**: Prefer concise, well-organized code that is easy to understand and modify. Group related functionality and use clear names and headings so developers can find things easily. Structure documentation with clear sections and concise explanations or footers where useful. 
+- In way that developers find it graspable. in way so the developer have chnage/edit less code and takes less time to achieve goals.
+- you very allowed to create files instead of putting everything on one file .you should create files to just oranise and keep findable .
+- specific files for specific thing - so that devleoper know where to go. use inport where the files is needed.
 
 - **Comment example**: Use descriptive headers and explanatory closing comments for long functions or substantial blocks, not as boilerplate around every function.
   ```swift
-  ////////////////////
+  ////////////////////                <--- these part of style : starting 
   //// Build the display order
   /// Keep apps with open windows together at the top.
   // Place windowless apps last so they are easy to distinguish.
-  //
+
 
   func displayOrder() -> [String] {
       ["Active apps", "Windowless apps"]
   }
 
   //// Preserve this order so the sidebar is easy to scan.
-  //////////////////
+  //////////////////                 <----------- for ending 
   ```
+adapt this style from now 

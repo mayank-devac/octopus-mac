@@ -51,6 +51,51 @@ struct SidebarTests {
         #expect(narrow == CGSize(width: 120, height: 30))
     }
 
+    @Test func compactDockStripCentresIconsAndOpenDockLeavesThemInPlace() {
+        func metrics(side: SidebarSide = .right, titles: Bool, open: Bool) -> SidebarDockMetrics {
+            SidebarDockMetrics(side: side, showsTitles: titles, isCompact: true, isCompactDock: true,
+                               isOpen: open, rowHeight: 62)
+        }
+        let closed = metrics(titles: true, open: false)
+        #expect(closed.isStripClosed)
+        #expect(closed.iconScale == SidebarDockReveal.stripIconScale)
+        let shift = SidebarDockReveal.stripIconShift(barWidth: closed.barWidth)
+        #expect(closed.stripIconOffset == CGSize(width: shift, height: (62 - SidebarLayout.iconSlotHeight) / 2))
+        #expect(metrics(side: .left, titles: true, open: false).stripIconOffset.width == -shift)
+        // Without titles there is no title gap to centre across.
+        #expect(metrics(titles: false, open: false).stripIconOffset.height == 0)
+        let open = metrics(titles: true, open: true)
+        #expect(!open.isStripClosed)
+        #expect(open.iconScale == SidebarDockReveal.compactIconScale)
+        #expect(open.stripIconOffset == .zero)
+    }
+
+    @Test func dockContentHugsItsEdgeAndTucksInOnlyWhileTheFullDockIsClosed() {
+        func metrics(side: SidebarSide, compact: Bool, open: Bool) -> SidebarDockMetrics {
+            SidebarDockMetrics(side: side, showsTitles: false, isCompact: compact, isCompactDock: compact,
+                               isOpen: open, rowHeight: SidebarLayout.iconOnlyRowHeight)
+        }
+        let open = metrics(side: .right, compact: false, open: true)
+        #expect(open.barWidth == SidebarLayout.dockBarWidth)
+        #expect(open.contentOffset == SidebarDockReveal.edgeShift(barWidth: SidebarLayout.dockBarWidth))
+        #expect(metrics(side: .left, compact: false, open: true).contentOffset == -open.contentOffset)
+        #expect(metrics(side: .right, compact: false, open: false).contentOffset
+            == open.contentOffset + SidebarDockReveal.closedContentOffset)
+        // The Compact strip stays visible while closed, so it never tucks in.
+        let strip = metrics(side: .right, compact: true, open: false)
+        #expect(strip.contentOffset == SidebarDockReveal.edgeShift(barWidth: SidebarDockReveal.compactBarWidth))
+    }
+
+    @MainActor @Test func dockStyleUsesTheEdgeBarVerticallyAndTheNotchBarWhenTopCentred() {
+        let state = SidebarViewState()
+        state.configuration.style = .dock
+        #expect(state.usesDockBar && !state.usesNotchDockBar)
+        state.isTopCentered = true
+        #expect(!state.usesDockBar && state.usesNotchDockBar)
+        state.configuration.style = .floating
+        #expect(!state.usesDockBar && !state.usesNotchDockBar)
+    }
+
     @MainActor @Test func compactDockKeepsItsOpenFramesSoIconsGrowInPlace() {
         let screen = CGRect(x: 0, y: 0, width: 1440, height: 900)
         var config = SidebarConfiguration.factoryDefaults

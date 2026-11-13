@@ -152,7 +152,7 @@ private final class SidebarDisplayController {
             notchPanel.ignoresMouseEvents = true
             panel.orderOut(nil)
             notchPanel.orderOut(nil)
-            hideEdgeMarkImmediately()
+            edgeMark.hide()
         } else {
             notchPanel.ignoresMouseEvents = false
             layout()
@@ -210,11 +210,7 @@ private final class SidebarDisplayController {
     private let cycleController: CyclePanelController
     private let panel: SidebarPanel
     private let notchPanel: SidebarPanel
-    private let edgeMarkPanel: SidebarPanel
-    private let edgeMarkView = SidebarEdgeMarkView()
-    private var edgeMarkEmphasis = SidebarEdgeMark.Emphasis.hidden
-    private var edgeMarkSide = SidebarSide.right
-    private var edgeMarkFadeGeneration = 0
+    private let edgeMark: SidebarEdgeMarkController
     // Set while a side change shows the auto-hidden sidebar; normal hiding waits for it.
     private var peekWork: DispatchWorkItem?
     private let displayID: String?
@@ -334,7 +330,7 @@ private final class SidebarDisplayController {
         self.displayID = displayID
         panel = SidebarPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
         notchPanel = SidebarPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
-        edgeMarkPanel = SidebarPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+        let edgeMarkPanel = SidebarPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
         for window in [panel, notchPanel, edgeMarkPanel] {
             window.isOpaque = false
             window.backgroundColor = .clear
@@ -346,16 +342,13 @@ private final class SidebarDisplayController {
             window.isReleasedWhenClosed = false
             window.acceptsMouseMovedEvents = true
         }
+        // Assigned before any closure below captures self.
+        edgeMark = SidebarEdgeMarkController(panel: edgeMarkPanel)
         let notchHostingView = NSHostingView(rootView: SidebarNotchTriggerView(
             onReveal: { [weak self] in self?.revealSidebarFromPersistentTrigger() }))
         notchHostingView.sizingOptions = []
         notchPanel.contentView = notchHostingView
         notchPanel.level = SidebarWindowLevels.notch
-        // The mark is visual only; the existing edge trigger keeps handling the pointer.
-        edgeMarkPanel.ignoresMouseEvents = true
-        edgeMarkPanel.acceptsMouseMovedEvents = false
-        edgeMarkPanel.alphaValue = 0
-        edgeMarkPanel.contentView = edgeMarkView
         let hostingView = NSHostingView(rootView: SidebarView(
             inventory: inventory, state: viewState,
             onClick: { [weak self] entryID in self?.activate(entryID) },
@@ -546,8 +539,7 @@ private final class SidebarDisplayController {
         panel.close()
         notchPanel.contentView = nil
         notchPanel.close()
-        edgeMarkPanel.contentView = nil
-        edgeMarkPanel.close()
+        edgeMark.close()
     }
 
     func applySettings() {
@@ -620,55 +612,12 @@ private final class SidebarDisplayController {
     }
 
     private func updateEdgeMark() {
-        guard let settings else { hideEdgeMarkImmediately(); return }
-        let available = settings.enabled && settings.configuration.autoHideShowsEdgeMark
-            && !missionControlPresented && screen != nil && presentation.autoHides
-        let next = SidebarEdgeMark.emphasis(available: available,
+        guard let settings else { edgeMark.hide(); return }
+        edgeMark.update(
+            available: settings.enabled && settings.configuration.autoHideShowsEdgeMark
+                && !missionControlPresented && screen != nil && presentation.autoHides,
             sidebarShown: panel.isVisible && panel.isOnActiveSpace,
-            pointer: NSEvent.mouseLocation, edgeTrigger: edgeFrame, side: settings.side)
-        let frame = SidebarEdgeMark.frame(edgeTrigger: edgeFrame, side: settings.side)
-        let unchanged = next == edgeMarkEmphasis && edgeMarkSide == settings.side
-            && (next == .hidden || edgeMarkPanel.frame == frame)
-        guard !unchanged else { return }
-        let animate = !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
-        // A move to another edge or position jumps there; only brightness changes animate.
-        let moved = edgeMarkSide != settings.side || edgeMarkPanel.frame != frame
-        edgeMarkEmphasis = next
-        edgeMarkSide = settings.side
-        if next == .hidden {
-            fadeEdgeMark(to: 0, animated: animate)
-            return
-        }
-        if moved {
-            edgeMarkPanel.setFrame(frame, display: false)
-            edgeMarkView.needsLayout = true
-        }
-        edgeMarkView.apply(side: settings.side, emphasis: next, animated: animate && !moved)
-        if !edgeMarkPanel.isVisible { edgeMarkPanel.orderFrontRegardless() }
-        fadeEdgeMark(to: SidebarEdgeMark.opacity(next), animated: animate)
-    }
-
-    private func fadeEdgeMark(to alpha: CGFloat, animated: Bool) {
-        edgeMarkFadeGeneration += 1
-        let generation = edgeMarkFadeGeneration
-        NSAnimationContext.runAnimationGroup({ context in
-            context.duration = animated ? SidebarEdgeMark.fadeDuration : 0
-            edgeMarkPanel.animator().alphaValue = alpha
-        }, completionHandler: { [weak self] in
-            // AppKit calls this on the main thread, but the handler type is Sendable.
-            MainActor.assumeIsolated {
-                // Only the latest fade may remove the panel; an older one must not cut a newer fade short.
-                guard let self, generation == self.edgeMarkFadeGeneration, self.edgeMarkEmphasis == .hidden else { return }
-                self.edgeMarkPanel.orderOut(nil)
-            }
-        })
-    }
-
-    private func hideEdgeMarkImmediately() {
-        edgeMarkFadeGeneration += 1
-        edgeMarkEmphasis = .hidden
-        edgeMarkPanel.alphaValue = 0
-        edgeMarkPanel.orderOut(nil)
+            edgeTrigger: edgeFrame, side: settings.side)
     }
 
     private func stopSidebar() {
@@ -677,7 +626,7 @@ private final class SidebarDisplayController {
         inventory.stop()
         panel.orderOut(nil)
         notchPanel.orderOut(nil)
-        hideEdgeMarkImmediately()
+        edgeMark.hide()
         viewState.isExpanded = false
         if let monitor = localMouseMonitor { NSEvent.removeMonitor(monitor) }
         if let monitor = globalMouseMonitor { NSEvent.removeMonitor(monitor) }
@@ -745,17 +694,43 @@ private final class SidebarDisplayController {
     }
 
     // Shrink the dock into the edge, then run the hide. Other styles and Reduce Motion hide at once.
+    // The pointer or settings can change during the shrink, so the hide is checked again when it ends.
     private func closeDock(then finish: @escaping () -> Void) {
         let animates = usesDockReveal && viewState.isDockOpen && panel.isVisible
             && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         viewState.isDockOpen = false
         guard animates else { finish(); return }
         let work = DispatchWorkItem { [weak self] in
-            self?.dockCloseWork = nil
+            guard let self else { return }
+            self.dockCloseWork = nil
+            guard self.canHideIdleSidebar else { self.reopenDockIfShown(); return }
             finish()
         }
         dockCloseWork = work
         DispatchQueue.main.asyncAfter(deadline: .now() + SidebarDockReveal.closeDuration, execute: work)
+    }
+
+    // Stops a running shrink, e.g. when settings change mid-close; a panel still on screen grows back.
+    private func cancelDockClose() {
+        guard let work = dockCloseWork else { return }
+        work.cancel()
+        dockCloseWork = nil
+        reopenDockIfShown()
+    }
+
+    private func reopenDockIfShown() {
+        guard panel.isVisible, presentation.showsMainSidebar(expanded: viewState.isExpanded) else { return }
+        viewState.isDockOpen = true
+    }
+
+    // The idle sidebar may hide only while nothing holds it open and the pointer is outside it and its triggers.
+    private var canHideIdleSidebar: Bool {
+        let point = NSEvent.mouseLocation
+        let inNotch = presentation.hasTopTrigger && notchFrame.contains(point)
+        return presentation.closesWhenOutside(expanded: viewState.isExpanded)
+            && sidebarEntryID == nil && !isPeeking && !positionScrollCapture.isActive
+            && !dragController.isActive && !otherDragActive()
+            && !pointerFrame.contains(point) && !inNotch && !edgeFrame.contains(point)
     }
 
     private var isFullScreen: Bool {
@@ -792,7 +767,7 @@ private final class SidebarDisplayController {
             notchFrame = .zero
             panel.orderOut(nil)
             notchPanel.orderOut(nil)
-            hideEdgeMarkImmediately()
+            edgeMark.hide()
             return
         }
         screen = target
@@ -1247,14 +1222,7 @@ private final class SidebarDisplayController {
                 let work = DispatchWorkItem { [weak self] in
                     guard let self else { return }
                     self.hideWork = nil
-                    let point = NSEvent.mouseLocation
-                    let inNotch = self.presentation.hasTopTrigger && self.notchFrame.contains(point)
-                    guard self.presentation.closesWhenOutside(expanded: self.viewState.isExpanded),
-                          self.sidebarEntryID == nil, !self.isPeeking,
-                          !self.positionScrollCapture.isActive,
-                          !self.dragController.isActive, !self.otherDragActive(),
-                          !self.pointerFrame.contains(point), !inNotch,
-                          !self.edgeFrame.contains(point) else { return }
+                    guard self.canHideIdleSidebar else { return }
                     self.closeDock { [weak self] in
                         guard let self else { return }
                         if self.presentation.usesPersistentTrigger { self.viewState.isExpanded = false }
@@ -1289,6 +1257,7 @@ private final class SidebarDisplayController {
         positionScrollCapture.stop()
         dragController.cancel()
         endPeek()
+        cancelDockClose()
         if !keepMenu {
             hoveredEntryID = nil
             dismissSidebar()

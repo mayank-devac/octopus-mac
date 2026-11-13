@@ -197,9 +197,9 @@ struct PreferencesSidebarView: View {
                     Text("Floating").tag(SidebarStyle.floating)
                 }
                 .pickerStyle(.segmented)
-                .disabled(!editingEnabled || configuration.idleBehavior == .notch)
+                .disabled(!editingEnabled)
                 .help(configuration.idleBehavior == .notch
-                    ? "Mac Notch uses its own horizontal bar."
+                    ? "Dock grows a black bar out of the notch. Floating shows icons floating below the notch."
                     : "Dock shows app icons in a rounded bar. Floating shows icons floating over the desktop.")
                 Toggle("Show window titles", isOn: setting(\.showsWindowTitles).animation())
                     .disabled(!editingEnabled)

@@ -45,20 +45,48 @@ enum SidebarDockReveal {
     static let notchFlareRadius: CGFloat = 12
 }
 
-// Behind-window blur so the dock reads as frosted glass over the desktop, like the sidebar.
-struct SidebarDockGlass: NSViewRepresentable {
-    @Environment(\.colorScheme) private var colorScheme
+// Vertical Dock geometry for the sidebar's current state, kept pure so the view only applies it.
+struct SidebarDockMetrics {
+    let side: SidebarSide
+    let showsTitles: Bool
+    let isCompact: Bool
+    // Compact Dock has no separate number strip: the closed Dock is the strip, and its icons grow in place.
+    let isCompactDock: Bool
+    let isOpen: Bool
+    let rowHeight: CGFloat
 
-    func makeNSView(context: Context) -> NSVisualEffectView {
-        let view = NSVisualEffectView()
-        view.blendingMode = .behindWindow
-        view.state = .active
-        updateNSView(view, context: context)
-        return view
+    var isStripClosed: Bool { isCompactDock && !isOpen }
+
+    // The icon column is shifted to the edge (see `contentOffset`), so the bar is just wide enough for it.
+    var barWidth: CGFloat {
+        if showsTitles { return SidebarLayout.dockTitledBarWidth }
+        return isCompactDock ? SidebarDockReveal.compactBarWidth : SidebarLayout.dockBarWidth
     }
 
-    func updateNSView(_ nsView: NSVisualEffectView, context: Context) {
-        let material: NSVisualEffectView.Material = colorScheme == .dark ? .hudWindow : .popover
-        if nsView.material != material { nsView.material = material }
+    // Keeps separator lines inside the bar's rounded edges, whichever bar width is in use.
+    var separatorInset: CGFloat {
+        SidebarLayout.dockSeparatorInset + (SidebarLayout.dockBarWidth - barWidth) / 2
+    }
+
+    var iconScale: CGFloat {
+        if isStripClosed { return SidebarDockReveal.stripIconScale }
+        return isCompactDock ? SidebarDockReveal.compactIconScale : 1
+    }
+
+    // The closed strip moves each icon to the strip's centre. It also hides titles, so a titled
+    // row centres its icon vertically instead of leaving the title gap below it.
+    var stripIconOffset: CGSize {
+        guard isStripClosed else { return .zero }
+        let shift = SidebarDockReveal.stripIconShift(barWidth: barWidth)
+        return CGSize(width: side == .right ? shift : -shift,
+                      height: showsTitles ? (rowHeight - SidebarLayout.iconSlotHeight) / 2 : 0)
+    }
+
+    // Moves the icon column toward the screen edge so it is centred in the bar; the closed
+    // non-compact Dock tucks it a little further in while the bar is a sliver.
+    var contentOffset: CGFloat {
+        let tuckedIn = !isCompact && !isOpen ? SidebarDockReveal.closedContentOffset : 0
+        let shift = SidebarDockReveal.edgeShift(barWidth: barWidth) + tuckedIn
+        return side == .right ? shift : -shift
     }
 }

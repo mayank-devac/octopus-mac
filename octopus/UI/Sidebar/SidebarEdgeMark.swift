@@ -42,6 +42,78 @@ enum SidebarEdgeMark {
     }
 }
 
+// Owns the mark's panel and fade state. The display controller reports the sidebar's current
+// state on each update; this decides the emphasis and applies it.
+@MainActor
+final class SidebarEdgeMarkController {
+    private let panel: NSPanel
+    private let view = SidebarEdgeMarkView()
+    private var emphasis = SidebarEdgeMark.Emphasis.hidden
+    private var side = SidebarSide.right
+    private var fadeGeneration = 0
+
+    // The mark is visual only; the sidebar's edge trigger keeps handling the pointer.
+    init(panel: NSPanel) {
+        self.panel = panel
+        panel.ignoresMouseEvents = true
+        panel.acceptsMouseMovedEvents = false
+        panel.alphaValue = 0
+        panel.contentView = view
+    }
+
+    func update(available: Bool, sidebarShown: Bool, edgeTrigger: CGRect, side nextSide: SidebarSide) {
+        let next = SidebarEdgeMark.emphasis(available: available, sidebarShown: sidebarShown,
+            pointer: NSEvent.mouseLocation, edgeTrigger: edgeTrigger, side: nextSide)
+        let frame = SidebarEdgeMark.frame(edgeTrigger: edgeTrigger, side: nextSide)
+        let unchanged = next == emphasis && side == nextSide && (next == .hidden || panel.frame == frame)
+        guard !unchanged else { return }
+        let animate = !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        // A move to another edge or position jumps there; only brightness changes animate.
+        let moved = side != nextSide || panel.frame != frame
+        emphasis = next
+        side = nextSide
+        if next == .hidden {
+            fade(to: 0, animated: animate)
+            return
+        }
+        if moved {
+            panel.setFrame(frame, display: false)
+            view.needsLayout = true
+        }
+        view.apply(side: nextSide, emphasis: next, animated: animate && !moved)
+        if !panel.isVisible { panel.orderFrontRegardless() }
+        fade(to: SidebarEdgeMark.opacity(next), animated: animate)
+    }
+
+    func hide() {
+        fadeGeneration += 1
+        emphasis = .hidden
+        panel.alphaValue = 0
+        panel.orderOut(nil)
+    }
+
+    func close() {
+        panel.contentView = nil
+        panel.close()
+    }
+
+    private func fade(to alpha: CGFloat, animated: Bool) {
+        fadeGeneration += 1
+        let generation = fadeGeneration
+        NSAnimationContext.runAnimationGroup({ context in
+            context.duration = animated ? SidebarEdgeMark.fadeDuration : 0
+            panel.animator().alphaValue = alpha
+        }, completionHandler: { [weak self] in
+            // AppKit calls this on the main thread, but the handler type is Sendable.
+            MainActor.assumeIsolated {
+                // Only the latest fade may remove the panel; an older one must not cut a newer fade short.
+                guard let self, generation == self.fadeGeneration, self.emphasis == .hidden else { return }
+                self.panel.orderOut(nil)
+            }
+        })
+    }
+}
+
 // Draws the line with faded ends and a soft blue glow. It never takes pointer input.
 final class SidebarEdgeMarkView: NSView {
     private let line = CAGradientLayer()
