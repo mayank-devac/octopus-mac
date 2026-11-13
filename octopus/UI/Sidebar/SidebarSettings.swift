@@ -86,7 +86,6 @@ enum SidebarIdleBehavior: String, CaseIterable, Codable {
 
 // Floating: icons float over the desktop.
 // Dock: icons held inside a rounded bar.
-// Each style keeps its own window-title choice (see SidebarConfiguration.showsWindowTitles).
 enum SidebarStyle: String, CaseIterable, Codable {
     case dock, floating
 
@@ -111,6 +110,10 @@ enum SidebarStyle: String, CaseIterable, Codable {
     static func saved(_ value: String?) -> Self {
         value.flatMap(Self.init(storedValue:)) ?? defaultStyle
     }
+
+    // Applied when the style is chosen and when nothing is saved yet.
+    var defaultShowsWindowTitles: Bool { self == .dock }
+    var defaultShowsSingleWindowMenu: Bool { self == .floating }
 
     var monitorHeaderHeight: CGFloat {
         self == .dock ? SidebarLayout.desktopSeparatorHeight : SidebarMonitor.headerHeight
@@ -144,11 +147,8 @@ struct SidebarConfiguration: Codable, Equatable {
     var style: SidebarStyle
     var compactShowsIcons: Bool
     var autoHideShowsEdgeMark: Bool
-    // Floating style's choice; Dock keeps its own in `dockShowSingleWindowMenu`.
     var showSingleWindowMenu: Bool
-    var dockShowSingleWindowMenu: Bool
-    var floatingShowsWindowTitles: Bool
-    var dockShowsWindowTitles: Bool
+    var showsWindowTitles: Bool
     var appSpacing: Double
     var fontSize: Double
     var shadowOpacity: Double
@@ -165,10 +165,10 @@ struct SidebarConfiguration: Codable, Equatable {
         style = .saved(defaults?.string(forKey: SidebarStyle.key))
         compactShowsIcons = defaults?.bool(forKey: SidebarSettings.compactIconsKey) ?? false
         autoHideShowsEdgeMark = defaults?.object(forKey: SidebarSettings.edgeMarkKey) as? Bool ?? true
-        showSingleWindowMenu = defaults?.object(forKey: "sidebarShowSingleWindowMenu") as? Bool ?? true
-        dockShowSingleWindowMenu = defaults?.object(forKey: SidebarSettings.dockSingleWindowMenuKey) as? Bool ?? false
-        floatingShowsWindowTitles = defaults?.object(forKey: SidebarSettings.floatingWindowTitlesKey) as? Bool ?? false
-        dockShowsWindowTitles = defaults?.object(forKey: SidebarSettings.dockWindowTitlesKey) as? Bool ?? true
+        showSingleWindowMenu = defaults?.object(forKey: SidebarSettings.singleWindowMenuKey) as? Bool
+            ?? style.defaultShowsSingleWindowMenu
+        showsWindowTitles = defaults?.object(forKey: SidebarSettings.windowTitlesKey) as? Bool
+            ?? style.defaultShowsWindowTitles
         appSpacing = defaults?.object(forKey: "sidebarAppSpacing") as? Double ?? SidebarSettings.defaultAppSpacing
         fontSize = defaults?.object(forKey: "sidebarFontSize") as? Double ?? SidebarSettings.defaultFontSize
         shadowOpacity = defaults?.object(forKey: "sidebarShadowOpacity") as? Double ?? SidebarSettings.defaultShadowOpacity
@@ -181,24 +181,31 @@ struct SidebarConfiguration: Codable, Equatable {
     // Passing no preference store uses the same fallbacks as a fresh installation.
     static var factoryDefaults: Self { Self(defaults: nil) }
 
-    // The current style's choice; Preferences edits the value of whichever style is selected.
-    var showsWindowTitles: Bool {
-        get { style == .dock ? dockShowsWindowTitles : floatingShowsWindowTitles }
-        set { if style == .dock { dockShowsWindowTitles = newValue } else { floatingShowsWindowTitles = newValue } }
+    // Choosing a style resets its titles and single-window menu to that style's defaults;
+    // either can still be changed afterwards.
+    var selectedStyle: SidebarStyle {
+        get { style }
+        set {
+            guard newValue != style else { return }
+            style = newValue
+            showsWindowTitles = newValue.defaultShowsWindowTitles
+            showSingleWindowMenu = newValue.defaultShowsSingleWindowMenu
+        }
     }
 
-    var showsMenuForSingleWindow: Bool {
-        get { style == .dock ? dockShowSingleWindowMenu : showSingleWindowMenu }
-        set { if style == .dock { dockShowSingleWindowMenu = newValue } else { showSingleWindowMenu = newValue } }
+    // Rows reserve space for the title below the icon only while titles are shown. The vertical Dock
+    // uses a one-line title sized to the font; Floating and the Mac Notch bar keep two lines.
+    var rowHeight: CGFloat {
+        guard showsWindowTitles else { return SidebarLayout.iconOnlyRowHeight }
+        guard usesOneLineTitles else { return SidebarLayout.rowHeight }
+        return SidebarLayout.iconSlotHeight + SidebarLayout.oneLineTitleHeight(fontSize: fontSize)
     }
 
-    // Rows reserve space for the title below the icon only while titles are shown.
-    var rowHeight: CGFloat { showsWindowTitles ? SidebarLayout.rowHeight : SidebarLayout.iconOnlyRowHeight }
+    var usesOneLineTitles: Bool { style == .dock && idleBehavior != .notch }
 
     private enum CodingKeys: String, CodingKey {
         case enabled, desktopScope, displayScope, side, position, idleBehavior, style, compactShowsIcons, autoHideShowsEdgeMark
-        case showSingleWindowMenu, dockShowSingleWindowMenu, floatingShowsWindowTitles, dockShowsWindowTitles
-        case appSpacing, fontSize, shadowOpacity, snapDistance, virtualNotchWidth
+        case showSingleWindowMenu, showsWindowTitles, appSpacing, fontSize, shadowOpacity, snapDistance, virtualNotchWidth
     }
 
     init(from decoder: Decoder) throws {
@@ -214,12 +221,10 @@ struct SidebarConfiguration: Codable, Equatable {
         style = try saved.decodeIfPresent(SidebarStyle.self, forKey: .style) ?? style
         compactShowsIcons = try saved.decodeIfPresent(Bool.self, forKey: .compactShowsIcons) ?? false
         autoHideShowsEdgeMark = try saved.decodeIfPresent(Bool.self, forKey: .autoHideShowsEdgeMark) ?? true
-        showSingleWindowMenu = try saved.decodeIfPresent(Bool.self, forKey: .showSingleWindowMenu) ?? showSingleWindowMenu
-        dockShowSingleWindowMenu = try saved.decodeIfPresent(Bool.self, forKey: .dockShowSingleWindowMenu)
-            ?? dockShowSingleWindowMenu
-        floatingShowsWindowTitles = try saved.decodeIfPresent(Bool.self, forKey: .floatingShowsWindowTitles)
-            ?? floatingShowsWindowTitles
-        dockShowsWindowTitles = try saved.decodeIfPresent(Bool.self, forKey: .dockShowsWindowTitles) ?? dockShowsWindowTitles
+        // Older profiles without these choices get the defaults of their saved style.
+        showSingleWindowMenu = try saved.decodeIfPresent(Bool.self, forKey: .showSingleWindowMenu)
+            ?? style.defaultShowsSingleWindowMenu
+        showsWindowTitles = try saved.decodeIfPresent(Bool.self, forKey: .showsWindowTitles) ?? style.defaultShowsWindowTitles
         appSpacing = try saved.decodeIfPresent(Double.self, forKey: .appSpacing) ?? appSpacing
         fontSize = try saved.decodeIfPresent(Double.self, forKey: .fontSize) ?? fontSize
         shadowOpacity = try saved.decodeIfPresent(Double.self, forKey: .shadowOpacity) ?? shadowOpacity
@@ -252,10 +257,8 @@ struct SidebarConfiguration: Codable, Equatable {
             SidebarStyle.key: style.rawValue,
             SidebarSettings.compactIconsKey: compactShowsIcons,
             SidebarSettings.edgeMarkKey: autoHideShowsEdgeMark,
-            "sidebarShowSingleWindowMenu": showSingleWindowMenu,
-            SidebarSettings.dockSingleWindowMenuKey: dockShowSingleWindowMenu,
-            SidebarSettings.floatingWindowTitlesKey: floatingShowsWindowTitles,
-            SidebarSettings.dockWindowTitlesKey: dockShowsWindowTitles,
+            SidebarSettings.singleWindowMenuKey: showSingleWindowMenu,
+            SidebarSettings.windowTitlesKey: showsWindowTitles,
             "sidebarAppSpacing": appSpacing,
             "sidebarFontSize": fontSize, "sidebarShadowOpacity": shadowOpacity,
             "sidebarSnapDistance": snapDistance,
@@ -283,9 +286,8 @@ enum SidebarDisplayTarget: Hashable {
 enum SidebarSettings {
     static let compactIconsKey = "sidebarCompactShowsIcons"
     static let edgeMarkKey = "sidebarAutoHideEdgeMark"
-    static let dockSingleWindowMenuKey = "sidebarDockShowSingleWindowMenu"
-    static let floatingWindowTitlesKey = "sidebarFloatingShowsWindowTitles"
-    static let dockWindowTitlesKey = "sidebarDockShowsWindowTitles"
+    static let singleWindowMenuKey = "sidebarShowSingleWindowMenu"
+    static let windowTitlesKey = "sidebarShowWindowTitles"
     static let virtualNotchWidthKey = "sidebarVirtualNotchWidth"
     static let defaultVirtualNotchWidth: Double = 200
     static let virtualNotchWidthRange: ClosedRange<Double> = 100...400
@@ -293,7 +295,7 @@ enum SidebarSettings {
     static let displayPreferencesKey = "sidebarDisplayPreferences"
     static let defaultAppSpacing: Double = 4
     static let maximumAppSpacing: Double = 16
-    static let defaultFontSize: Double = 11
+    static let defaultFontSize: Double = 10
     static let minimumFontSize: Double = 9
     static let maximumFontSize: Double = 15
     static let defaultSnapDistance: Double = 200
@@ -332,10 +334,8 @@ enum SidebarSettings {
             "sidebarSide": SidebarSide.right.rawValue,
             "sidebarPosition": 0.5,
             "sidebarMonitor": "primary",
-            "sidebarShowSingleWindowMenu": true,
-            dockSingleWindowMenuKey: false,
-            floatingWindowTitlesKey: false,
-            dockWindowTitlesKey: true,
+            // The single-window menu and window titles are left unregistered so an unset value
+            // falls back to the saved style's default (see SidebarConfiguration.init(defaults:)).
             SidebarStyle.key: SidebarStyle.defaultStyle.rawValue,
             "sidebarAppSpacing": defaultAppSpacing,
             "sidebarFontSize": defaultFontSize,
@@ -488,6 +488,13 @@ enum SidebarLayout {
     static let iconSize: CGFloat = 40
     static let iconSlotHeight: CGFloat = 46
     static let labelHeight: CGFloat = 40
+    static let oneLineTitleVerticalPadding: CGFloat = 2
+
+    // One line of the medium-weight title font, plus its padding above and below.
+    static func oneLineTitleHeight(fontSize: Double) -> CGFloat {
+        let font = NSFont.systemFont(ofSize: CGFloat(fontSize), weight: .medium)
+        return (font.ascender - font.descender + font.leading).rounded(.up) + oneLineTitleVerticalPadding * 2
+    }
     static let magnificationGrowth: CGFloat = 0.32
     static let verticalPadding: CGFloat = 4
     static let menuRowHeight: CGFloat = 34

@@ -115,6 +115,20 @@ struct SidebarDesktopTransferTests {
         #expect(SidebarMonitorGroup.contentHeight(groups, spacing: 6) == (SidebarMonitor.headerHeight + SidebarMonitor.emptyHeight) * 2 + 6 + SidebarLayout.verticalPadding * 2)
     }
 
+    @Test func dockDisplayLinesHaveEvenSpaceAroundThemAndAtTheEnds() {
+        let monitors = [SidebarMonitor(id: "monitor-a", name: "A", isPrimary: true),
+                        SidebarMonitor(id: "monitor-b", name: "B", isPrimary: false)]
+        let groups = SidebarMonitorGroup.make(sections: [], desktops: [desktop(10, display: "monitor-b"), desktop(20)],
+                                              monitors: monitors, scope: .allDesktops)
+        let line = SidebarLayout.desktopSeparatorHeight
+        let spacing: CGFloat = 6
+        // Top: padding + hidden first line. Middle: gap, visible line, gap. Bottom: padding + matching space.
+        let top = SidebarLayout.verticalPadding + line
+        let middle = spacing + line + spacing
+        let bottom = SidebarLayout.verticalPadding + line
+        #expect(SidebarMonitorGroup.contentHeight(groups, spacing: spacing, style: .dock) == top + middle + bottom)
+    }
+
     @Test func threeMonitorsUseDistinctNumbersAndFilteredDisplaysKeepTheirNumber() {
         let monitors = [SidebarMonitor(id: "monitor-a", name: "A", isPrimary: true, number: 1),
                         SidebarMonitor(id: "monitor-b", name: "B", isPrimary: false, number: 2),

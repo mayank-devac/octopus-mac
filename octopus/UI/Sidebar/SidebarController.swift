@@ -263,7 +263,7 @@ private final class SidebarDisplayController {
         var side: SidebarSide { configuration.side }
         var position: Double { configuration.position }
         var idleBehavior: SidebarIdleBehavior { configuration.idleBehavior }
-        var showsMenuForSingleWindow: Bool { configuration.showsMenuForSingleWindow }
+        var showSingleWindowMenu: Bool { configuration.showSingleWindowMenu }
         var appSpacing: Double { configuration.appSpacing }
 
         init(displayID: String?) {
@@ -1005,7 +1005,7 @@ private final class SidebarDisplayController {
         guard !missionControlPresented, let screen, let settings else { return }
         guard !otherDragActive(), ownsMenu || (panel.isVisible && sidebarFrame.contains(NSEvent.mouseLocation)) else { return }
         guard !entry.windows.isEmpty,
-              entry.windows.count > 1 || entry.hasOtherWindows || settings.showsMenuForSingleWindow else {
+              entry.windows.count > 1 || entry.hasOtherWindows || settings.showSingleWindowMenu else {
             dismissSidebar()
             return
         }

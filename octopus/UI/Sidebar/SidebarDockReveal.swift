@@ -22,7 +22,8 @@ enum SidebarDockReveal {
     static let compactIconScale = 30 / SidebarLayout.iconSize
     // Open Dock icons sit centred in the bar, which hugs the screen edge, instead of in the wider panel column.
     static func edgeShift(barWidth: CGFloat) -> CGFloat { (SidebarLayout.width - barWidth) / 2 }
-    static var stripIconShift: CGFloat { (compactBarWidth - stripWidth) / 2 }
+    // Moves icons from the open bar's centre to the strip's centre, whichever bar width is in use.
+    static func stripIconShift(barWidth: CGFloat) -> CGFloat { (barWidth - stripWidth) / 2 }
     // Separator lines wait for the bar to finish growing and leave before it shrinks.
     static let separatorOpenAnimation = Animation.easeOut(duration: 0.15).delay(0.2)
     static let separatorCloseAnimation = Animation.easeIn(duration: 0.08)

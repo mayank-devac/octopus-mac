@@ -61,6 +61,7 @@ struct SidebarView: View {
     private var isDock: Bool { state.configuration.style == .dock && !state.isTopCentered }
     private var showsTitles: Bool { state.configuration.showsWindowTitles }
     private var rowHeight: CGFloat { state.configuration.rowHeight }
+    private var oneLineTitles: Bool { state.configuration.usesOneLineTitles }
     private var showsMainSidebar: Bool { !isCompact || state.isExpanded }
     private var showsNoWindows: Bool {
         groups.isEmpty || (inventory.desktopScope == .visibleDesktops && inventory.entries.isEmpty)
@@ -73,7 +74,13 @@ struct SidebarView: View {
     }
     private var stripIconOffset: CGFloat {
         guard isDockStripClosed else { return 0 }
-        return state.side == .right ? SidebarDockReveal.stripIconShift : -SidebarDockReveal.stripIconShift
+        let shift = SidebarDockReveal.stripIconShift(barWidth: dockBarWidth)
+        return state.side == .right ? shift : -shift
+    }
+    // The closed strip hides titles, so centre each icon in its titled row instead of leaving the title gap below it.
+    private var stripIconVerticalOffset: CGFloat {
+        guard isDockStripClosed, showsTitles else { return 0 }
+        return (rowHeight - SidebarLayout.iconSlotHeight) / 2
     }
     private var dockBarWidth: CGFloat {
         if showsTitles { return SidebarLayout.dockTitledBarWidth }
@@ -164,6 +171,8 @@ struct SidebarView: View {
                                     } compact: {
                                         Color.clear.frame(width: SidebarLayout.compactWidth, height: SidebarLayout.desktopSeparatorHeight)
                                     }
+                                    // A visible display line gets the same gap below it as the group gap above it.
+                                    .padding(.bottom, group.id == groups.first?.id ? 0 : CGFloat(appSpacing))
                                 } else if let monitor = group.monitor {
                                     sidebarRow {
                                         Text(monitorTitle(monitor, full: monitor.title))
@@ -217,6 +226,8 @@ struct SidebarView: View {
                         }
                     }
                     .padding(.vertical, SidebarLayout.verticalPadding)
+                    // The first display's hidden line still takes space at the top, so match it at the bottom.
+                    .padding(.bottom, isDock && groups.first?.monitor != nil ? SidebarLayout.desktopSeparatorHeight : 0)
                     // Compact Dock's column is narrower than the window, so pin it to the screen edge
                     // instead of letting the scroll view centre it.
                     .frame(maxWidth: .infinity, alignment: sidebarAlignment)
@@ -557,19 +568,20 @@ struct SidebarView: View {
                 }
             }
             .scaleEffect(isDockStripClosed ? dockIconScale : dockIconScale * scale(for: index))
-            .offset(x: compactContentOffset + stripIconOffset)
+            .offset(x: compactContentOffset + stripIconOffset, y: stripIconVerticalOffset)
             .frame(height: SidebarLayout.iconSlotHeight)
 
             if showsTitles {
                 Text(title)
                     .font(.system(size: CGFloat(labelFontSize), weight: .medium))
                     .foregroundStyle(labelColor)
-                    .lineLimit(2)
+                    .lineLimit(oneLineTitles ? 1 : 2)
+                    .truncationMode(.tail)
                     .allowsTightening(true)
                     .multilineTextAlignment(.center)
                     .fixedSize(horizontal: false, vertical: true)
                     .padding(.horizontal, labelPadding)
-                    .padding(.vertical, hasNoWindows ? 1 : 2)
+                    .padding(.vertical, hasNoWindows ? 1 : SidebarLayout.oneLineTitleVerticalPadding)
                     .background {
                         if hasNoWindows {
                             RoundedRectangle(cornerRadius: 5)
@@ -582,7 +594,8 @@ struct SidebarView: View {
                     }
                     .scaleEffect(scale(for: index), anchor: .top)
                     .frame(width: labelWidth + labelPadding * 2)
-                    .frame(height: SidebarLayout.labelHeight, alignment: .top)
+                    // The title gets whatever the row leaves below the icon slot.
+                    .frame(height: rowHeight - SidebarLayout.iconSlotHeight, alignment: .top)
                     .padding(.horizontal, 3)
                     .offset(x: compactContentOffset)
                     // The closed Compact Dock strip is icons only.

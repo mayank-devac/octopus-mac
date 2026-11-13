@@ -31,9 +31,12 @@ struct SidebarTests {
     @Test func compactDockIconsStayCentredInTheSmallerBarAndStrip() {
         // Distances from the screen edge; the icon column starts centred in the full sidebar width.
         let columnCentre = SidebarLayout.width / 2
-        let openCentre = columnCentre - SidebarDockReveal.edgeShift(barWidth: SidebarDockReveal.compactBarWidth)
-        #expect(openCentre == SidebarDockReveal.compactBarWidth / 2)
-        #expect(openCentre - SidebarDockReveal.stripIconShift == SidebarDockReveal.stripWidth / 2)
+        // Icon-only and titled bars have different widths; the closed strip icon is centred for both.
+        for barWidth in [SidebarDockReveal.compactBarWidth, SidebarLayout.dockTitledBarWidth] {
+            let openCentre = columnCentre - SidebarDockReveal.edgeShift(barWidth: barWidth)
+            #expect(openCentre == barWidth / 2)
+            #expect(openCentre - SidebarDockReveal.stripIconShift(barWidth: barWidth) == SidebarDockReveal.stripWidth / 2)
+        }
         #expect(SidebarDockReveal.compactBarWidth < SidebarLayout.dockBarWidth)
         #expect(SidebarDockReveal.compactIconScale < 1)
         #expect(SidebarDockReveal.stripIconScale < SidebarDockReveal.compactIconScale)
@@ -85,24 +88,35 @@ struct SidebarTests {
         #expect(try decode("{\"side\":\"left\"}").style == SidebarConfiguration.factoryDefaults.style)
     }
 
-    @Test func windowTitlesAndSingleWindowMenuDefaultPerStyleAndPersist() throws {
+    @Test func choosingAStyleAppliesItsTitleAndSingleWindowMenuDefaults() throws {
         var config = SidebarConfiguration.factoryDefaults
-        config.style = .dock
-        #expect(config.showsWindowTitles && !config.showsMenuForSingleWindow)
+        #expect(config.style == .dock && config.showsWindowTitles && !config.showSingleWindowMenu)
+        // The vertical Dock fits one title line under the icon; the Mac Notch bar keeps two.
+        let oneLineRow = SidebarLayout.iconSlotHeight + SidebarLayout.oneLineTitleHeight(fontSize: config.fontSize)
+        #expect(config.rowHeight == oneLineRow && oneLineRow < SidebarLayout.rowHeight)
+        config.fontSize = SidebarSettings.maximumFontSize
+        #expect(config.rowHeight > oneLineRow)
+        config.idleBehavior = .notch
         #expect(config.rowHeight == SidebarLayout.rowHeight)
-        config.style = .floating
-        #expect(!config.showsWindowTitles && config.showsMenuForSingleWindow)
+
+        config.selectedStyle = .floating
+        #expect(!config.showsWindowTitles && config.showSingleWindowMenu)
         #expect(config.rowHeight == SidebarLayout.iconOnlyRowHeight)
 
-        // Editing one style leaves the other style's choice alone.
+        // A user change survives until the style is chosen again.
         config.showsWindowTitles = true
-        config.style = .dock
-        config.showsWindowTitles = false
-        #expect(config.floatingShowsWindowTitles && !config.dockShowsWindowTitles)
+        config.selectedStyle = .floating
+        #expect(config.showsWindowTitles)
+        config.selectedStyle = .dock
+        #expect(config.showsWindowTitles && !config.showSingleWindowMenu)
 
-        // Profiles saved before these settings get the per-style defaults.
-        let older = try JSONDecoder().decode(SidebarConfiguration.self, from: Data("{\"side\":\"left\"}".utf8))
-        #expect(older.dockShowsWindowTitles && !older.floatingShowsWindowTitles && !older.dockShowSingleWindowMenu)
+        // Profiles saved before window titles existed get their saved style's defaults.
+        func decode(_ json: String) throws -> SidebarConfiguration {
+            try JSONDecoder().decode(SidebarConfiguration.self, from: Data(json.utf8))
+        }
+        let olderFloating = try decode("{\"style\":\"floating\"}")
+        #expect(!olderFloating.showsWindowTitles && olderFloating.showSingleWindowMenu)
+        #expect(try decode("{\"style\":\"floating\",\"showSingleWindowMenu\":false}").showSingleWindowMenu == false)
 
         let suite = "SidebarTitles-\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: suite))
@@ -205,8 +219,18 @@ struct SidebarTests {
         var config = SidebarConfiguration.factoryDefaults
         config.idleBehavior = .notch
         let policy = SidebarPresentation(behavior: .notch, hasNotchTrigger: true, fullScreen: false)
+        // Dock style grows out of the notch, so its bar reaches the screen top over the notch zone.
+        config.style = .dock
+        let dock = policy.layout(configuration: config, notch: notch, available: screen,
+            screen: screen, groups: [], entryCount: 0, expanded: true)
+        #expect(dock.notchInset == screen.maxY - notch.minY)
+        #expect(dock.sidebar.maxY == screen.maxY)
+        #expect(screen.contains(dock.drawing))
+        // Floating style hangs below the notch.
+        config.style = .floating
         let frames = policy.layout(configuration: config, notch: notch, available: screen,
             screen: screen, groups: [], entryCount: 0, expanded: true)
+        #expect(frames.notchInset == 0)
         #expect(frames.sidebar.maxY == notch.minY)
         #expect(frames.drawing.maxY == frames.sidebar.maxY)
         #expect(frames.sidebar.minY - frames.drawing.minY == SidebarLayout.drawingPadding)
@@ -847,7 +871,8 @@ struct SidebarTests {
         // Reset uses factory defaults, not the customized single-sidebar settings.
         let factory = SidebarConfiguration.factoryDefaults
         #expect(factory.enabled && factory.desktopScope == .allDesktops && factory.side == .right)
-        #expect(factory.position == 0.5 && factory.idleBehavior == .hide && factory.showSingleWindowMenu)
+        // The factory Dock style starts without the single-window menu.
+        #expect(factory.position == 0.5 && factory.idleBehavior == .hide && !factory.showSingleWindowMenu)
         #expect(factory.appSpacing == SidebarSettings.defaultAppSpacing)
         #expect(factory.fontSize == SidebarSettings.defaultFontSize)
         #expect(factory.shadowOpacity == SidebarSettings.defaultShadowOpacity)

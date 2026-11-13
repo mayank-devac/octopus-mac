@@ -184,15 +184,15 @@ struct PreferencesSidebarView: View {
                 }
                 .disabled(!editingEnabled)
                 .help("Current display shows only windows belonging to the display where this sidebar appears. Show windows still controls which desktops are included.")
-                Toggle("Show menu for apps with one window", isOn: setting(\.showsMenuForSingleWindow))
+                Toggle("Show menu for apps with one window", isOn: setting(\.showSingleWindowMenu))
                     .disabled(!editingEnabled)
-                    .help("Saved separately for Dock and Floating styles.")
+                    .help("Choosing a style resets this: off for Dock, on for Floating.")
             }
             .disabled(!enabled)
 
             Section("Sidebar UI") {
                 // Animate the switch so rows that depend on the style (e.g. Font size) change smoothly with the segment slide.
-                Picker("Style", selection: setting(\.style).animation()) {
+                Picker("Style", selection: setting(\.selectedStyle).animation()) {
                     Text("Dock").tag(SidebarStyle.dock)
                     Text("Floating").tag(SidebarStyle.floating)
                 }
@@ -203,7 +203,7 @@ struct PreferencesSidebarView: View {
                     : "Dock shows app icons in a rounded bar. Floating shows icons floating over the desktop.")
                 Toggle("Show window titles", isOn: setting(\.showsWindowTitles).animation())
                     .disabled(!editingEnabled)
-                    .help("Show each window’s title under its icon. Saved separately for Dock and Floating styles; when off, display names shrink to their numbers.")
+                    .help("Show each window’s title under its icon; when off, display names shrink to their numbers. Choosing a style resets this: on for Dock, off for Floating.")
                 Picker("Visibility", selection: setting(\.idleBehavior)) {
                     ForEach(SidebarIdleBehavior.allCases, id: \.rawValue) { behavior in
                         Text(behavior.title).tag(behavior)

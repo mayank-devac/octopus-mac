@@ -121,7 +121,12 @@ struct SidebarMonitorGroup: Identifiable {
             count + max(0, group.sections.reduce(0) { $0 + $1.entries.count } - 1)
         } + max(0, groups.count - 1)
         let empties = groups.filter { $0.monitor != nil && $0.sections.allSatisfy { $0.entries.isEmpty } }.count
-        return CGFloat(rows) * rowHeight + CGFloat(headers) * style.monitorHeaderHeight
+        // Dock: later display lines get a gap below them, and the hidden first line is matched at the bottom.
+        let dockBalance: CGFloat = style == .dock && groups.first?.monitor != nil
+            ? CGFloat(groups.dropFirst().filter { $0.monitor != nil }.count) * spacing
+                + SidebarLayout.desktopSeparatorHeight
+            : 0
+        return CGFloat(rows) * rowHeight + CGFloat(headers) * style.monitorHeaderHeight + dockBalance
             + CGFloat(empties) * style.emptyHeight
             + CGFloat(separators) * SidebarLayout.desktopSeparatorHeight
             + CGFloat(gaps) * spacing + SidebarLayout.verticalPadding * 2

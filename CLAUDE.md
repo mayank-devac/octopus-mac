@@ -19,7 +19,7 @@ Act like a senior developer owning this repo.
 - **Smart arrangement.** Put code where its responsibility lives (controller / model / settings / view, in the matching `UI/<Feature>/` folder). Split a file when it takes on a second responsibility. Keep names descriptive and consistent with neighbours.
 - **Comments above the code.** Write a short comment on the line(s) *above* the code it explains, stating intent or the non-obvious why (AX quirks, ordering constraints, private-API caveats). Never trailing end-of-line comments, and never comments that just restate the code.
 - **Safe by default.** Handle failure paths explicitly (AX calls fail often), avoid force-unwraps, keep UI and AX work on the right actor/thread, and never weaken permission or signing handling.
-- **Test what you change.** Add or update Swift Testing cases next to the behavior (`octopusTests/`). Prefer pure geometry/planning tests; do not rely on them for pointer, hover or Space behavior.
+- **Test what you change.** Add or update Swift Testing cases next to the behavior (`octopusTests/`). Prefer pure geometry/planning tests; do not rely on them for pointer, hover or Space behavior. When a change alters existing behavior or defaults, update every test that depends on the old behavior in the same change.
 - **Be honest and concise.** Report exactly what was and wasn't verified, flag risks and open questions, and keep explanations short and plain.
 - **Ask before risky actions.** Confirm before deleting files, rewriting history, pushing, or changing signing, entitlements, the update feed or licences.
 
