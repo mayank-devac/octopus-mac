@@ -192,6 +192,11 @@ struct PreferencesSidebarView: View {
                 }
                 .disabled(!editingEnabled)
                 .help("Fade makes the idle sidebar more transparent. Auto-Hide shows it at the screen edge. Always visible keeps it fully opaque. Compact keeps a strip of numbers or app icons visible. Mac Notch opens a horizontal app bar below a real or virtual notch; each app’s windows remain in one vertical list.")
+                if configuration.idleBehavior == .hide {
+                    Toggle("Show edge mark", isOn: setting(\.autoHideShowsEdgeMark))
+                        .disabled(!editingEnabled)
+                        .help("Show a thin line on the screen edge where the hidden sidebar appears.")
+                }
                 if usesVirtualNotch {
                     HStack {
                         Text("Notch width")

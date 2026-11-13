@@ -1712,6 +1712,52 @@ struct SidebarTests {
         #expect(state.currentItem == nil)
         #expect(!state.showsHeader)
     }
+
+    @Test func edgeMarkSitsOnTheSidebarEdgeAtTheSidebarHeight() {
+        let right = CGRect(x: 1437, y: 200, width: 3, height: 400)
+        #expect(SidebarEdgeMark.frame(edgeTrigger: right, side: .right)
+            == CGRect(x: 1440 - SidebarEdgeMark.panelWidth, y: 200, width: SidebarEdgeMark.panelWidth, height: 400))
+        let left = CGRect(x: 0, y: 120, width: 3, height: 300)
+        #expect(SidebarEdgeMark.frame(edgeTrigger: left, side: .left)
+            == CGRect(x: 0, y: 120, width: SidebarEdgeMark.panelWidth, height: 300))
+        #expect(SidebarEdgeMark.frame(edgeTrigger: .zero, side: .right) == .zero)
+    }
+
+    @Test func edgeMarkBrightensNearItsEdgeAndHidesWhileTheSidebarIsShown() {
+        let edge = CGRect(x: 1437, y: 200, width: 3, height: 400)
+        func emphasis(_ point: CGPoint, available: Bool = true, shown: Bool = false,
+                      side: SidebarSide = .right, trigger: CGRect = edge) -> SidebarEdgeMark.Emphasis {
+            SidebarEdgeMark.emphasis(available: available, sidebarShown: shown, pointer: point,
+                                     edgeTrigger: trigger, side: side)
+        }
+        #expect(emphasis(CGPoint(x: 700, y: 400)) == .idle)
+        #expect(emphasis(CGPoint(x: 1410, y: 400)) == .near)
+        #expect(emphasis(CGPoint(x: 1440, y: 400)) == .near)
+        // Near the edge but above or below the sidebar's band stays idle.
+        #expect(emphasis(CGPoint(x: 1435, y: 700)) == .idle)
+        #expect(emphasis(CGPoint(x: 1410, y: 400), shown: true) == .hidden)
+        #expect(emphasis(CGPoint(x: 1410, y: 400), available: false) == .hidden)
+        let left = CGRect(x: 0, y: 200, width: 3, height: 400)
+        #expect(emphasis(CGPoint(x: 20, y: 300), side: .left, trigger: left) == .near)
+        #expect(emphasis(CGPoint(x: 1410, y: 300), side: .left, trigger: left) == .idle)
+        #expect(SidebarEdgeMark.opacity(.near) > SidebarEdgeMark.opacity(.idle))
+        #expect(SidebarEdgeMark.opacity(.hidden) == 0)
+    }
+
+    @Test func edgeMarkSettingDefaultsOnAndPersistsPerDisplay() throws {
+        let suite = "EdgeMark-\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        var configuration = SidebarConfiguration.factoryDefaults
+        #expect(configuration.autoHideShowsEdgeMark)
+        configuration.autoHideShowsEdgeMark = false
+        configuration.saveSingleSidebar(in: defaults)
+        #expect(!SidebarConfiguration(defaults: defaults).autoHideShowsEdgeMark)
+        SidebarSettings.save(configuration, for: "A", name: "A", in: defaults)
+        #expect(!SidebarSettings.configuration(for: "A", in: defaults).autoHideShowsEdgeMark)
+        let oldProfile = Data("{\"idleBehavior\":\"hide\"}".utf8)
+        #expect(try JSONDecoder().decode(SidebarConfiguration.self, from: oldProfile).autoHideShowsEdgeMark)
+    }
 }
 
 @MainActor private final class AnchorSwitchMode: ObservableObject {

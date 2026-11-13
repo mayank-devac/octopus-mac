@@ -101,6 +101,7 @@ struct SidebarConfiguration: Codable, Equatable {
     var position: Double
     var idleBehavior: SidebarIdleBehavior
     var compactShowsIcons: Bool
+    var autoHideShowsEdgeMark: Bool
     var showSingleWindowMenu: Bool
     var appSpacing: Double
     var fontSize: Double
@@ -116,6 +117,7 @@ struct SidebarConfiguration: Codable, Equatable {
         position = defaults?.object(forKey: "sidebarPosition") as? Double ?? 0.5
         idleBehavior = .saved(defaults?.string(forKey: SidebarSettings.idleBehaviorKey))
         compactShowsIcons = defaults?.bool(forKey: SidebarSettings.compactIconsKey) ?? false
+        autoHideShowsEdgeMark = defaults?.object(forKey: SidebarSettings.edgeMarkKey) as? Bool ?? true
         showSingleWindowMenu = defaults?.object(forKey: "sidebarShowSingleWindowMenu") as? Bool ?? true
         appSpacing = defaults?.object(forKey: "sidebarAppSpacing") as? Double ?? SidebarSettings.defaultAppSpacing
         fontSize = defaults?.object(forKey: "sidebarFontSize") as? Double ?? SidebarSettings.defaultFontSize
@@ -130,7 +132,7 @@ struct SidebarConfiguration: Codable, Equatable {
     static var factoryDefaults: Self { Self(defaults: nil) }
 
     private enum CodingKeys: String, CodingKey {
-        case enabled, desktopScope, displayScope, side, position, idleBehavior, compactShowsIcons
+        case enabled, desktopScope, displayScope, side, position, idleBehavior, compactShowsIcons, autoHideShowsEdgeMark
         case showSingleWindowMenu, appSpacing, fontSize, shadowOpacity, snapDistance, virtualNotchWidth
     }
 
@@ -145,6 +147,7 @@ struct SidebarConfiguration: Codable, Equatable {
         position = try saved.decodeIfPresent(Double.self, forKey: .position) ?? position
         idleBehavior = try saved.decodeIfPresent(SidebarIdleBehavior.self, forKey: .idleBehavior) ?? idleBehavior
         compactShowsIcons = try saved.decodeIfPresent(Bool.self, forKey: .compactShowsIcons) ?? false
+        autoHideShowsEdgeMark = try saved.decodeIfPresent(Bool.self, forKey: .autoHideShowsEdgeMark) ?? true
         showSingleWindowMenu = try saved.decodeIfPresent(Bool.self, forKey: .showSingleWindowMenu) ?? showSingleWindowMenu
         appSpacing = try saved.decodeIfPresent(Double.self, forKey: .appSpacing) ?? appSpacing
         fontSize = try saved.decodeIfPresent(Double.self, forKey: .fontSize) ?? fontSize
@@ -176,6 +179,7 @@ struct SidebarConfiguration: Codable, Equatable {
             "sidebarSide": side.rawValue, "sidebarPosition": position,
             SidebarSettings.idleBehaviorKey: idleBehavior.rawValue,
             SidebarSettings.compactIconsKey: compactShowsIcons,
+            SidebarSettings.edgeMarkKey: autoHideShowsEdgeMark,
             "sidebarShowSingleWindowMenu": showSingleWindowMenu, "sidebarAppSpacing": appSpacing,
             "sidebarFontSize": fontSize, "sidebarShadowOpacity": shadowOpacity,
             "sidebarSnapDistance": snapDistance,
@@ -202,6 +206,7 @@ enum SidebarDisplayTarget: Hashable {
 
 enum SidebarSettings {
     static let compactIconsKey = "sidebarCompactShowsIcons"
+    static let edgeMarkKey = "sidebarAutoHideEdgeMark"
     static let virtualNotchWidthKey = "sidebarVirtualNotchWidth"
     static let defaultVirtualNotchWidth: Double = 200
     static let virtualNotchWidthRange: ClosedRange<Double> = 100...400
