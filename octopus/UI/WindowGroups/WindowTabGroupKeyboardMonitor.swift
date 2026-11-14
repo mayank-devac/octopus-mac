@@ -41,8 +41,6 @@ struct WindowTabShortcutSession {
 final class WindowTabGroupKeyboardMonitor {
     var sourceWindow: () -> SidebarWindowID? = { nil }
     var onSwitch: (SidebarWindowID, Int) -> Void = { _, _ in }
-    var onPermissionLost: () -> Void = {}
-    private let permissionWatch = EventTapPermissionWatch()
     private var tap: CFMachPort?
     private var source: CFRunLoopSource?
     private var session = WindowTabShortcutSession()
@@ -67,25 +65,18 @@ final class WindowTabGroupKeyboardMonitor {
         self.source = source
         CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
         CGEvent.tapEnable(tap: tap, enable: true)
-        permissionWatch.start { [weak self] in self?.removeAfterPermissionLoss() }
+        EventTapPermissionWatch.shared.tapInstalled(by: self) { [weak self] in self?.stop() }
         return true
-    }
-
-    // An untrusted tap blocks keys system-wide, so remove it instead of re-enabling it.
-    private func removeAfterPermissionLoss() {
-        stop()
-        onPermissionLost()
     }
 
     private func handle(_ type: CGEventType, event: CGEvent) -> Unmanaged<CGEvent>? {
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
             session.cancel()
             generation += 1
-            guard EventTapTrust.isGranted() else {
-                DispatchQueue.main.async { [weak self] in self?.permissionWatch.check() }
-                return Unmanaged.passUnretained(event)
+            // An untrusted tap blocks keys system-wide, so re-enable only once trust is confirmed.
+            EventTapPermissionWatch.shared.tapDisabled { [weak self] in
+                if let tap = self?.tap { CGEvent.tapEnable(tap: tap, enable: true) }
             }
-            if let tap { CGEvent.tapEnable(tap: tap, enable: true) }
             return Unmanaged.passUnretained(event)
         }
         guard event.getIntegerValueField(.keyboardEventKeycode) == Int64(kVK_Tab) else { return Unmanaged.passUnretained(event) }
@@ -112,7 +103,7 @@ final class WindowTabGroupKeyboardMonitor {
     func stop() {
         generation += 1
         session.cancel()
-        permissionWatch.stop()
+        EventTapPermissionWatch.shared.tapRemoved(by: self)
         if let tap { CGEvent.tapEnable(tap: tap, enable: false) }
         if let source { CFRunLoopRemoveSource(CFRunLoopGetMain(), source, .commonModes) }
         if let tap { CFMachPortInvalidate(tap) }

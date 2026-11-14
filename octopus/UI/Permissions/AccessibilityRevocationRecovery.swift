@@ -6,11 +6,14 @@ import AppKit
 /// trusts can keep blocking every app's clicks and keys. Ending the process is the one step
 /// that always removes its taps, so Octopus quits and comes back in its "no permission" state.
 // 1. A detached helper waits for this process to end, then reopens the app.
-// 2. The main thread quits normally so controllers can clean up.
-// 3. If the main thread is stuck, a background deadline ends the process anyway.
+// 2. The main thread quits normally so controllers can clean up and profiles are saved.
+// 3. If the main thread does not respond quickly, it may be stuck behind a blocking tap,
+//    so a background deadline ends the process at once. Once it responds, its queued tap
+//    removal has already run, so normal termination gets a much longer grace period.
 
 enum AccessibilityRevocationRecovery {
-    private static let hardExitDelay: TimeInterval = 1
+    private static let mainThreadDeadline: TimeInterval = 1
+    private static let terminationGrace: TimeInterval = 10
     private static let lock = NSLock()
     private static var started = false
 
@@ -22,8 +25,16 @@ enum AccessibilityRevocationRecovery {
         guard isFirstCall else { return }
 
         reopenAfterExit()
-        DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + hardExitDelay) { _exit(0) }
-        DispatchQueue.main.async { NSApp.terminate(nil) }
+        let mainThreadResponded = DispatchSemaphore(value: 0)
+        DispatchQueue.main.async {
+            mainThreadResponded.signal()
+            NSApp.terminate(nil)
+        }
+        DispatchQueue.global(qos: .userInitiated).async {
+            guard mainThreadResponded.wait(timeout: .now() + mainThreadDeadline) == .success else { _exit(0) }
+            Thread.sleep(forTimeInterval: terminationGrace)
+            _exit(0)
+        }
     }
 
     // A failed helper launch must not stop the exit: freeing the user's input matters more.

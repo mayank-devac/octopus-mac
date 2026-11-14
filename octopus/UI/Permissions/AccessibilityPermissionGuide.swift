@@ -89,7 +89,7 @@ final class AccessibilityPermissionGuide {
         guard let panel else { return }
         guard NSWorkspace.shared.frontmostApplication?.bundleIdentifier == Self.settingsBundleID,
               let window = settingsWindowFrame(pids: Set(settingsApps.map(\.processIdentifier))),
-              let screen = NSScreen.screens.first(where: { $0.frame.intersects(window) }) ?? NSScreen.main else {
+              let screen = Self.screen(containingMostOf: window) else {
             panel.orderOut(nil)
             return
         }
@@ -102,6 +102,12 @@ final class AccessibilityPermissionGuide {
 
     //// Polling avoids AX observers, which need the very permission being requested.
     //////////////////
+
+    private static func screen(containingMostOf window: CGRect) -> NSScreen? {
+        let screens = NSScreen.screens
+        return AccessibilityGuidePlacement.screenIndex(containingMostOf: window, screenFrames: screens.map(\.frame))
+            .map { screens[$0] }
+    }
 
     /// Largest normal-layer System Settings window, in AppKit (bottom-left) coordinates.
     /// Window bounds and owner PID are readable without Screen Recording permission.

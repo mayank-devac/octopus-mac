@@ -124,24 +124,41 @@ final class SidebarEdgeMarkView: NSView {
         super.init(frame: frame)
         wantsLayer = true
         layer?.masksToBounds = false
-        let core = NSColor(srgbRed: 0.92, green: 0.95, blue: 1, alpha: 1).cgColor
-        let soft = NSColor(srgbRed: 0.80, green: 0.86, blue: 1, alpha: 0.9).cgColor
-        let clear = NSColor(srgbRed: 0.80, green: 0.86, blue: 1, alpha: 0).cgColor
-        line.colors = [clear, soft, core, soft, clear]
         line.locations = [0, 0.14, 0.5, 0.86, 1]
         line.startPoint = CGPoint(x: 0.5, y: 0)
         line.endPoint = CGPoint(x: 0.5, y: 1)
         line.cornerRadius = 1
-        line.shadowColor = NSColor(srgbRed: 0.59, green: 0.70, blue: 1, alpha: 1).cgColor
         line.shadowOffset = .zero
         line.shadowOpacity = 0.6
         line.shadowRadius = 3
+        applyAppearanceColors()
         layer?.addSublayer(line)
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
 
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        applyAppearanceColors()
+    }
+
+    //////////////////// Appearance colors
+    /// White mark in dark mode, dark mark in light mode, so it stays visible on either wallpaper.
+    // Colors are rebuilt whenever the device appearance changes.
+    private func applyAppearanceColors() {
+        let isDark = effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        let base = isDark ? NSColor.white : NSColor(srgbRed: 0.08, green: 0.08, blue: 0.1, alpha: 1)
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        line.colors = [base.withAlphaComponent(0), base.withAlphaComponent(0.9), base,
+                       base.withAlphaComponent(0.9), base.withAlphaComponent(0)].map(\.cgColor)
+        line.shadowColor = base.cgColor
+        CATransaction.commit()
+    }
+    //// Panel appearance follows the system, so no manual override is needed.
+    //////////////////
 
     func apply(side: SidebarSide, emphasis: SidebarEdgeMark.Emphasis, animated: Bool) {
         self.side = side

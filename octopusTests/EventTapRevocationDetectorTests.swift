@@ -1,23 +1,32 @@
 import Testing
 @testable import octopus
 
-@MainActor
-struct EventTapPermissionWatchTests {
-    @Test func removesTheTapAndRecoversOnceAndOnlyAfterTrustIsLost() {
-        var trusted = true
-        var revoked = 0
-        var recovered = 0
-        let watch = EventTapPermissionWatch(isTrusted: { trusted }, recover: { recovered += 1 })
-        watch.start { revoked += 1 }
+struct EventTapRevocationDetectorTests {
+    // Feeds probe results in order and returns what `record` answered for each.
+    private func confirmations(_ probes: [Bool], into detector: inout EventTapRevocationDetector) -> [Bool] {
+        probes.map { detector.record(trusted: $0) }
+    }
 
-        watch.check()
-        #expect(revoked == 0)
-        #expect(recovered == 0)
+    @Test func oneFailedProbeIsNotRevocation() {
+        var detector = EventTapRevocationDetector()
+        #expect(confirmations([false, true, false], into: &detector) == [false, false, false])
+        #expect(!detector.isRevoked)
+    }
 
-        trusted = false
-        watch.check()
-        watch.check()
-        #expect(revoked == 1)
-        #expect(recovered == 1)
+    @Test func confirmsRevocationExactlyOnceAfterConsecutiveFailures() {
+        var detector = EventTapRevocationDetector()
+        #expect(confirmations([false, false, false, true], into: &detector) == [false, true, false, false])
+        #expect(detector.isRevoked)
+    }
+
+    @Test func resetClearsPendingFailuresButNotRevocation() {
+        var detector = EventTapRevocationDetector()
+        _ = confirmations([false], into: &detector)
+        detector.reset()
+        #expect(confirmations([false], into: &detector) == [false])
+
+        _ = confirmations([false], into: &detector)
+        detector.reset()
+        #expect(detector.isRevoked)
     }
 }
