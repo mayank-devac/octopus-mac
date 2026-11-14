@@ -7,10 +7,10 @@ enum SidebarEdgeMark {
     enum Emphasis: Equatable { case hidden, idle, near }
 
     /// Panel width: the line plus room for its glow toward the screen interior.
-    static let panelWidth: CGFloat = 8
+    static let panelWidth: CGFloat = 10
     static let edgeInset: CGFloat = 1
-    static let idleLineWidth: CGFloat = 2
-    static let nearLineWidth: CGFloat = 3
+    static let idleLineWidth: CGFloat = 4
+    static let nearLineWidth: CGFloat = 5
     static let idleOpacity: CGFloat = 0.38
     static let nearOpacity: CGFloat = 0.75
     /// How far from the edge the pointer brightens the mark.

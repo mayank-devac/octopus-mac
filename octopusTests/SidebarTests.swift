@@ -545,7 +545,7 @@ struct SidebarTests {
         #expect(SidebarSettings.configuration(for: "B", in: restarted) == other)
         #expect(SidebarIdleBehavior.saved("compact") == .compact)
         #expect(SidebarIdleBehavior.saved("notch") == .notch)
-        #expect(SidebarConfiguration.factoryDefaults.idleBehavior == .hide)
+        #expect(SidebarConfiguration.factoryDefaults.idleBehavior == .compact)
     }
 
     @Test func pointerOnScreenTopEdgeHitsVirtualNotch() throws {
@@ -934,7 +934,7 @@ struct SidebarTests {
         let factory = SidebarConfiguration.factoryDefaults
         #expect(factory.enabled && factory.desktopScope == .allDesktops && factory.side == .right)
         // The factory Dock style starts without the single-window menu.
-        #expect(factory.position == 0.5 && factory.idleBehavior == .hide && !factory.showSingleWindowMenu)
+        #expect(factory.position == 0.5 && factory.idleBehavior == .compact && !factory.showSingleWindowMenu)
         #expect(factory.appSpacing == SidebarSettings.defaultAppSpacing)
         #expect(factory.fontSize == SidebarSettings.defaultFontSize)
         #expect(factory.shadowOpacity == SidebarSettings.defaultShadowOpacity)
@@ -1104,8 +1104,8 @@ struct SidebarTests {
         SidebarSettings.migrateLegacyAutoHide(in: defaults)
         #expect(defaults.string(forKey: SidebarSettings.idleBehaviorKey) == "stayVisible")
 
-        #expect(SidebarIdleBehavior.saved(nil) == .hide)
-        #expect(SidebarIdleBehavior.saved("bogus") == .hide)
+        #expect(SidebarIdleBehavior.saved(nil) == .compact)
+        #expect(SidebarIdleBehavior.saved("bogus") == .compact)
     }
 
     @Test func windowOnEveryDesktopOfADisplayCollapsesToTheVisibleDesktop() {
