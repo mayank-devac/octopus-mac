@@ -8,7 +8,7 @@ struct PreferencesSidebarView: View {
     @AppStorage(SidebarNumberShortcuts.modifiersKey) private var numberShortcutModifierMask = Int(SidebarNumberShortcuts.defaultModifiers.rawValue)
     @AppStorage("sidebarMonitor") private var monitor = "primary"
     @State private var screens = NSScreen.screens
-    @State private var selectedDisplayID = ""
+    @AppStorage(SidebarSettings.settingsSelectedDisplayKey) private var selectedDisplayID = ""
     @State private var configuration = SidebarConfiguration()
     @State private var savedDisplays: [String: SidebarDisplayPreference] = [:]
     @State private var formHeight: CGFloat?

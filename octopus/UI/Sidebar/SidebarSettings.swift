@@ -328,6 +328,8 @@ enum SidebarSettings {
     static let virtualNotchWidthRange: ClosedRange<Double> = 100...400
     static let multiDisplayKey = "sidebarMultiDisplayEnabled"
     static let displayPreferencesKey = "sidebarDisplayPreferences"
+    // Display last chosen in the Settings "Display" picker, so reopening Settings shows the same monitor.
+    static let settingsSelectedDisplayKey = "sidebarSettingsSelectedDisplay"
     static let defaultAppSpacing: Double = 4
     static let maximumAppSpacing: Double = 16
     static let defaultFontSize: Double = 10
