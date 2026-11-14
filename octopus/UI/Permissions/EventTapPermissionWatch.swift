@@ -5,12 +5,14 @@ import AppKit
 /// An active event tap sits in front of every app's mouse and keyboard input.
 /// If Octopus loses Accessibility while one is installed, macOS keeps routing
 /// input to a tap it no longer trusts, so clicks and keys never reach any app.
-// Every long-lived tap owner runs one watch and removes its tap in `onRevoked`.
+// Every tap owner runs one watch and removes its tap in `onRevoked`.
 // The check runs off the main thread, so a busy or stuck main thread cannot delay recovery.
 
 @MainActor
 final class EventTapPermissionWatch {
     private static let queue = DispatchQueue(label: "octopus.event-tap-permission-watch", qos: .userInitiated)
+    // One check costs about a millisecond, so a short interval keeps any input freeze brief.
+    private static let checkInterval: TimeInterval = 0.25
     private let isTrusted: () -> Bool
     private let recover: () -> Void
     private var onRevoked: (() -> Void)?
@@ -26,7 +28,7 @@ final class EventTapPermissionWatch {
         self.onRevoked = onRevoked
         guard timer == nil else { return }
         let timer = DispatchSource.makeTimerSource(queue: Self.queue)
-        timer.schedule(deadline: .now() + 1, repeating: 1)
+        timer.schedule(deadline: .now() + Self.checkInterval, repeating: Self.checkInterval)
         timer.setEventHandler { [weak self, isTrusted, recover] in
             guard !isTrusted() else { return }
             // Queue the tap removal first so it runs before the quit that `recover` requests.

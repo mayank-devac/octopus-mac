@@ -10,7 +10,7 @@ import AppKit
 // 3. If the main thread is stuck, a background deadline ends the process anyway.
 
 enum AccessibilityRevocationRecovery {
-    private static let hardExitDelay: TimeInterval = 2
+    private static let hardExitDelay: TimeInterval = 1
     private static let lock = NSLock()
     private static var started = false
 

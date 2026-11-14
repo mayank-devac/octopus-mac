@@ -33,6 +33,7 @@ final class SidebarPositionScrollCapture {
     private var generation = 0
     private var onScroll: ((NSEvent) -> Void)?
     private var onEnd: (() -> Void)?
+    private let permissionWatch = EventTapPermissionWatch()
     var isActive: Bool { tap != nil && session.modifiers != nil }
     var modifiers: NSEvent.ModifierFlags? { session.modifiers }
 
@@ -63,6 +64,7 @@ final class SidebarPositionScrollCapture {
         self.onEnd = onEnd
         CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
         CGEvent.tapEnable(tap: tap, enable: true)
+        permissionWatch.start { [weak self] in self?.stop() }
         return true
     }
 
@@ -95,6 +97,7 @@ final class SidebarPositionScrollCapture {
     private func finish(cancelPending: Bool) {
         if cancelPending { generation += 1 }
         session.end()
+        permissionWatch.stop()
         if let tap { CGEvent.tapEnable(tap: tap, enable: false) }
         if let source { CFRunLoopRemoveSource(CFRunLoopGetMain(), source, .commonModes) }
         if let tap { CFMachPortInvalidate(tap) }

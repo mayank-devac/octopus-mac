@@ -53,6 +53,7 @@ struct KeyboardShortcutRecorder: NSViewRepresentable {
         }
 
         private var session: Session?
+        private let permissionWatch = EventTapPermissionWatch()
         var onRecord: (KeyboardShortcuts.Shortcut?) -> String?
         var onError: (String?) -> Void
 
@@ -145,6 +146,7 @@ struct KeyboardShortcutRecorder: NSViewRepresentable {
             session.source = source
             CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
             CGEvent.tapEnable(tap: tap, enable: true)
+            permissionWatch.start { [weak self] in self?.finishRecording() }
         }
 
         private func cancelForLostFocus() {
@@ -221,6 +223,7 @@ struct KeyboardShortcutRecorder: NSViewRepresentable {
         }
 
         func finishRecording() {
+            permissionWatch.stop()
             session = nil
             if Self.activeRecorder === self { Self.activeRecorder = nil }
             refresh()
