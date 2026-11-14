@@ -13,6 +13,10 @@ enum SidebarDockReveal {
 
     static let openAnimation = Animation.spring(response: 0.42, dampingFraction: 0.72)
     static let closeAnimation = Animation.spring(response: 0.22, dampingFraction: 1)
+    // The Mac Notch bar lands on a visible (virtual) notch, so it uses a fixed-length curve that
+    // ends a few frames before `closeDuration`. A spring's slow tail would still be moving when the
+    // panel is ordered out, so the bar looks like it stalls and then snaps onto the notch.
+    static let notchCloseAnimation = Animation.easeInOut(duration: 0.18)
 
     // Compact mode closes into a slim edge pill: each icon shrinks to the pill's size and centre.
     static let stripWidth: CGFloat = 22
@@ -35,10 +39,18 @@ enum SidebarDockReveal {
         return CGSize(width: min(closedWidth, full.width), height: full.height * closedHeightFraction)
     }
 
-    // The Mac Notch bar starts as the notch itself, then widens and drops to full size.
+    // Corner radius of the drawn notch (`SidebarNotchShape`). Its top corners flare outward by
+    // this much on each side, so its black body is narrower than the notch frame.
+    static func notchCornerRadius(_ notch: CGSize) -> CGFloat {
+        min(16, min(notch.height / 2, notch.width / 4))
+    }
+
+    // The Mac Notch bar starts as the drawn notch's body, then widens and drops to full size.
+    // Closing onto that body (not the wider frame) keeps the bar from jumping when the panel goes.
     static func notchBarSize(full: CGSize, isOpen: Bool, notch: CGSize) -> CGSize {
         guard !isOpen else { return full }
-        return CGSize(width: min(notch.width, full.width), height: min(notch.height, full.height))
+        let bodyWidth = max(0, notch.width - 2 * notchCornerRadius(notch))
+        return CGSize(width: min(bodyWidth, full.width), height: min(notch.height, full.height))
     }
 
     // Radius of the concave fillets that blend the open bar into the screen top beside the notch.

@@ -6,6 +6,7 @@ struct PreferencesWindowLayoutView: View {
     @AppStorage(WindowLayoutSettings.selectionKey) private var selection = WindowLayoutSelection.mostRecent.rawValue
     @AppStorage(WindowLayoutSettings.maximumWindowsKey) private var maximumWindows = WindowLayoutSettings.defaultMaximumWindows
     @AppStorage(WindowLayoutSettings.moveSizeKey) private var moveSize = VisibleDisplayMoveSize.fullScreen.rawValue
+    @AppStorage(SidebarSettings.snapDistanceKey) private var snapDistance = SidebarSettings.defaultSnapDistance
     @EnvironmentObject private var controller: WindowLayoutController
 
     var body: some View {
@@ -15,6 +16,18 @@ struct PreferencesWindowLayoutView: View {
                     ForEach(WindowSnapMode.allCases, id: \.rawValue) { choice in Text(choice.title).tag(choice.rawValue) }
                 }
                 .pickerStyle(.menu)
+                HStack {
+                    Text("Snap distance")
+                    Slider(value: $snapDistance,
+                           in: SidebarSettings.minimumSnapDistance...SidebarSettings.maximumSnapDistance, step: 20)
+                        .accessibilityLabel("Window snap distance from screen sides")
+                        .accessibilityValue("\(Int(snapDistance)) points")
+                    Text("\(Int(SidebarSettings.normalizedSnapDistance(snapDistance))) pt")
+                        .monospacedDigit()
+                        .foregroundStyle(.secondary)
+                        .frame(width: 46, alignment: .trailing)
+                }
+                .help("How close to a screen side a dragged window must be to show a snap preview. On smaller displays the distance is limited so the centre stays available for moving windows.")
                 Toggle("Adjust windows when snapping", isOn: $enabled)
                     .help("Arrange the selected normal windows beside the snapped window. The split may shift to fit app size limits.")
                 Picker("Adjust", selection: $selection) {

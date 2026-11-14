@@ -395,9 +395,6 @@ private final class SidebarDisplayController {
             self.cancelInteraction(preservingHoveredEntry: self.settings?.desktopScope == .allDesktops)
             if self.settings?.desktopScope == .visibleDesktops { self.panel.orderOut(nil) }
         }
-        dragController.snapDistanceProvider = { [weak self] in
-            self?.settings?.configuration.snapDistance ?? SidebarSettings.defaultSnapDistance
-        }
         dragController.excludedFrames = { [weak self] in
             guard let self else { return [] }
             var frames = self.otherSidebarFrames()

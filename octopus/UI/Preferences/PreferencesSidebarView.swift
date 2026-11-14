@@ -227,23 +227,6 @@ struct PreferencesSidebarView: View {
                     }
                     .help("Resize the virtual notch on this display. A physical camera housing keeps its actual width.")
                 }
-                HStack {
-                    Text("Snap distance")
-                    Slider(value: Binding(
-                        get: { configuration.snapDistance },
-                        set: { setting(\.snapDistance).wrappedValue = $0 }
-                    ), in: SidebarSettings.minimumSnapDistance...SidebarSettings.maximumSnapDistance, step: 20)
-                        .accessibilityLabel("Window snap distance from screen sides")
-                        .accessibilityValue("\(Int(configuration.snapDistance)) points")
-                    Text("\(Int(configuration.snapDistance)) pt")
-                        .monospacedDigit()
-                        .foregroundStyle(.secondary)
-                        .frame(width: 46, alignment: .trailing)
-                }
-                .disabled(!editingEnabled || configuration.idleBehavior == .notch)
-                .help(configuration.idleBehavior == .notch
-                    ? "Snap distance is unavailable in Mac Notch mode. Your saved distance is kept for other sidebar modes."
-                    : "Larger distances show snap previews sooner. On smaller displays the distance is limited so the centre stays available for moving windows.")
                 Picker("Side", selection: setting(\.side)) {
                     Text("Left").tag(SidebarSide.left)
                     Text("Right").tag(SidebarSide.right)
@@ -284,17 +267,37 @@ struct PreferencesSidebarView: View {
                 // Vertical Dock without titles draws no text; Floating headings and the notch bar still do.
                 .disabled(configuration.style == .dock && configuration.idleBehavior != .notch
                           && !configuration.showsWindowTitles)
-                HStack {
-                    Text("Shadow opacity")
-                    Slider(value: Binding(
-                        get: { configuration.shadowOpacity },
-                        set: { setting(\.shadowOpacity).wrappedValue = ($0 * 20).rounded() / 20 }
-                    ), in: 0...SidebarSettings.maximumShadowOpacity)
-                        .accessibilityLabel("Sidebar text shadow opacity")
-                    Text("\(Int((configuration.shadowOpacity * 100).rounded()))%")
-                        .monospacedDigit()
-                        .foregroundStyle(.secondary)
-                        .frame(width: 46, alignment: .trailing)
+                // The vertical Dock's titles sit on its glass, so it offers the panel's opacity instead.
+                // Group gives the branches one view for the size reader below to attach to.
+                Group {
+                    if configuration.style == .dock && configuration.idleBehavior != .notch {
+                        HStack {
+                            Text("Dock opacity")
+                            Slider(value: Binding(
+                                get: { configuration.dockOpacity },
+                                set: { setting(\.dockOpacity).wrappedValue = ($0 * 20).rounded() / 20 }
+                            ), in: 0...1)
+                                .accessibilityLabel("Dock background opacity")
+                            Text("\(Int((configuration.dockOpacity * 100).rounded()))%")
+                                .monospacedDigit()
+                                .foregroundStyle(.secondary)
+                                .frame(width: 46, alignment: .trailing)
+                        }
+                        .help("Make the Dock’s frosted panel more transparent.")
+                    } else {
+                        HStack {
+                            Text("Shadow opacity")
+                            Slider(value: Binding(
+                                get: { configuration.shadowOpacity },
+                                set: { setting(\.shadowOpacity).wrappedValue = ($0 * 20).rounded() / 20 }
+                            ), in: 0...SidebarSettings.maximumShadowOpacity)
+                                .accessibilityLabel("Sidebar text shadow opacity")
+                            Text("\(Int((configuration.shadowOpacity * 100).rounded()))%")
+                                .monospacedDigit()
+                                .foregroundStyle(.secondary)
+                                .frame(width: 46, alignment: .trailing)
+                        }
+                    }
                 }
                 .background {
                     PreferencesFormSizeReader { height in

@@ -120,7 +120,7 @@ struct SidebarDesktopTransferTests {
                         SidebarMonitor(id: "monitor-b", name: "B", isPrimary: false)]
         let groups = SidebarMonitorGroup.make(sections: [], desktops: [desktop(10, display: "monitor-b"), desktop(20)],
                                               monitors: monitors, scope: .allDesktops)
-        let line = SidebarLayout.desktopSeparatorHeight
+        let line = SidebarLayout.dockSeparatorHeight
         let spacing: CGFloat = 6
         // Ends: padding only, as the hidden first line takes no space. Middle: gap, visible line, gap.
         let top = SidebarLayout.verticalPadding

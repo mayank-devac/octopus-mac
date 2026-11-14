@@ -120,7 +120,11 @@ enum SidebarStyle: String, CaseIterable, Codable {
     }
 
     var monitorHeaderHeight: CGFloat {
-        self == .dock ? SidebarLayout.desktopSeparatorHeight : SidebarMonitor.headerHeight
+        self == .dock ? SidebarLayout.dockSeparatorHeight : SidebarMonitor.headerHeight
+    }
+
+    var desktopSeparatorHeight: CGFloat {
+        self == .dock ? SidebarLayout.dockSeparatorHeight : SidebarLayout.desktopSeparatorHeight
     }
 
     var emptyHeight: CGFloat {
@@ -164,7 +168,8 @@ struct SidebarConfiguration: Codable, Equatable {
     var appSpacing: Double
     var fontSize: Double
     var shadowOpacity: Double
-    var snapDistance: Double
+    // Opacity of the vertical Dock's glass panel; Dock style shows this in place of shadow opacity.
+    var dockOpacity: Double
     var virtualNotchWidth: Double
 
     init(defaults: UserDefaults? = .standard) {
@@ -186,7 +191,7 @@ struct SidebarConfiguration: Codable, Equatable {
         appSpacing = defaults?.object(forKey: "sidebarAppSpacing") as? Double ?? SidebarSettings.defaultAppSpacing
         fontSize = defaults?.object(forKey: "sidebarFontSize") as? Double ?? SidebarSettings.defaultFontSize
         shadowOpacity = defaults?.object(forKey: "sidebarShadowOpacity") as? Double ?? SidebarSettings.defaultShadowOpacity
-        snapDistance = defaults.map { SidebarSettings.snapDistance(in: $0) } ?? SidebarSettings.defaultSnapDistance
+        dockOpacity = defaults?.object(forKey: SidebarSettings.dockOpacityKey) as? Double ?? SidebarSettings.defaultDockOpacity
         virtualNotchWidth = defaults?.object(forKey: SidebarSettings.virtualNotchWidthKey) as? Double
             ?? SidebarSettings.defaultVirtualNotchWidth
         normalize()
@@ -222,14 +227,14 @@ struct SidebarConfiguration: Codable, Equatable {
     var rowHeight: CGFloat {
         guard showsWindowTitles else { return SidebarLayout.iconOnlyRowHeight }
         guard usesFontSizedTitleRows else { return SidebarLayout.rowHeight }
-        return SidebarLayout.iconSlotHeight + SidebarLayout.titleHeight(fontSize: fontSize)
+        return SidebarLayout.iconSlotHeight + SidebarLayout.titleHeight(fontSize: fontSize) - SidebarLayout.dockTitleLift
     }
 
     var usesFontSizedTitleRows: Bool { style == .dock && idleBehavior != .notch }
 
     private enum CodingKeys: String, CodingKey {
         case enabled, desktopScope, displayScope, side, position, idleBehavior, style, compactShowsIcons, autoHideShowsEdgeMark
-        case showSingleWindowMenu, showsWindowTitles, inactiveStyleChoices, appSpacing, fontSize, shadowOpacity, snapDistance, virtualNotchWidth
+        case showSingleWindowMenu, showsWindowTitles, inactiveStyleChoices, appSpacing, fontSize, shadowOpacity, dockOpacity, virtualNotchWidth
     }
 
     init(from decoder: Decoder) throws {
@@ -254,7 +259,7 @@ struct SidebarConfiguration: Codable, Equatable {
         appSpacing = try saved.decodeIfPresent(Double.self, forKey: .appSpacing) ?? appSpacing
         fontSize = try saved.decodeIfPresent(Double.self, forKey: .fontSize) ?? fontSize
         shadowOpacity = try saved.decodeIfPresent(Double.self, forKey: .shadowOpacity) ?? shadowOpacity
-        snapDistance = try saved.decodeIfPresent(Double.self, forKey: .snapDistance) ?? snapDistance
+        dockOpacity = try saved.decodeIfPresent(Double.self, forKey: .dockOpacity) ?? dockOpacity
         virtualNotchWidth = try saved.decodeIfPresent(Double.self, forKey: .virtualNotchWidth) ?? virtualNotchWidth
         normalize()
     }
@@ -269,7 +274,7 @@ struct SidebarConfiguration: Codable, Equatable {
                          fallback: SidebarSettings.defaultFontSize)
         shadowOpacity = clamp(shadowOpacity, 0...SidebarSettings.maximumShadowOpacity,
                               fallback: SidebarSettings.defaultShadowOpacity)
-        snapDistance = SidebarSettings.normalizedSnapDistance(snapDistance)
+        dockOpacity = clamp(dockOpacity, 0...1, fallback: SidebarSettings.defaultDockOpacity)
         virtualNotchWidth = clamp(virtualNotchWidth, SidebarSettings.virtualNotchWidthRange,
                                  fallback: SidebarSettings.defaultVirtualNotchWidth)
     }
@@ -287,7 +292,7 @@ struct SidebarConfiguration: Codable, Equatable {
             SidebarSettings.windowTitlesKey: showsWindowTitles,
             "sidebarAppSpacing": appSpacing,
             "sidebarFontSize": fontSize, "sidebarShadowOpacity": shadowOpacity,
-            "sidebarSnapDistance": snapDistance,
+            SidebarSettings.dockOpacityKey: dockOpacity,
             SidebarSettings.virtualNotchWidthKey: virtualNotchWidth
         ]
         for (key, value) in values { defaults.set(value, forKey: key) }
@@ -328,11 +333,15 @@ enum SidebarSettings {
     static let maximumFontSize: Double = 15
     static let defaultSnapDistance: Double = 200
     static let defaultShadowOpacity: Double = 1
+    static let defaultDockOpacity: Double = 1
+    static let dockOpacityKey = "sidebarDockOpacity"
     static let idleSidebarOpacity: CGFloat = 0.35
     static let idleBehaviorKey = "sidebarIdleBehavior"
     static let maximumShadowOpacity: Double = 5
     static let minimumSnapDistance: Double = 20
     static let maximumSnapDistance: Double = 460
+    // One app-wide value, set in Window Layout preferences; not saved per display.
+    static let snapDistanceKey = "sidebarSnapDistance"
 
     static func normalizedSnapDistance(_ value: Double) -> Double {
         guard value.isFinite else { return defaultSnapDistance }
@@ -340,7 +349,7 @@ enum SidebarSettings {
     }
 
     static func snapDistance(in defaults: UserDefaults = .standard) -> Double {
-        normalizedSnapDistance(defaults.object(forKey: "sidebarSnapDistance") as? Double ?? defaultSnapDistance)
+        normalizedSnapDistance(defaults.object(forKey: snapDistanceKey) as? Double ?? defaultSnapDistance)
     }
 
     // The former on/off "sidebarAutoHide" maps to Hide / Stay visible; an unset value gets the new default.
@@ -368,7 +377,8 @@ enum SidebarSettings {
             "sidebarAppSpacing": defaultAppSpacing,
             "sidebarFontSize": defaultFontSize,
             "sidebarShadowOpacity": defaultShadowOpacity,
-            "sidebarSnapDistance": defaultSnapDistance,
+            dockOpacityKey: defaultDockOpacity,
+            snapDistanceKey: defaultSnapDistance,
             virtualNotchWidthKey: defaultVirtualNotchWidth
         ])
     }
@@ -513,10 +523,14 @@ enum SidebarLayout {
     // Keeps separator lines within the dock bar's rounded edges.
     static let dockSeparatorInset: CGFloat = 20
     static let desktopSeparatorHeight: CGFloat = 12
+    // The Dock's line has no frost behind it, so it needs less room than the Floating separator.
+    static let dockSeparatorHeight: CGFloat = 6
     static let iconSize: CGFloat = 40
     static let iconSlotHeight: CGFloat = 46
     static let labelHeight: CGFloat = 40
     static let titleVerticalPadding: CGFloat = 2
+    // Vertical Dock titles move up into the icon slot's spare bottom margin, closer to their icon.
+    static let dockTitleLift: CGFloat = 3
     static let titleLineLimit = 2
 
     // All title lines of the medium-weight title font, plus their padding above and below.

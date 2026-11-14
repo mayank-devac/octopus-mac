@@ -124,11 +124,11 @@ struct SidebarMonitorGroup: Identifiable {
         // Dock: later display lines get a gap below them, and the hidden first line takes no space.
         let dockBalance: CGFloat = style == .dock && groups.first?.monitor != nil
             ? CGFloat(groups.dropFirst().filter { $0.monitor != nil }.count) * spacing
-                - SidebarLayout.desktopSeparatorHeight
+                - SidebarLayout.dockSeparatorHeight
             : 0
         return CGFloat(rows) * rowHeight + CGFloat(headers) * style.monitorHeaderHeight + dockBalance
             + CGFloat(empties) * style.emptyHeight
-            + CGFloat(separators) * SidebarLayout.desktopSeparatorHeight
+            + CGFloat(separators) * style.desktopSeparatorHeight
             + CGFloat(gaps) * spacing + SidebarLayout.verticalPadding * 2
     }
 

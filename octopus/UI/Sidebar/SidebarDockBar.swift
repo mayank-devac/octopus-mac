@@ -13,6 +13,8 @@ struct SidebarDockBar: View {
     // Compact mode keeps the closed bar visible as a full-height edge pill.
     let isStrip: Bool
     let isDark: Bool
+    // User's Dock opacity; fades the glass and its drop shadow together.
+    let opacity: Double
 
     var body: some View {
         let isRight = side == .right
@@ -27,6 +29,7 @@ struct SidebarDockBar: View {
             SidebarDockGlass()
                 .clipShape(shape)
                 .background { shape.fill(Color.black.opacity(isDark ? 0.4 : 0.14)).blur(radius: 6).offset(y: 2) }
+                .opacity(opacity)
                 .frame(width: size.width, height: size.height)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: isRight ? .trailing : .leading)
         }

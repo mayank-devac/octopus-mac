@@ -46,7 +46,8 @@ struct SidebarTests {
         let full = CGSize(width: 400, height: 94)
         let notch = CGSize(width: 200, height: 42)
         #expect(SidebarDockReveal.notchBarSize(full: full, isOpen: true, notch: notch) == full)
-        #expect(SidebarDockReveal.notchBarSize(full: full, isOpen: false, notch: notch) == notch)
+        // Closed, the bar matches the drawn notch's body: the frame minus its flared top corners.
+        #expect(SidebarDockReveal.notchBarSize(full: full, isOpen: false, notch: notch) == CGSize(width: 168, height: 42))
         let narrow = SidebarDockReveal.notchBarSize(full: CGSize(width: 120, height: 30), isOpen: false, notch: notch)
         #expect(narrow == CGSize(width: 120, height: 30))
     }
@@ -138,6 +139,7 @@ struct SidebarTests {
         #expect(config.style == .dock && config.showsWindowTitles && !config.showSingleWindowMenu)
         // The vertical Dock sizes its two title lines to the font; the Mac Notch bar keeps a fixed row.
         let titledRow = SidebarLayout.iconSlotHeight + SidebarLayout.titleHeight(fontSize: config.fontSize)
+            - SidebarLayout.dockTitleLift
         #expect(config.rowHeight == titledRow && titledRow < SidebarLayout.rowHeight)
         config.fontSize = SidebarSettings.maximumFontSize
         #expect(config.rowHeight > titledRow)
@@ -718,7 +720,6 @@ struct SidebarTests {
         var first = SidebarConfiguration.factoryDefaults
         first.enabled = false
         first.side = .left
-        first.snapDistance = 460
         first.position = 0.2
         var second = SidebarConfiguration.factoryDefaults
         second.position = 0.7
@@ -861,7 +862,6 @@ struct SidebarTests {
         original.position = 0.25
         original.desktopScope = .visibleDesktops
         original.displayScope = .currentDisplay
-        original.snapDistance = 460
         SidebarSettings.save(original, for: "A", name: "A", in: defaults)
         #expect(SidebarSettings.configuration(for: "A", in: defaults) == original)
         let encoded = try JSONEncoder().encode(SidebarDisplayPreference(name: "A", configuration: original))
@@ -887,7 +887,6 @@ struct SidebarTests {
         defaults.set(12.0, forKey: "sidebarAppSpacing")
         defaults.set(14.0, forKey: "sidebarFontSize")
         defaults.set(2.0, forKey: "sidebarShadowOpacity")
-        defaults.set(400.0, forKey: "sidebarSnapDistance")
         let original = SidebarConfiguration(defaults: defaults)
         #expect(!defaults.bool(forKey: SidebarSettings.multiDisplayKey))
         SidebarSettings.rememberDisplay(id: "A", name: "Same name", in: defaults)
@@ -905,7 +904,7 @@ struct SidebarTests {
         changed.appSpacing = 1
         changed.fontSize = 9
         changed.shadowOpacity = 0
-        changed.snapDistance = 20
+        changed.dockOpacity = 0.4
         SidebarSettings.save(changed, for: "A", name: "Same name", in: defaults)
         let restarted = try #require(UserDefaults(suiteName: suite))
         SidebarSettings.rememberDisplay(id: "A", name: "Renamed display", in: restarted)
@@ -926,7 +925,7 @@ struct SidebarTests {
         #expect(factory.appSpacing == SidebarSettings.defaultAppSpacing)
         #expect(factory.fontSize == SidebarSettings.defaultFontSize)
         #expect(factory.shadowOpacity == SidebarSettings.defaultShadowOpacity)
-        #expect(factory.snapDistance == SidebarSettings.defaultSnapDistance)
+        #expect(factory.dockOpacity == SidebarSettings.defaultDockOpacity)
         SidebarSettings.save(factory, for: "A", name: "Renamed display", in: restarted)
         #expect(SidebarSettings.configuration(for: "A", in: restarted) == factory)
         #expect(SidebarSettings.configuration(for: "B", in: restarted) == original)
@@ -972,7 +971,7 @@ struct SidebarTests {
         configuration.appSpacing = -10
         configuration.fontSize = 100
         configuration.shadowOpacity = .infinity
-        configuration.snapDistance = 900
+        configuration.dockOpacity = 3
         SidebarSettings.save(configuration, for: "A", name: "A", in: defaults)
         var saved = defaults.dictionary(forKey: SidebarSettings.displayPreferencesKey) ?? [:]
         saved["broken"] = Data("invalid".utf8)
@@ -982,7 +981,7 @@ struct SidebarTests {
         #expect(loaded.appSpacing == 0)
         #expect(loaded.fontSize == SidebarSettings.maximumFontSize)
         #expect(loaded.shadowOpacity == SidebarSettings.defaultShadowOpacity)
-        #expect(loaded.snapDistance == SidebarSettings.maximumSnapDistance)
+        #expect(loaded.dockOpacity == 1)
         SidebarSettings.rememberDisplay(id: "broken", name: "Recovered", in: defaults)
         #expect(SidebarSettings.configuration(for: "A", in: defaults) == loaded)
         #expect(SidebarSettings.displayPreferences(in: defaults)["broken"]?.name == "Recovered")

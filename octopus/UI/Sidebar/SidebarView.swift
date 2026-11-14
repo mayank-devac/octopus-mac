@@ -144,6 +144,7 @@ struct SidebarView: View {
                                         // The first display has nothing above it to separate, so its line stays hidden;
                                         // the row remains as that display's drop target.
                                         SidebarDesktopSeparator(title: monitor.title, shadowOpacity: 0,
+                                                                height: SidebarLayout.dockSeparatorHeight,
                                                                 inset: dock.separatorInset, showsFrost: false)
                                             .opacity(group.id == groups.first?.id ? 0 : 1)
                                             .overlay {
@@ -154,13 +155,13 @@ struct SidebarView: View {
                                             .opacity(dockSeparatorOpacity)
                                             .animation(dockSeparatorAnimation, value: state.isDockOpen)
                                     } compact: {
-                                        Color.clear.frame(width: SidebarLayout.compactWidth, height: SidebarLayout.desktopSeparatorHeight)
+                                        Color.clear.frame(width: SidebarLayout.compactWidth, height: SidebarLayout.dockSeparatorHeight)
                                     }
                                     // A visible display line gets the same gap below it as the group gap above it.
                                     .padding(.bottom, group.id == groups.first?.id ? 0 : CGFloat(appSpacing))
                                     // The hidden first line sits above the first icon without taking space,
                                     // so the bar's ends keep only the normal padding.
-                                    .padding(.top, group.id == groups.first?.id ? -SidebarLayout.desktopSeparatorHeight : 0)
+                                    .padding(.top, group.id == groups.first?.id ? -SidebarLayout.dockSeparatorHeight : 0)
                                 } else if let monitor = group.monitor {
                                     sidebarRow {
                                         Text(monitorTitle(monitor, full: monitor.title))
@@ -198,13 +199,15 @@ struct SidebarView: View {
                                         sidebarRow {
                                             SidebarDesktopSeparator(title: section.desktop?.title ?? "Other apps",
                                                                     shadowOpacity: state.configuration.shadowOpacity,
+                                                                    height: state.configuration.style.desktopSeparatorHeight,
                                                                     inset: isDock ? dock.separatorInset : 8,
                                                                     showsFrost: !isDock)
                                                 .offset(x: compactContentOffset)
                                                 .opacity(dockSeparatorOpacity)
                                                 .animation(dockSeparatorAnimation, value: state.isDockOpen)
                                         } compact: {
-                                            Color.clear.frame(width: SidebarLayout.compactWidth, height: SidebarLayout.desktopSeparatorHeight)
+                                            Color.clear.frame(width: SidebarLayout.compactWidth,
+                                                              height: state.configuration.style.desktopSeparatorHeight)
                                         }
                                         .padding(.vertical, CGFloat(appSpacing) / 2)
                                     }
@@ -223,7 +226,8 @@ struct SidebarView: View {
                     .background {
                         if isDock {
                             SidebarDockBar(side: state.side, width: dock.barWidth, isOpen: state.isDockOpen,
-                                           isStrip: isCompactDock, isDark: colorScheme == .dark)
+                                           isStrip: isCompactDock, isDark: colorScheme == .dark,
+                                           opacity: state.configuration.dockOpacity)
                         }
                     }
                     .animation(dockAnimation, value: state.isDockOpen)
@@ -255,7 +259,8 @@ struct SidebarView: View {
 
     private var dockAnimation: Animation? {
         guard state.configuration.style == .dock, !reduceMotion else { return nil }
-        return state.isDockOpen ? SidebarDockReveal.openAnimation : SidebarDockReveal.closeAnimation
+        if state.isDockOpen { return SidebarDockReveal.openAnimation }
+        return state.usesNotchDockBar ? SidebarDockReveal.notchCloseAnimation : SidebarDockReveal.closeAnimation
     }
 
     // Both columns share a scroll view so the compact strip stays aligned with app rows.
@@ -531,6 +536,8 @@ struct SidebarView: View {
                     }
                     .scaleEffect(scale(for: index), anchor: .top)
                     .frame(width: labelWidth + labelPadding * 2)
+                    // The vertical Dock's row is shorter by this lift, so the title moves up rather than being cut.
+                    .padding(.top, state.configuration.usesFontSizedTitleRows ? -SidebarLayout.dockTitleLift : 0)
                     // The title gets whatever the row leaves below the icon slot.
                     .frame(height: rowHeight - SidebarLayout.iconSlotHeight - rowTrim, alignment: .top)
                     .padding(.horizontal, 3)
@@ -640,7 +647,7 @@ struct SidebarNotchTriggerView: View {
 
 struct SidebarNotchShape: Shape {
     func path(in rect: CGRect) -> Path {
-        let r = min(16, min(rect.height / 2, rect.width / 4))
+        let r = SidebarDockReveal.notchCornerRadius(rect.size)
         return Path { path in
             path.move(to: CGPoint(x: rect.minX, y: rect.minY))
             path.addLine(to: CGPoint(x: rect.maxX, y: rect.minY))
@@ -718,6 +725,7 @@ private struct SidebarDesktopSeparator: View {
     @Environment(\.colorScheme) private var colorScheme
     let title: String
     let shadowOpacity: Double
+    var height: CGFloat = SidebarLayout.desktopSeparatorHeight
     var inset: CGFloat = 8
     var showsFrost = true
 
@@ -729,7 +737,7 @@ private struct SidebarDesktopSeparator: View {
         ], startPoint: .leading, endPoint: .trailing)
         .frame(height: 1)
         .padding(.horizontal, 4)
-        .frame(height: SidebarLayout.desktopSeparatorHeight)
+        .frame(height: height)
         .background {
             if showsFrost {
                 SidebarFrostBackground(shadowOpacity: shadowOpacity)

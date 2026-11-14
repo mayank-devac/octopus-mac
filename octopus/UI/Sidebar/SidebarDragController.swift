@@ -55,7 +55,6 @@ final class SidebarDragController: NSObject, NSDraggingSource {
     private var dividerModifierDown = false
     private var modifierMonitor: Any?
     private var globalModifierMonitor: Any?
-    var snapDistanceProvider: () -> Double = { SidebarSettings.snapDistance() }
     var excludedFrames: () -> [CGRect] = { [] }
     var desktopDropTarget: (CGPoint, SidebarDesktop?) -> SidebarDesktopDropTarget? = { _, _ in nil }
     var sidebarDragContains: (CGPoint) -> Bool = { _ in false }
@@ -84,7 +83,7 @@ final class SidebarDragController: NSObject, NSDraggingSource {
         guard !isActive, AXIsProcessTrusted() else { return }
         dismissFeedback()
         // Preview and drop must use the same distance throughout this drag.
-        snapDistance = SidebarSettings.normalizedSnapDistance(snapDistanceProvider())
+        snapDistance = SidebarSettings.snapDistance()
         cornerModifiers = MouseShortcutStore.shared.cornerSnapModifiers
         dividerModifierDown = SidebarDividerShortcut.isPressed(event.modifierFlags, cornerModifiers: cornerModifiers)
         moveSize = WindowLayoutSettings.moveSize()
