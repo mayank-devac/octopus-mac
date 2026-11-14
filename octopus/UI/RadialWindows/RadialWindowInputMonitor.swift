@@ -118,6 +118,7 @@ final class RadialWindowInputMonitor {
     private var generation = 0
     private var stopping = false
     private var screenTop: CGFloat = 0
+    private let permissionWatch = EventTapPermissionWatch()
     var isInstalled: Bool { tap != nil }
 
     func beginKeyboard(modifiers: NSEvent.ModifierFlags, key: UInt16) -> Bool {
@@ -146,13 +147,24 @@ final class RadialWindowInputMonitor {
         self.source = source
         CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
         CGEvent.tapEnable(tap: tap, enable: true)
+        permissionWatch.start { [weak self] in self?.removeAfterPermissionLoss() }
         return true
+    }
+
+    // An untrusted tap blocks clicks and keys system-wide, so remove it instead of re-enabling it.
+    private func removeAfterPermissionLoss() {
+        stop()
+        onCancel()
     }
 
     private func handle(_ type: CGEventType, _ event: CGEvent) -> Unmanaged<CGEvent>? {
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
             generation += 1
             session.interrupt(modifiers: NSEvent.modifierFlags)
+            guard EventTapTrust.isGranted() else {
+                DispatchQueue.main.async { [weak self] in self?.permissionWatch.check() }
+                return Unmanaged.passUnretained(event)
+            }
             DispatchQueue.main.async { [weak self] in self?.onCancel() }
             if let tap { CGEvent.tapEnable(tap: tap, enable: true) }
             return Unmanaged.passUnretained(event)
@@ -205,6 +217,7 @@ final class RadialWindowInputMonitor {
 
     func stop() {
         generation += 1
+        permissionWatch.stop()
         if let tap { CGEvent.tapEnable(tap: tap, enable: false) }
         if let source { CFRunLoopRemoveSource(CFRunLoopGetMain(), source, .commonModes) }
         if let tap { CFMachPortInvalidate(tap) }

@@ -108,6 +108,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         shortcutManager?.stop()
         windowTabGroupController.stop()
         windowLayoutController.stop()
+        AccessibilityPermissionGuide.shared.close()
         AppDelegate.profileManager.saveNow()
     }
 

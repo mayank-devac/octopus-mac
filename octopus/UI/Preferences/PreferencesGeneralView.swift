@@ -115,9 +115,7 @@ struct PreferencesGeneralView: View {
     }
     
     private func openAccessibilitySettings() {
-        // Open System Settings to the Privacy & Security > Accessibility pane
-        let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!
-        NSWorkspace.shared.open(url)
+        AccessibilityPermissionGuide.shared.open()
     }
     
     private func setLaunchAtLogin(enabled: Bool) {

@@ -79,6 +79,8 @@ The first entry must show the new version and its ZIP URL.
 - `Release tag already exists`: never overwrite or delete a published release. Bump the build instead.
 - Partial publish (release created but feed not pushed, or the reverse): stop and report to the user.
 - Keychain key mismatch (`SUPublicEDKey`): stop. Never regenerate or export the Sparkle key.
+- `Signing certificate 'Octopus Release' is not in the Keychain`: stop and ask the user to restore
+  it from backup. Never create a new one silently — a new certificate resets everyone's Accessibility grant.
 
 ## Report back
 

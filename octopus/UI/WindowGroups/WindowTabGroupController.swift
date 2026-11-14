@@ -71,6 +71,7 @@ final class WindowTabGroupController {
             return window
         }
         keyboard.onSwitch = { [weak self] window, direction in self?.cycle(from: window, direction: direction) }
+        keyboard.onPermissionLost = { [weak self] in self?.dissolveAll() }
         drag.enabled = { [weak self] in self?.running == true && WindowLayoutSettings.tabGroupingEnabled() }
         drag.excludedWindows = { [weak self] source in
             Set(self?.group(containing: source)?.members.map(\.window.id.window) ?? [source])
