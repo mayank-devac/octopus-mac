@@ -46,6 +46,8 @@ final class SidebarDesktopMenu {
         let next = belowBar.map { SidebarLayout.notchMenuFrame(size: size, icon: anchor, bar: $0, screen: screen) }
             ?? SidebarLayout.menuFrame(size: size, icon: anchor, screen: screen, side: side)
         if panel.frame != next { panel.setFrame(next, display: true) }
+        let level = belowBar == nil ? SidebarWindowLevels.menu : SidebarWindowLevels.notchMenu
+        if panel.level != level { panel.level = level }
         if !panel.isVisible { panel.orderFrontRegardless() }
     }
 

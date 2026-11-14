@@ -287,6 +287,13 @@ private final class SidebarDisplayController {
         SidebarPresentation(behavior: settings?.idleBehavior ?? .defaultBehavior,
                             hasNotchTrigger: !notchFrame.isEmpty, fullScreen: isFullScreen)
     }
+    // Pointer location for sidebar hit tests; the screen's top edge counts as inside the top row.
+    private var pointerLocation: CGPoint {
+        let point = NSEvent.mouseLocation
+        guard let screen else { return point }
+        return SidebarLayout.pointerHitPoint(point, screenFrame: screen.frame,
+                                             allScreenFrames: NSScreen.screens.map(\.frame))
+    }
     private var pointerFrame: CGRect {
         presentation.pointerFrame(sidebar: sidebarFrame, compact: compactFrame, expanded: viewState.isExpanded)
     }
@@ -302,7 +309,7 @@ private final class SidebarDisplayController {
 
     private func isHoveringMenuOrIcon(_ entryID: SidebarEntryID) -> Bool {
         guard sidebarEntryID == entryID, panel.isVisible else { return false }
-        let point = NSEvent.mouseLocation
+        let point = pointerLocation
         return (cycleController.panel.isVisible && cycleController.panel.frame.contains(point))
             || (sidebarFrame.contains(point) && hoveredSidebarEntryID(at: point) == entryID)
     }
@@ -722,7 +729,7 @@ private final class SidebarDisplayController {
 
     // The idle sidebar may hide only while nothing holds it open and the pointer is outside it and its triggers.
     private var canHideIdleSidebar: Bool {
-        let point = NSEvent.mouseLocation
+        let point = pointerLocation
         let inNotch = presentation.hasTopTrigger && notchFrame.contains(point)
         return presentation.closesWhenOutside(expanded: viewState.isExpanded)
             && sidebarEntryID == nil && !isPeeking && !positionScrollCapture.isActive
@@ -778,8 +785,9 @@ private final class SidebarDisplayController {
         let usable = isFullScreen ? target.frame : target.visibleFrame
         let sections = viewState.dragSections ?? SidebarDesktopSection.make(entries: inventory.entries,
             desktops: inventory.desktops, scope: inventory.desktopScope)
-        let groups = SidebarMonitorGroup.make(sections: sections, desktops: inventory.desktops,
-            monitors: monitors, scope: inventory.desktopScope)
+        let groups = SidebarMonitorGroup.displayed(SidebarMonitorGroup.make(sections: sections,
+            desktops: inventory.desktops, monitors: monitors, scope: inventory.desktopScope),
+            style: settings.configuration.style)
         let policy = presentation
         let frames = policy.layout(configuration: settings.configuration, notch: notchFrame,
             available: usable, screen: target.frame, groups: groups,
@@ -807,7 +815,7 @@ private final class SidebarDisplayController {
         }
         let menuFrame = sidebarEntryID == nil ? nil : cycleController.panel.frame
         panel.ignoresMouseEvents = !SidebarLayout.acceptsSidebarPointer(
-            at: NSEvent.mouseLocation, sidebar: pointerFrame, menu: menuFrame)
+            at: pointerLocation, sidebar: pointerFrame, menu: menuFrame)
         updateEdgeMark()
     }
 
@@ -951,7 +959,7 @@ private final class SidebarDisplayController {
             let work = DispatchWorkItem { [weak self] in
                 guard let self, self.hoveredEntryID == entryID, self.panel.isVisible,
                       !self.cycleController.isKeyboardSwitcherVisible else { return }
-                let point = NSEvent.mouseLocation
+                let point = pointerLocation
                 guard self.sidebarFrame.contains(point), self.hoveredSidebarEntryID(at: point) == entryID,
                       !(self.sidebarEntryID != nil && self.cycleController.panel.frame.contains(point)) else {
                     self.hoverWork = nil
@@ -975,7 +983,7 @@ private final class SidebarDisplayController {
 
     private func showMenu(_ entry: SidebarEntry, icon: CGRect) {
         guard !missionControlPresented, let screen, let settings else { return }
-        guard !otherDragActive(), ownsMenu || (panel.isVisible && sidebarFrame.contains(NSEvent.mouseLocation)) else { return }
+        guard !otherDragActive(), ownsMenu || (panel.isVisible && sidebarFrame.contains(pointerLocation)) else { return }
         guard !entry.windows.isEmpty,
               entry.windows.count > 1 || entry.hasOtherWindows || settings.showSingleWindowMenu else {
             dismissSidebar()
@@ -1092,7 +1100,7 @@ private final class SidebarDisplayController {
 
     private func handleMouse(_ event: NSEvent) {
         let modifiers = NSEvent.modifierFlags
-        let point = NSEvent.mouseLocation
+        let point = pointerLocation
         let inPanel = panel.isVisible && panel.isOnActiveSpace && pointerFrame.contains(point)
         let inNotch = notchPanel.isVisible && notchPanel.isOnActiveSpace && notchFrame.contains(point)
         let canPreview = settings?.enabled == true && inventory.hasPermission && screen != nil
@@ -1118,7 +1126,7 @@ private final class SidebarDisplayController {
         } else if event.type == .scrollWheel {
             // Scroll views update their row geometry after the event is delivered.
             DispatchQueue.main.async { [weak self] in
-                if let self, self.ownsMenu { self.cycleController.updateSidebarPointer(at: NSEvent.mouseLocation) }
+                if let self, self.ownsMenu { self.cycleController.updateSidebarPointer(at: pointerLocation) }
             }
         }
         if [.leftMouseDown, .rightMouseDown, .otherMouseDown].contains(event.type),
@@ -1142,7 +1150,7 @@ private final class SidebarDisplayController {
         guard !radialPresented, !missionControlPresented else { return }
         guard settings?.enabled == true, !dragController.isActive, !otherDragActive() else { return }
         restoreSidebarIfNeeded()
-        let point = NSEvent.mouseLocation
+        let point = pointerLocation
         let inCompact = presentation.usesCompactStrip && panel.isVisible && panel.isOnActiveSpace && compactFrame.contains(point)
         let inNotch = presentation.hasTopTrigger && notchPanel.isVisible && notchFrame.contains(point)
         if inCompact || inNotch { revealSidebarFromPersistentTrigger() }
@@ -1177,7 +1185,7 @@ private final class SidebarDisplayController {
                 let work = DispatchWorkItem { [weak self] in
                     guard let self else { return }
                     self.dismissWork = nil
-                    guard self.hoveredEntryID == nil, !self.cycleController.panel.frame.contains(NSEvent.mouseLocation) else { return }
+                    guard self.hoveredEntryID == nil, !self.cycleController.panel.frame.contains(pointerLocation) else { return }
                     self.dismissSidebar()
                 }
                 dismissWork = work
@@ -1194,7 +1202,7 @@ private final class SidebarDisplayController {
                 let work = DispatchWorkItem { [weak self] in
                     guard let self else { return }
                     self.revealWork = nil
-                    guard self.settings?.enabled == true, self.edgeFrame.contains(NSEvent.mouseLocation),
+                    guard self.settings?.enabled == true, self.edgeFrame.contains(pointerLocation),
                           !self.otherDragActive(),
                           !self.cycleController.isKeyboardSwitcherVisible else { return }
                     self.orderSidebarFront()

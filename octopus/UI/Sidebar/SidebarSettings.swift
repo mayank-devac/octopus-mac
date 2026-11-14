@@ -10,6 +10,8 @@ enum SidebarWindowLevels {
     static let dragIcon = NSWindow.Level(rawValue: NSWindow.Level.floating.rawValue + 4)
     // The notch occupies menu-bar space, but stays below opened popup menus.
     static let notch = NSWindow.Level.statusBar
+    // Menus opened from the notch bar must draw over it, still below system popup menus.
+    static let notchMenu = NSWindow.Level(rawValue: NSWindow.Level.statusBar.rawValue + 1)
 }
 
 enum SidebarSide: String, CaseIterable, Codable {
@@ -525,6 +527,11 @@ enum SidebarLayout {
     static let desktopSeparatorHeight: CGFloat = 12
     // The Dock's line has no frost behind it, so it needs less room than the Floating separator.
     static let dockSeparatorHeight: CGFloat = 6
+    // Space above and below a visible Dock display line, as a share of the app spacing.
+    static let dockSeparatorGapRatio: CGFloat = 0.90
+    // Moves gap from below each Dock line (display and Desktop) to above it: the icon below carries its own slot inset,
+    // while the label above ends flush, so equal gaps look top-heavy. Total height is unchanged.
+    static let dockSeparatorOpticalShift: CGFloat = 6
     static let iconSize: CGFloat = 40
     static let iconSlotHeight: CGFloat = 46
     static let labelHeight: CGFloat = 40
@@ -606,6 +613,15 @@ enum SidebarLayout {
         let y = screenFrame.maxY - safeTopInset - notchTriggerHeight
         guard minX.isFinite, maxX.isFinite, y.isFinite, maxX > minX, y >= screenFrame.minY else { return nil }
         return CGRect(x: minX, y: y, width: maxX - minX, height: notchTriggerHeight)
+    }
+
+    // A pointer pushed against the top edge reports y == screen maxY, which half-open
+    // CGRect hit tests treat as outside the notch and the Dock bar. Move it onto the top row,
+    // unless a display stacked above actually owns that point.
+    static func pointerHitPoint(_ point: CGPoint, screenFrame: CGRect, allScreenFrames: [CGRect]) -> CGPoint {
+        guard point.y == screenFrame.maxY, point.x >= screenFrame.minX, point.x < screenFrame.maxX,
+              !allScreenFrames.contains(where: { $0.contains(point) }) else { return point }
+        return CGPoint(x: point.x, y: screenFrame.maxY - 0.5)
     }
 
     static func notchTriggerFrame(screenFrame: CGRect, safeTopInset: CGFloat,

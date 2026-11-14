@@ -548,6 +548,19 @@ struct SidebarTests {
         #expect(SidebarConfiguration.factoryDefaults.idleBehavior == .hide)
     }
 
+    @Test func pointerOnScreenTopEdgeHitsVirtualNotch() throws {
+        let screen = CGRect(x: 0, y: 0, width: 1920, height: 1080)
+        let notch = try #require(SidebarLayout.notchTriggerFrame(
+            screenFrame: screen, safeTopInset: 0, leftArea: nil, rightArea: nil))
+        let topEdge = CGPoint(x: notch.midX, y: screen.maxY)
+        #expect(!notch.contains(topEdge))
+        #expect(notch.contains(SidebarLayout.pointerHitPoint(topEdge, screenFrame: screen, allScreenFrames: [screen])))
+        // A display stacked above owns its bottom row, so the point stays on it.
+        let above = CGRect(x: 0, y: 1080, width: 1920, height: 1080)
+        #expect(SidebarLayout.pointerHitPoint(topEdge, screenFrame: screen,
+                                              allScreenFrames: [screen, above]) == topEdge)
+    }
+
     @Test func notchTriggerUsesHardwareGeometryOrProportionalVirtualNotch() throws {
         let screen = CGRect(x: 0, y: 0, width: 1512, height: 982)
         let left = CGRect(x: 0, y: 950, width: 656, height: 32)

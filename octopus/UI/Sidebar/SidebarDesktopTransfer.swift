@@ -112,6 +112,12 @@ struct SidebarMonitorGroup: Identifiable {
         return groups
     }
 
+    // Dock style draws nothing for a display without windows, so it is dropped
+    // rather than left to push a stray display line and its gaps to the top.
+    static func displayed(_ groups: [Self], style: SidebarStyle) -> [Self] {
+        style == .dock ? groups.filter { !$0.sections.isEmpty } : groups
+    }
+
     static func contentHeight(_ groups: [Self], spacing: CGFloat, style: SidebarStyle = .floating,
                               rowHeight: CGFloat = SidebarLayout.rowHeight) -> CGFloat {
         let rows = groups.flatMap(\.sections).reduce(0) { $0 + $1.entries.count }
@@ -121,9 +127,11 @@ struct SidebarMonitorGroup: Identifiable {
             count + max(0, group.sections.reduce(0) { $0 + $1.entries.count } - 1)
         } + max(0, groups.count - 1)
         let empties = groups.filter { $0.monitor != nil && $0.sections.allSatisfy { $0.entries.isEmpty } }.count
-        // Dock: later display lines get a gap below them, and the hidden first line takes no space.
+        // Dock: later display lines widen the group gap to an even gap on each side,
+        // and the hidden first line takes no space.
         let dockBalance: CGFloat = style == .dock && groups.first?.monitor != nil
-            ? CGFloat(groups.dropFirst().filter { $0.monitor != nil }.count) * spacing
+            ? CGFloat(groups.dropFirst().filter { $0.monitor != nil }.count)
+                * spacing * (2 * SidebarLayout.dockSeparatorGapRatio - 1)
                 - SidebarLayout.dockSeparatorHeight
             : 0
         return CGFloat(rows) * rowHeight + CGFloat(headers) * style.monitorHeaderHeight + dockBalance

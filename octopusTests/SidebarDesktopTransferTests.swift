@@ -122,11 +122,21 @@ struct SidebarDesktopTransferTests {
                                               monitors: monitors, scope: .allDesktops)
         let line = SidebarLayout.dockSeparatorHeight
         let spacing: CGFloat = 6
-        // Ends: padding only, as the hidden first line takes no space. Middle: gap, visible line, gap.
+        // Ends: padding only, as the hidden first line takes no space. Middle: even gap, visible line, even gap.
         let top = SidebarLayout.verticalPadding
-        let middle = spacing + line + spacing
+        let gap = spacing * SidebarLayout.dockSeparatorGapRatio
+        let middle = gap + line + gap
         let bottom = SidebarLayout.verticalPadding
         #expect(SidebarMonitorGroup.contentHeight(groups, spacing: spacing, style: .dock) == top + middle + bottom)
+    }
+
+    @Test func dockDropsDisplaysWithoutWindows() {
+        let monitors = [SidebarMonitor(id: "monitor-a", name: "A", isPrimary: true),
+                        SidebarMonitor(id: "monitor-b", name: "B", isPrimary: false)]
+        let groups = SidebarMonitorGroup.make(sections: [], desktops: [desktop(10, display: "monitor-b"), desktop(20)],
+                                              monitors: monitors, scope: .allDesktops)
+        #expect(SidebarMonitorGroup.displayed(groups, style: .dock).isEmpty)
+        #expect(SidebarMonitorGroup.displayed(groups, style: .floating).count == groups.count)
     }
 
     @MainActor @Test func dockLastRowDropsOnlyAnUnusedTitleLine() {

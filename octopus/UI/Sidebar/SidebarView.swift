@@ -31,8 +31,9 @@ final class SidebarViewState: ObservableObject {
     func displayedGroups(in inventory: SidebarWindowInventory) -> [SidebarMonitorGroup] {
         let sections = dragSections ?? SidebarDesktopSection.make(entries: inventory.entries,
             desktops: inventory.desktops, scope: inventory.desktopScope)
-        return SidebarMonitorGroup.make(sections: sections, desktops: dragDesktops ?? inventory.desktops,
-            monitors: monitors, scope: inventory.desktopScope)
+        return SidebarMonitorGroup.displayed(SidebarMonitorGroup.make(sections: sections,
+            desktops: dragDesktops ?? inventory.desktops, monitors: monitors, scope: inventory.desktopScope),
+            style: configuration.style)
     }
 }
 
@@ -157,11 +158,17 @@ struct SidebarView: View {
                                     } compact: {
                                         Color.clear.frame(width: SidebarLayout.compactWidth, height: SidebarLayout.dockSeparatorHeight)
                                     }
-                                    // A visible display line gets the same gap below it as the group gap above it.
-                                    .padding(.bottom, group.id == groups.first?.id ? 0 : CGFloat(appSpacing))
+                                    // A visible display line gets an optically even gap above and below it;
+                                    // the top padding trims the group gap down to that size.
+                                    .padding(.bottom, group.id == groups.first?.id
+                                             ? 0 : CGFloat(appSpacing) * SidebarLayout.dockSeparatorGapRatio
+                                                 - SidebarLayout.dockSeparatorOpticalShift)
                                     // The hidden first line sits above the first icon without taking space,
                                     // so the bar's ends keep only the normal padding.
-                                    .padding(.top, group.id == groups.first?.id ? -SidebarLayout.dockSeparatorHeight : 0)
+                                    .padding(.top, group.id == groups.first?.id
+                                             ? -SidebarLayout.dockSeparatorHeight
+                                             : CGFloat(appSpacing) * (SidebarLayout.dockSeparatorGapRatio - 1)
+                                                 + SidebarLayout.dockSeparatorOpticalShift)
                                 } else if let monitor = group.monitor {
                                     sidebarRow {
                                         Text(monitorTitle(monitor, full: monitor.title))
@@ -209,7 +216,11 @@ struct SidebarView: View {
                                             Color.clear.frame(width: SidebarLayout.compactWidth,
                                                               height: state.configuration.style.desktopSeparatorHeight)
                                         }
-                                        .padding(.vertical, CGFloat(appSpacing) / 2)
+                                        // Dock moves part of the lower gap above the line so both gaps look even.
+                                        .padding(.top, CGFloat(appSpacing) / 2
+                                                 + (isDock ? SidebarLayout.dockSeparatorOpticalShift : 0))
+                                        .padding(.bottom, CGFloat(appSpacing) / 2
+                                                 - (isDock ? SidebarLayout.dockSeparatorOpticalShift : 0))
                                     }
                                     desktopSection(section, indices: indices)
                                 }

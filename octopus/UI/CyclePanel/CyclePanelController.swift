@@ -198,7 +198,7 @@ final class CyclePanelController: NSObject {
     func showSidebar(for entry: SidebarEntry, icon: CGRect, screen: CGRect, side: SidebarSide,
                      belowBar: CGRect? = nil) {
         guard !isKeyboardSwitcherVisible, !entry.windows.isEmpty else { return }
-        panel.level = SidebarWindowLevels.menu
+        panel.level = belowBar == nil ? SidebarWindowLevels.menu : SidebarWindowLevels.notchMenu
         let isRefresh = sidebarEntryID == entry.id
         let selectedID = isRefresh ? state.currentWindow?.cgWindowID : nil
         presentation = .sidebar
