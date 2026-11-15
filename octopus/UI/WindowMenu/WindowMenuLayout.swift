@@ -14,7 +14,9 @@ enum WindowMenuLayout {
         height += headerHeight(workspaceCount: content.workspaces.count)
         height += Metrics.sectionSpacing
         height += listHeight(windowCount: content.windows.count, isCenter: isCenter, status: status)
-        return CGSize(width: isCenter ? Metrics.centerWidth : Metrics.sidebarWidth, height: height)
+        let width = isCenter ? Metrics.centerWidth
+            : sidebarCardWidth(appCount: content.apps.count, workspaceCount: content.workspaces.count)
+        return CGSize(width: width, height: height)
     }
 
     /// The workspace switch appears only with two or more workspaces.
@@ -40,12 +42,28 @@ enum WindowMenuLayout {
         windowCount > maximumRows(isCenter: isCenter)
     }
 
-    /// App cells that fit beside the optional workspace switch and the "more" chevron.
-    static func visibleAppCount(isCenter: Bool, workspaceCount: Int) -> Int {
-        var width = (isCenter ? Metrics.centerWidth : Metrics.sidebarWidth) - Metrics.padding * 2
+    ////////////////////
+    //// Sidebar card width
+
+    /// Cells the strip can show at full width, optionally reserving room for the
+    /// "more" chevron so it never covers a cell.
+    static func stripCapacity(isCenter: Bool, workspaceCount: Int, reservingChevron: Bool) -> Int {
+        var width = (isCenter ? Metrics.centerWidth : Metrics.sidebarWidth)
+            - Metrics.padding * 2 - Metrics.stripInnerPadding
         if showsWorkspaceSwitch(workspaceCount: workspaceCount) { width -= Metrics.workspaceWidth + Metrics.sectionSpacing }
-        width -= Metrics.stripChevronWidth
+        if reservingChevron { width -= Metrics.stripChevronWidth }
         return max(1, Int((width + Metrics.appCellSpacing) / (Metrics.appCellSize + Metrics.appCellSpacing)))
+    }
+
+    /// The sidebar card hugs its content: workspace switch plus the app strip,
+    /// clamped between the minimum and maximum widths, so short app lists leave
+    /// no dead trailing space and the window rows stay compact.
+    static func sidebarCardWidth(appCount: Int, workspaceCount: Int) -> CGFloat {
+        let cells = min(max(appCount, 1), stripCapacity(isCenter: false, workspaceCount: workspaceCount, reservingChevron: false))
+        var width = Metrics.padding * 2 + Metrics.stripInnerPadding
+        if showsWorkspaceSwitch(workspaceCount: workspaceCount) { width += Metrics.workspaceWidth + Metrics.sectionSpacing }
+        width += CGFloat(cells) * Metrics.appCellSize + CGFloat(max(0, cells - 1)) * Metrics.appCellSpacing
+        return min(max(width, Metrics.sidebarMinimumWidth), Metrics.sidebarWidth)
     }
 }
 

@@ -6,10 +6,9 @@ import Foundation
 
 enum ShortcutPreferenceStrings {
     // Window menu
-    static let windowMenuSection = "Window menu"
     static let windowMenuTitle = "Open window menu"
     static let windowMenuDetail = "Shows recently quit apps, workspace apps and their windows in the centre of the screen. Use the arrow keys or pointer, Return to open, Escape to close."
-    static let windowMenuTypingWarning = "Shift + Space is also typed in text fields. Choose another shortcut if spaces go missing while you type."
+    static let windowMenuTypingWarning = "Shift + Space also types a space in text fields. Untick Shift if spaces go missing while you type."
 
     // App menu
     static let appMenuTitle = "Open app menu"

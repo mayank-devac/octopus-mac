@@ -152,7 +152,8 @@ final class WindowMenuPresenter {
     private func pageApps() {
         let apps = state.content.apps
         guard !apps.isEmpty else { return }
-        let visible = WindowMenuLayout.visibleAppCount(isCenter: state.isCenter, workspaceCount: state.content.workspaces.count)
+        let visible = WindowMenuLayout.stripCapacity(
+            isCenter: state.isCenter, workspaceCount: state.content.workspaces.count, reservingChevron: false)
         appPageStart = appPageStart + visible < apps.count ? appPageStart + visible : 0
         state.requestScroll(to: .app(apps[appPageStart].id), anchor: .leading)
     }

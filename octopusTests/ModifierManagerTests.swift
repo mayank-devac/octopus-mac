@@ -10,7 +10,7 @@ struct ModifierManagerTests {
         let defaults = UserDefaults.standard
         let preferenceKeys = ["numpadShortcutsEnabled"] + ["bind", "activate", "profile"].flatMap { action in
             ["Enabled", "Control", "Option", "Shift", "Command"].map { action + $0 }
-        }
+        } + ["windowMenuControl", "windowMenuOption", "windowMenuShift", "windowMenuCommand"]
         let savedPreferences = preferenceKeys.map { ($0, defaults.object(forKey: $0)) }
         let shortcutNames = KeyboardShortcuts.Name.bindShortcuts
             + KeyboardShortcuts.Name.activateShortcuts
@@ -18,6 +18,7 @@ struct ModifierManagerTests {
             + KeyboardShortcuts.Name.bindKeypadShortcuts
             + KeyboardShortcuts.Name.activateKeypadShortcuts
             + KeyboardShortcuts.Name.profileKeypadShortcuts
+            + [.showWindowMenu]
         let savedShortcuts = shortcutNames.map { ($0, KeyboardShortcuts.getShortcut(for: $0)) }
         defer {
             for (name, shortcut) in savedShortcuts {
@@ -103,5 +104,49 @@ struct ModifierManagerTests {
         manager.resetToDefaults()
         #expect(!manager.numpadShortcutsEnabled)
         expectConfiguredShortcuts()
+    }
+
+    // The window menu row registers Space with the ticked modifiers and
+    // disables the shortcut when every modifier is cleared.
+    @MainActor @Test func windowMenuModifiersRegisterSpaceShortcut() {
+        let defaults = UserDefaults.standard
+        let preferenceKeys = ["windowMenuControl", "windowMenuOption", "windowMenuShift", "windowMenuCommand"]
+        let savedPreferences = preferenceKeys.map { ($0, defaults.object(forKey: $0)) }
+        let savedShortcut = KeyboardShortcuts.getShortcut(for: .showWindowMenu)
+        defer {
+            KeyboardShortcuts.setShortcut(savedShortcut, for: .showWindowMenu)
+            for (key, value) in savedPreferences {
+                if let value {
+                    defaults.set(value, forKey: key)
+                } else {
+                    defaults.removeObject(forKey: key)
+                }
+            }
+        }
+
+        for key in preferenceKeys {
+            defaults.removeObject(forKey: key)
+        }
+        KeyboardShortcuts.setShortcut(.init(.space, modifiers: [.shift]), for: .showWindowMenu)
+
+        // A saved shortcut becomes the starting checkbox state.
+        let manager = ModifierManager()
+        #expect(manager.windowMenuShift)
+        #expect(!manager.windowMenuControl && !manager.windowMenuOption && !manager.windowMenuCommand)
+        #expect(KeyboardShortcuts.getShortcut(for: .showWindowMenu) == .init(.space, modifiers: [.shift]))
+
+        manager.windowMenuShift = false
+        manager.windowMenuControl = true
+        #expect(KeyboardShortcuts.getShortcut(for: .showWindowMenu) == .init(.space, modifiers: [.control]))
+
+        // Clearing every modifier disables the shortcut instead of registering bare Space.
+        manager.windowMenuControl = false
+        #expect(!manager.windowMenuEnabled)
+        #expect(KeyboardShortcuts.getShortcut(for: .showWindowMenu) == nil)
+        #expect(ModifierManager().windowMenuModifiers.isEmpty)
+
+        manager.resetToDefaults()
+        #expect(manager.windowMenuModifiers == .control)
+        #expect(KeyboardShortcuts.getShortcut(for: .showWindowMenu) == .init(.space, modifiers: [.control]))
     }
 }

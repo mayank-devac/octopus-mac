@@ -26,7 +26,7 @@ extension KeyboardShortcuts.Name {
     static let showRadialWindows = Self("showRadialWindows", default: .init(.space, modifiers: [.control, .option]))
     static let moveWindowLeftMonitor = Self("moveWindowLeftMonitor", default: .init(.leftArrow, modifiers: [.control, .shift]))
     static let moveWindowRightMonitor = Self("moveWindowRightMonitor", default: .init(.rightArrow, modifiers: [.control, .shift]))
-    static let showWindowMenu = Self("showWindowMenu", default: .init(.space, modifiers: [.shift]))
+    static let showWindowMenu = Self("showWindowMenu", default: .init(.space, modifiers: [.control]))
 
     static let bindShortcuts: [KeyboardShortcuts.Name] = (0...9).map { number in
         Self("bind\(number)")
@@ -103,7 +103,8 @@ enum WindowMonitorShortcuts {
         guard !defaults.bool(forKey: migrationKey) else { return }
         let oldDefaults: [(KeyboardShortcuts.Name, KeyboardShortcuts.Shortcut)] = [
             (.moveWindowLeftMonitor, .init(.leftArrow, modifiers: .option)),
-            (.moveWindowRightMonitor, .init(.rightArrow, modifiers: .option))
+            (.moveWindowRightMonitor, .init(.rightArrow, modifiers: .option)),
+            (.showWindowMenu, .init(.space, modifiers: [.shift]))
         ]
         for (name, oldDefault) in oldDefaults where read(name) == oldDefault {
             write(name.defaultShortcut, name)

@@ -14,6 +14,7 @@ final class WindowTabStripPanel: NSPanel {
     private var buttons: [WindowTabButton] = []
     private var displayedMembers: [WindowLayoutIdentity] = []
     private var displayedSelection: WindowLayoutIdentity?
+    private var stripWidth: CGFloat = 0
     private var windowFrame = CGRect.zero
     private var workArea = CGRect.zero
     private var moveGesture: WindowTabMoveGesture?
@@ -50,7 +51,7 @@ final class WindowTabStripPanel: NSPanel {
         handle.font = .systemFont(ofSize: 17, weight: .medium)
         handle.textColor = .secondaryLabelColor
         handle.alignment = .center
-        handle.frame = CGRect(x: 0, y: 5, width: 28, height: 20)
+        handle.frame = CGRect(x: 0, y: 5, width: WindowTabStripMetrics.gripWidth, height: 20)
         grip.addSubview(handle)
         grip.gripOnly = true
         grip.toolTip = "Drag to move the grouped windows"
@@ -104,9 +105,15 @@ final class WindowTabStripPanel: NSPanel {
     private func positionStrip(_ window: CGRect) {
         let axFrame = WindowTabGeometry.stripFrame(window: window, workArea: workArea)
         let frame = SidebarPlacementGeometry.flip(axFrame, primaryTop: NSScreen.screens.first?.frame.maxY ?? 0)
-        setFrame(frame, display: false)
-        grip.frame = CGRect(x: 0, y: 0, width: min(28, frame.width), height: frame.height)
-        scroll.frame = CGRect(x: 28, y: 0, width: max(1, frame.width - 28), height: frame.height)
+        var fitted = frame
+        if stripWidth > 0 {
+            // Size the strip to its tabs rather than the full window width,
+            // bounded by the work area so overflow tabs still scroll.
+            fitted.size.width = min(max(1, stripWidth), max(1, workArea.width))
+        }
+        setFrame(fitted, display: false)
+        grip.frame = CGRect(x: 0, y: 0, width: min(WindowTabStripMetrics.gripWidth, fitted.width), height: fitted.height)
+        scroll.frame = CGRect(x: WindowTabStripMetrics.gripWidth, y: 0, width: max(1, fitted.width - WindowTabStripMetrics.gripWidth), height: fitted.height)
     }
 
     func show(_ group: WindowTabGroup, workArea: CGRect) {
@@ -114,8 +121,6 @@ final class WindowTabStripPanel: NSPanel {
         guard let active = group.active else { orderOut(nil); return }
         windowFrame = group.frame
         self.workArea = workArea
-        positionStrip(group.frame)
-        let availableWidth = scroll.frame.width
         let identities = group.members.map(\.window.id)
         let membersChanged = identities != displayedMembers
         if membersChanged {
@@ -131,19 +136,32 @@ final class WindowTabStripPanel: NSPanel {
             }
             displayedMembers = identities
         }
-        let width = min(230, max(140, availableWidth / CGFloat(max(1, buttons.count))))
-        row.frame = CGRect(x: 0, y: 0, width: max(availableWidth, width * CGFloat(buttons.count)), height: frame.height)
-        for (index, member) in group.members.enumerated() {
-            let button = buttons[index]
+        var titles: [String] = []
+        for member in group.members {
             let app = NSRunningApplication(processIdentifier: member.window.id.window.pid)
             let name = app?.localizedName ?? "Window"
-            button.title = member.title.isEmpty || member.title == name ? name : "\(name) · \(member.title)"
-            button.toolTip = button.title
-            button.setAccessibilityLabel(button.title)
+            let title = member.title.isEmpty || member.title == name ? name : "\(name) · \(member.title)"
+            titles.append(title)
+        }
+        // Each tab fits its content, clamped between the minimum and maximum
+        // sizes, so the strip grows and shrinks with the number of open apps.
+        let widths = titles.map { tabWidth(for: $0) }
+        stripWidth = min(WindowTabStripMetrics.gripWidth + widths.reduce(0, +) + WindowTabStripMetrics.tabInset, workArea.width)
+        positionStrip(group.frame)
+        let totalWidth = widths.reduce(0, +) + WindowTabStripMetrics.tabInset
+        row.frame = CGRect(x: 0, y: 0, width: max(scroll.frame.width, totalWidth), height: frame.height)
+        var x: CGFloat = 0
+        for (index, member) in group.members.enumerated() {
+            let button = buttons[index]
+            let title = titles[index]
+            button.title = title
+            button.toolTip = title
+            button.setAccessibilityLabel(title)
             button.updateCloseLabel()
-            button.image = app?.icon
-            button.image?.size = CGSize(width: 16, height: 16)
-            button.frame = CGRect(x: CGFloat(index) * width + 3, y: 3, width: width - 6, height: frame.height - 6)
+            button.image = NSRunningApplication(processIdentifier: member.window.id.window.pid)?.icon
+            button.image?.size = CGSize(width: WindowTabStripMetrics.iconSize, height: WindowTabStripMetrics.iconSize)
+            button.frame = CGRect(x: x + WindowTabStripMetrics.tabInset, y: 3, width: widths[index] - WindowTabStripMetrics.tabInset * 2, height: frame.height - 6)
+            x += widths[index]
             button.needsLayout = true
             button.layoutSubtreeIfNeeded()
             let selected = member.window.id == group.selected
@@ -160,6 +178,13 @@ final class WindowTabStripPanel: NSPanel {
         // A normal-level panel ordered relative to its actual window does not float
         // above unrelated applications, and ordering it never activates Stack King.
         order(.above, relativeTo: Int(active.window.id.window.windowID))
+    }
+
+    private func tabWidth(for title: String) -> CGFloat {
+        let font = NSFont.systemFont(ofSize: 11, weight: .medium)
+        let textWidth = (title as NSString).size(withAttributes: [.font: font]).width
+        let content = ceil(textWidth) + WindowTabStripMetrics.contentAllowance
+        return min(WindowTabStripMetrics.tabMaximumWidth, max(WindowTabStripMetrics.tabMinimumWidth, content))
     }
 }
 

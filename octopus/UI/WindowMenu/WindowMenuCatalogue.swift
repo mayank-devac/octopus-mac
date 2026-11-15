@@ -17,18 +17,19 @@ enum WindowMenuCatalogue {
         let numbered: [Profile] = profiles.filter { $0.profileNumber != nil }
             .sorted { (left: Profile, right: Profile) in (left.profileNumber ?? 0) < (right.profileNumber ?? 0) }
         let unnumbered: [Profile] = profiles.filter { $0.profileNumber == nil }
-        return (numbered + unnumbered).map { profile in
+        return (numbered + unnumbered).enumerated().map { index, profile in
             let name = profile.name.trimmingCharacters(in: .whitespacesAndNewlines)
-            return WindowMenuWorkspace(id: profile.id, label: label(for: profile, name: name),
+            return WindowMenuWorkspace(id: profile.id, label: label(for: profile, name: name, position: index),
                                        name: name.isEmpty ? "Workspace" : name,
                                        bundleIdentifiers: bundleIdentifiers(in: profile.bindings))
         }
     }
 
-    private static func label(for profile: Profile, name: String) -> String {
+    private static func label(for profile: Profile, name: String, position: Int) -> String {
         if let number = profile.profileNumber { return String(number) }
-        if let initial = name.first { return String(initial).uppercased() }
-        return "•"
+        // Unnumbered workspaces show their switch position so the pills stay
+        // distinguishable instead of repeating a shared name initial.
+        return String(position + 1)
     }
 
     /// Slot order; a multi-app slot contributes its apps in their saved order.
@@ -42,7 +43,7 @@ enum WindowMenuCatalogue {
         }.filter { !$0.isEmpty && seen.insert($0).inserted }
     }
 
-    //// Profiles without a number show their initial so every workspace stays reachable.
+    //// Profiles without a number show their switch position so every workspace stays reachable.
     //////////////////
 
     ////////////////////

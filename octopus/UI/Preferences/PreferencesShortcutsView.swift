@@ -29,7 +29,6 @@ struct PreferencesShortcutsView: View {
     @State private var monitorShortcutConflict = false
     @StateObject private var radialSettings = RadialWindowSettings.shared
     @State private var radialError: String?
-    @State private var windowMenuError: String?
     private struct ShortcutAssignment {
         let name: KeyboardShortcuts.Name
         let shortcut: KeyboardShortcuts.Shortcut
@@ -94,7 +93,7 @@ struct PreferencesShortcutsView: View {
 
     // ⇧Space is also typed in text fields, so warn while it is the window menu shortcut.
     private var windowMenuUsesTypingShortcut: Bool {
-        KeyboardShortcuts.getShortcut(for: .showWindowMenu) == KeyboardShortcuts.Shortcut(.space, modifiers: [.shift])
+        modifierManager.windowMenuModifiers == .shift
     }
 
     private func sidebarNumberModifier(_ flag: NSEvent.ModifierFlags, name: String) -> some View {
@@ -162,6 +161,9 @@ struct PreferencesShortcutsView: View {
         if !modifierManager.profileEnabled {
             disabledCapabilities.append("workspace opening")
         }
+        if !modifierManager.windowMenuEnabled {
+            disabledCapabilities.append("window menu opening")
+        }
 
         guard !disabledCapabilities.isEmpty else {
             return nil
@@ -184,38 +186,6 @@ struct PreferencesShortcutsView: View {
     
     var body: some View {
         Form {
-            Section {
-                HStack {
-                    Text(ShortcutPreferenceStrings.windowMenuTitle).frame(maxWidth: .infinity, alignment: .leading)
-                    KeyboardShortcutRecorder(name: .showWindowMenu, onRecord: { saveShortcut($0, for: .showWindowMenu) },
-                                             onError: { windowMenuError = $0 })
-                        .frame(width: 135, height: 26)
-                        .accessibilityLabel(ShortcutPreferenceStrings.windowMenuTitle)
-                    Button("Disable") {
-                        windowMenuError = saveShortcut(nil, for: .showWindowMenu)
-                    }
-                    .help("Remove this shortcut and return the key combination to other apps")
-                }
-                Text(ShortcutPreferenceStrings.windowMenuDetail)
-                    .font(.caption).foregroundStyle(.secondary)
-                if windowMenuUsesTypingShortcut {
-                    Text(ShortcutPreferenceStrings.windowMenuTypingWarning)
-                        .font(.caption).foregroundStyle(.orange)
-                }
-                if let windowMenuError {
-                    Text(windowMenuError).font(.caption).foregroundStyle(.red)
-                }
-            } header: {
-                Text(ShortcutPreferenceStrings.windowMenuSection)
-            }
-
-            Section {
-                Button("Reset keyboard modifiers") {
-                    showingResetConfirmation = true
-                }
-                .buttonStyle(.bordered)
-            }
-
             Section {
                 Grid(alignment: .leading, horizontalSpacing: 20, verticalSpacing: 12) {
                     GridRow {
@@ -254,6 +224,14 @@ struct PreferencesShortcutsView: View {
                         Toggle("", isOn: $modifierManager.bindCommand).toggleStyle(.checkbox)
                     }
                     GridRow {
+                        modifierLabel(ShortcutPreferenceStrings.windowMenuTitle, detail: ShortcutPreferenceStrings.windowMenuDetail)
+                        Toggle("", isOn: $modifierManager.windowMenuControl).toggleStyle(.checkbox)
+                        Toggle("", isOn: $modifierManager.windowMenuOption).toggleStyle(.checkbox)
+                        Toggle("", isOn: $modifierManager.windowMenuShift).toggleStyle(.checkbox)
+                        Toggle("", isOn: $modifierManager.windowMenuCommand).toggleStyle(.checkbox)
+                    }
+                    .help("Hold Space with these modifiers to open the window menu. Clearing every modifier disables the shortcut.")
+                    GridRow {
                         modifierLabel("Sidebar apps", detail: ShortcutPreferenceStrings.sidebarAppsDetail)
                         sidebarNumberModifier(.control, name: "Control")
                         sidebarNumberModifier(.option, name: "Option")
@@ -271,6 +249,16 @@ struct PreferencesShortcutsView: View {
                     .help("Hold these keys and move onto the sidebar to preview desktops. You can release the keys while using the map. Leave the map or press Escape to dismiss it. Clear all to disable hover preview.")
                 }
                 .padding(.vertical, 8)
+
+                if windowMenuUsesTypingShortcut {
+                    Text(ShortcutPreferenceStrings.windowMenuTypingWarning)
+                        .font(.caption).foregroundStyle(.orange)
+                }
+
+                Button("Reset keyboard modifiers") {
+                    showingResetConfirmation = true
+                }
+                .buttonStyle(.bordered)
 
                 Toggle("Skip desktop map opening animation", isOn: $skipDesktopMapOpeningAnimation)
                     .help("Show the desktop map without its opening animation once fresh window data is ready.")
@@ -462,7 +450,6 @@ struct PreferencesShortcutsView: View {
             Button("Use Anyway") {
                 let error = saveShortcut(assignment.shortcut, for: assignment.name, allowingSystemConflict: true)
                 if assignment.name == .showRadialWindows { radialError = error }
-                else if assignment.name == .showWindowMenu { windowMenuError = error }
                 else { monitorShortcutError = error }
             }
         } message: { assignment in
@@ -483,6 +470,7 @@ struct PreferencesShortcutsView: View {
             Activate:\t\t⌃
             Profile:\t\t⌃ + ⌥
             Bind:\t\t⌃ + ⌥ + ⇧
+            Window menu:\t⌃ (Space)
             Sidebar apps:\t⌃ + ⇧
             Desktop map:\t⌥
             """)

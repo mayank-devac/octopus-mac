@@ -7,7 +7,10 @@ import CoreGraphics
 
 enum WindowMenuMetrics {
     // Card
+    /// Maximum sidebar card width; the card shrinks to hug its content.
     static let sidebarWidth: CGFloat = 330
+    /// Floor for the sidebar card so short app lists stay readable.
+    static let sidebarMinimumWidth: CGFloat = 240
     static let centerWidth: CGFloat = 420
     static let cornerRadius: CGFloat = 16
     static let padding: CGFloat = 10
@@ -24,6 +27,8 @@ enum WindowMenuMetrics {
     static let appIconSize: CGFloat = 30
     static let appCellSize: CGFloat = 42
     static let appCellSpacing: CGFloat = 6
+    /// Inner horizontal padding of the app strip's scroll content.
+    static let stripInnerPadding: CGFloat = 4
     static let appStripHeight: CGFloat = 50
     static let recentStripHeight: CGFloat = 58
     static let runningRingWidth: CGFloat = 1.5

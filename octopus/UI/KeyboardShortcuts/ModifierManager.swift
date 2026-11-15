@@ -56,14 +56,38 @@ final class ModifierManager: ObservableObject {
         didSet { updateShortcuts() }
     }
 
+    // Space is a typed key, so it always keeps at least one modifier; an empty
+    // row disables the window menu shortcut entirely.
+    @AppStorage("windowMenuControl") var windowMenuControl = true {
+        didSet { updateWindowMenuShortcut() }
+    }
+    @AppStorage("windowMenuOption") var windowMenuOption = false {
+        didSet { updateWindowMenuShortcut() }
+    }
+    @AppStorage("windowMenuShift") var windowMenuShift = false {
+        didSet { updateWindowMenuShortcut() }
+    }
+    @AppStorage("windowMenuCommand") var windowMenuCommand = false {
+        didSet { updateWindowMenuShortcut() }
+    }
+
     var bindEnabled: Bool { !bindModifiers.isEmpty }
     var activateEnabled: Bool { !activateModifiers.isEmpty }
     var profileEnabled: Bool { !profileModifiers.isEmpty }
+    var windowMenuEnabled: Bool { !windowMenuModifiers.isEmpty }
 
-    
     init() {
+        // Take over whatever shortcut is saved for the window menu so the
+        // modifier checkboxes start in sync, including the disabled state.
+        if let shortcut = KeyboardShortcuts.getShortcut(for: .showWindowMenu) {
+            windowMenuControl = shortcut.modifiers.contains(.control)
+            windowMenuOption = shortcut.modifiers.contains(.option)
+            windowMenuShift = shortcut.modifiers.contains(.shift)
+            windowMenuCommand = shortcut.modifiers.contains(.command)
+        }
         // Initialize shortcuts with saved modifiers on first launch
         updateShortcuts()
+        updateWindowMenuShortcut()
     }
     
     var bindModifiers: NSEvent.ModifierFlags {
@@ -90,6 +114,15 @@ final class ModifierManager: ObservableObject {
         if profileOption { modifiers.insert(.option) }
         if profileCommand { modifiers.insert(.command) }
         if profileShift { modifiers.insert(.shift) }
+        return modifiers
+    }
+
+    var windowMenuModifiers: NSEvent.ModifierFlags {
+        var modifiers: NSEvent.ModifierFlags = []
+        if windowMenuControl { modifiers.insert(.control) }
+        if windowMenuOption { modifiers.insert(.option) }
+        if windowMenuCommand { modifiers.insert(.command) }
+        if windowMenuShift { modifiers.insert(.shift) }
         return modifiers
     }
     
@@ -135,6 +168,18 @@ final class ModifierManager: ObservableObject {
         bindOption = true
         bindShift = true
         bindCommand = false
+
+        windowMenuControl = true
+        windowMenuOption = false
+        windowMenuShift = false
+        windowMenuCommand = false
+    }
+
+    private func updateWindowMenuShortcut() {
+        KeyboardShortcuts.setShortcut(
+            windowMenuEnabled ? KeyboardShortcuts.Shortcut(.space, modifiers: windowMenuModifiers) : nil,
+            for: .showWindowMenu
+        )
     }
     
     private func updateShortcuts() {

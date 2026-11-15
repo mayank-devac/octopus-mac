@@ -35,6 +35,23 @@ struct WindowMonitorMoveTests {
         #expect(saved[right] == custom)
     }
 
+    // The window menu default moved from ⇧Space to ⌃Space; saved ⇧Space upgrades once.
+    @MainActor @Test func oldShiftSpaceWindowMenuDefaultMigratesToControlSpace() throws {
+        let suite = "WindowMonitorMoveTests.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let windowMenu = KeyboardShortcuts.Name.showWindowMenu
+        let oldDefault = KeyboardShortcuts.Shortcut(.space, modifiers: [.shift])
+        var saved = [windowMenu: oldDefault]
+        WindowMonitorShortcuts.migrateDefaults(in: defaults, read: { saved[$0] }, write: { saved[$1] = $0 })
+        #expect(saved[windowMenu] == KeyboardShortcuts.Name.showWindowMenu.defaultShortcut)
+        #expect(saved[windowMenu] == .init(.space, modifiers: [.control]))
+        // Choosing ⇧Space deliberately after migration must survive a later launch.
+        saved[windowMenu] = oldDefault
+        WindowMonitorShortcuts.migrateDefaults(in: defaults, read: { saved[$0] }, write: { saved[$1] = $0 })
+        #expect(saved[windowMenu] == oldDefault)
+    }
+
     private let sourceArea = CGRect(x: 0, y: 25, width: 1000, height: 750)
     private let destinationArea = CGRect(x: 1200, y: -175, width: 1400, height: 950)
 

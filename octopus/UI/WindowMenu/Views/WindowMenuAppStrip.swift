@@ -19,8 +19,8 @@ struct WindowMenuAppStrip: View {
     private var apps: [WindowMenuApp] { kind == .recent ? state.content.recentApps : state.content.apps }
 
     private var overflows: Bool {
-        kind == .workspace && apps.count > WindowMenuLayout.visibleAppCount(
-            isCenter: state.isCenter, workspaceCount: state.content.workspaces.count)
+        kind == .workspace && apps.count > WindowMenuLayout.stripCapacity(
+            isCenter: state.isCenter, workspaceCount: state.content.workspaces.count, reservingChevron: false)
     }
 
     var body: some View {

@@ -73,6 +73,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         ) { [weak self] _ in
             Task { @MainActor in self?.applyAppearance() }
         }
+        // Migrate saved shortcuts before ModifierManager derives checkbox state from them.
+        WindowMonitorShortcuts.migrateDefaults()
         AppDelegate.modifierManager = ModifierManager()
         
         cycleController = CyclePanelController(modifierManager: AppDelegate.modifierManager)

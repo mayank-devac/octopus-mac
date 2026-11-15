@@ -3,7 +3,7 @@ import SwiftUI
 import KeyboardShortcuts
 
 ////////////////////
-//// Centre window menu, opened with the "Open window menu" shortcut (default ⇧Space)
+//// Centre window menu, opened with the "Open window menu" shortcut (default ⌃Space)
 /// Shows recently quit apps, the current workspace's apps and their windows.
 /// The panel becomes key without activating Octopus, so the frontmost app keeps
 /// its state and Escape returns to it untouched.
