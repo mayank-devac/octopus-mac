@@ -26,7 +26,7 @@ enum WindowMenuStrings {
     static let styleModern = "Modern"
     static let styleClassic = "Classic"
     static let styleHelp = "Modern shows the workspace apps and all their windows. Classic lists only the hovered app's windows."
-    static let showsOpenAppsTitle = "Show open apps in window menu"
+    static let showsOpenAppsTitle = "Show opened apps in menu"
     static let showsOpenAppsHelp = "Off shows only the workspace's apps. On also lists every other app with open windows."}
 
 //////////////////
