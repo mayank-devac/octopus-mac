@@ -15,6 +15,19 @@ import Testing
 @testable import octopus
 
 struct SidebarTests {
+    // One fixed bitmap, so SwiftUI cannot swap in the plated small system variant mid-animation.
+    @MainActor @Test func appIconsAreFlattenedToOneFixedSizeBitmap() {
+        let icon = AppIconCache.flattened(NSWorkspace.shared.icon(forFile: "/System/Applications/Calculator.app"))
+        #expect(icon.representations.count == 1)
+        #expect(icon.size == NSSize(width: AppIconCache.renderSize, height: AppIconCache.renderSize))
+    }
+
+    @Test func hoverBadgeColumnFitsWithinTheIcon() {
+        let column = SidebarIconBadgeMetrics.size * CGFloat(SidebarIconBadge.allCases.count)
+            + SidebarIconBadgeMetrics.spacing * CGFloat(SidebarIconBadge.allCases.count - 1)
+        #expect(column <= SidebarLayout.iconSize)
+    }
+
     @Test func dockRevealGrowsFromAThinCentredSliverToTheFullBar() {
         let full = CGSize(width: 72, height: 300)
         #expect(SidebarDockReveal.barSize(full: full, isOpen: true) == full)

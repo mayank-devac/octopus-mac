@@ -518,11 +518,13 @@ struct SidebarView: View {
                         .padding(-3).allowsHitTesting(false)
                 }
             }
-            .overlay(alignment: .topLeading) {
+            .overlay(alignment: windowCountBadgeIsTrailing ? .topTrailing : .topLeading) {
                 // Placed on the icon so it scales with magnification and the Dock strip.
-                // The action badges take the same corner while the icon is hovered.
+                // Hidden while the hover action badges are shown.
                 if windowCount > 1, !showsBadges {
-                    SidebarWindowCountBadge(count: windowCount).offset(x: -2, y: -1).allowsHitTesting(false)
+                    SidebarWindowCountBadge(count: windowCount)
+                        .offset(x: windowCountBadgeIsTrailing ? 2 : -2, y: -1)
+                        .allowsHitTesting(false)
                 }
             }
             .modifier(iconPlacement(index: index))
@@ -583,14 +585,17 @@ struct SidebarView: View {
         }
         .overlay(alignment: .top) {
             // Above the row's pointer region so badge clicks reach the badges; placed and
-            // scaled exactly like the icon so they stay on its leading edge.
+            // scaled exactly like the icon so they stay on its edge away from the screen.
             if showsBadges {
-                SidebarIconBadgeColumn(canClose: dragTarget.flatMap { entry.windowStates[$0.windowID]?.canClose } ?? false) {
+                SidebarIconBadgeColumn(canClose: dragTarget.flatMap { entry.windowStates[$0.windowID]?.canClose } ?? false,
+                                       appIsHidden: entry.isHidden) {
                     onIconBadge(entry.id, $0)
                 }
                 .frame(width: SidebarIconBadgeMetrics.size)
-                .offset(x: SidebarIconBadgeMetrics.leadingInset - SidebarIconBadgeMetrics.size / 2)
-                .frame(width: SidebarLayout.iconSize, height: SidebarLayout.iconSize, alignment: .leading)
+                .offset(x: (iconBadgesAreLeading ? -1 : 1)
+                    * (SidebarIconBadgeMetrics.size / 2 - SidebarIconBadgeMetrics.leadingInset))
+                .frame(width: SidebarLayout.iconSize, height: SidebarLayout.iconSize,
+                       alignment: iconBadgesAreLeading ? .leading : .trailing)
                 .modifier(iconPlacement(index: index))
                 .transition(.scale(scale: 0.6).combined(with: .opacity))
             }
@@ -654,6 +659,17 @@ struct SidebarView: View {
         return pairTargetsProvider().filter { $0.isVisible && $0.window != source && seen.insert($0.window).inserted }
     }
 
+    // The window-count badge sits on the icon corner away from the screen edge the sidebar is on.
+    private var windowCountBadgeIsTrailing: Bool {
+        state.side == .left && !state.isTopCentered
+    }
+
+    // Close / hide / quit badges sit on the icon edge away from the screen edge; the
+    // top-centred sidebar keeps them trailing.
+    private var iconBadgesAreLeading: Bool {
+        state.side == .right && !state.isTopCentered
+    }
+
     // The icon and its hover badges share one transform, so badges track magnification and the Dock strip.
     private func iconPlacement(index: Int) -> SidebarIconPlacement {
         SidebarIconPlacement(scale: isDockStripClosed ? dock.iconScale : dock.iconScale * scale(for: index),
@@ -666,7 +682,7 @@ struct SidebarView: View {
               let highlighted = displayedEntries.firstIndex(where: { $0.id == state.highlightedEntryID }) else { return 1 }
         switch abs(index - highlighted) {
         case 0: return 1 + SidebarLayout.magnificationGrowth
-        case 1: return 1.1
+        case 1: return 1 + SidebarLayout.neighborMagnificationGrowth
         default: return 1
         }
     }

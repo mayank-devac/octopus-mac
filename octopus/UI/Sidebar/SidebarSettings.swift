@@ -534,7 +534,8 @@ enum SidebarLayout {
     // Moves gap from below each Dock line (display and Desktop) to above it: the icon below carries its own slot inset,
     // while the label above ends flush, so equal gaps look top-heavy. Total height is unchanged.
     static let dockSeparatorOpticalShift: CGFloat = 6
-    static let iconSize: CGFloat = 40
+    // Fills more of the fixed icon slot, so row spacing is unchanged.
+    static let iconSize: CGFloat = 44
     static let iconSlotHeight: CGFloat = 46
     static let labelHeight: CGFloat = 40
     static let titleVerticalPadding: CGFloat = 2
@@ -549,6 +550,8 @@ enum SidebarLayout {
         return lineHeight * CGFloat(titleLineLimit) + titleVerticalPadding * 2
     }
     static let magnificationGrowth: CGFloat = 0.32
+    /// Hover lift for the icons directly above and below the magnified one.
+    static let neighborMagnificationGrowth: CGFloat = 0.04
     static let verticalPadding: CGFloat = 4
     static let menuRowHeight: CGFloat = 34
     static let menuPadding: CGFloat = 4

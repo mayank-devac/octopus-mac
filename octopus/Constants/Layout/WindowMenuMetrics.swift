@@ -32,6 +32,8 @@ enum WindowMenuMetrics {
     static let appStripHeight: CGFloat = 50
     static let recentStripHeight: CGFloat = 58
     static let runningRingWidth: CGFloat = 1.5
+    /// Running ring corner radius as a share of the icon size.
+    static let runningRingCornerRatio: CGFloat = 0.25
     static let stripChevronWidth: CGFloat = 18
     static let highlightedAppScale: CGFloat = 1.08
     /// The centre menu's top strip shows this many recently quit apps.

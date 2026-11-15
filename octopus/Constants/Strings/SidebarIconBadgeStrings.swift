@@ -6,6 +6,7 @@ import Foundation
 enum SidebarIconBadgeStrings {
     static let close = "Close window"
     static let hide = "Hide app"
+    static let show = "Show app"
     static let quit = "Quit app"
 }
 

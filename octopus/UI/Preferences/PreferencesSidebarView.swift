@@ -243,12 +243,13 @@ struct PreferencesSidebarView: View {
                 .help(configuration.idleBehavior == .notch
                     ? "Mac Notch centres the sidebar below the notch."
                     : "Choose the screen edge for the sidebar.")
-                HStack {
-                    Text("Vertical position")
-                    Text("Top").font(.caption).foregroundStyle(.secondary)
-                    Slider(value: setting(\.position), in: 0...1)
-                        .accessibilityLabel("Sidebar vertical position")
-                    Text("Bottom").font(.caption).foregroundStyle(.secondary)
+                LabeledContent("Vertical position") {
+                    HStack(spacing: 6) {
+                        Text("Top").font(.caption).foregroundStyle(.secondary)
+                        Slider(value: setting(\.position), in: 0...1)
+                            .accessibilityLabel("Sidebar vertical position")
+                        Text("Bottom").font(.caption).foregroundStyle(.secondary)
+                    }
                 }
                 .disabled(configuration.idleBehavior == .notch)
                 .help(configuration.idleBehavior == .notch

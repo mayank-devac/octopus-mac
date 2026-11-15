@@ -77,14 +77,17 @@ struct WindowMenuAppStrip: View {
                 }
                 WindowMenuAppIcon(pid: app.pid, bundleURL: app.bundleURL, size: Metrics.appIconSize)
                     .opacity(app.isRunning || kind == .recent ? 1 : MenuPalette.inactiveAppOpacity)
+                    // The running ring hugs the icon's whole frame and scales with it.
+                    .overlay {
+                        if kind == .workspace && app.isRunning {
+                            RoundedRectangle(cornerRadius: Metrics.appIconSize * Metrics.runningRingCornerRatio,
+                                             style: .continuous)
+                                .strokeBorder(MenuPalette.runningRing.opacity(0.75), lineWidth: Metrics.runningRingWidth)
+                        }
+                    }
                     .scaleEffect(isHighlighted ? Metrics.highlightedAppScale : 1)
             }
             .frame(width: Metrics.appCellSize, height: Metrics.appCellSize)
-            .overlay {
-                if kind == .workspace && app.isRunning {
-                    tile.strokeBorder(MenuPalette.runningRing.opacity(0.75), lineWidth: Metrics.runningRingWidth)
-                }
-            }
             .contentShape(Rectangle())
         }
         .buttonStyle(MenuPressButtonStyle())
