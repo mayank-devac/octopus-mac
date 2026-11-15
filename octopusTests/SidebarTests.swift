@@ -41,18 +41,16 @@ struct SidebarTests {
             == CGSize(width: SidebarDockReveal.stripWidth, height: 300))
     }
 
-    @Test func compactDockIconsStayCentredInTheSmallerBarAndStrip() {
+    @Test func compactDockIconsStayCentredInTheBarAndStrip() {
         // Distances from the screen edge; the icon column starts centred in the full sidebar width.
         let columnCentre = SidebarLayout.width / 2
         // Icon-only and titled bars have different widths; the closed strip icon is centred for both.
-        for barWidth in [SidebarDockReveal.compactBarWidth, SidebarLayout.dockTitledBarWidth] {
+        for barWidth in [SidebarLayout.dockBarWidth, SidebarLayout.dockTitledBarWidth] {
             let openCentre = columnCentre - SidebarDockReveal.edgeShift(barWidth: barWidth)
             #expect(openCentre == barWidth / 2)
             #expect(openCentre - SidebarDockReveal.stripIconShift(barWidth: barWidth) == SidebarDockReveal.stripWidth / 2)
         }
-        #expect(SidebarDockReveal.compactBarWidth < SidebarLayout.dockBarWidth)
-        #expect(SidebarDockReveal.compactIconScale < 1)
-        #expect(SidebarDockReveal.stripIconScale < SidebarDockReveal.compactIconScale)
+        #expect(SidebarDockReveal.stripIconScale < 1)
     }
 
     @Test func notchDockGrowsFromTheNotchToTheFullBar() {
@@ -80,7 +78,9 @@ struct SidebarTests {
         #expect(metrics(titles: false, open: false).stripIconOffset.height == 0)
         let open = metrics(titles: true, open: true)
         #expect(!open.isStripClosed)
-        #expect(open.iconScale == SidebarDockReveal.compactIconScale)
+        // Open, Compact Dock matches the other Dock modes' bar and icon size.
+        #expect(open.iconScale == 1)
+        #expect(open.barWidth == SidebarLayout.dockTitledBarWidth)
         #expect(open.stripIconOffset == .zero)
     }
 
@@ -97,7 +97,7 @@ struct SidebarTests {
             == open.contentOffset + SidebarDockReveal.closedContentOffset)
         // The Compact strip stays visible while closed, so it never tucks in.
         let strip = metrics(side: .right, compact: true, open: false)
-        #expect(strip.contentOffset == SidebarDockReveal.edgeShift(barWidth: SidebarDockReveal.compactBarWidth))
+        #expect(strip.contentOffset == SidebarDockReveal.edgeShift(barWidth: SidebarLayout.dockBarWidth))
     }
 
     @MainActor @Test func dockStyleUsesTheEdgeBarVerticallyAndTheNotchBarWhenTopCentred() {
@@ -1931,6 +1931,14 @@ struct SidebarTests {
         #expect(SidebarEdgeMark.frame(edgeTrigger: left, side: .left)
             == CGRect(x: 0, y: 120, width: SidebarEdgeMark.panelWidth, height: 300))
         #expect(SidebarEdgeMark.frame(edgeTrigger: .zero, side: .right) == .zero)
+    }
+
+    @Test func edgeMarkColorRoundTripsThroughHexAndRejectsBadValues() {
+        let color = SidebarEdgeMark.color(hex: "#FF8000")
+        #expect(color.flatMap(SidebarEdgeMark.hex) == "#FF8000")
+        #expect(SidebarEdgeMark.color(hex: nil) == nil)
+        #expect(SidebarEdgeMark.color(hex: "FF8000") == nil)
+        #expect(SidebarEdgeMark.color(hex: "#GG0000") == nil)
     }
 
     @Test func edgeMarkBrightensNearItsEdgeAndHidesWhileTheSidebarIsShown() {

@@ -59,18 +59,24 @@ enum SidebarWindowAction: Equatable {
     case close(SidebarWindowID)
     case hide(SidebarWindowID)
     case place(SidebarWindowID, SidebarPlacementRequest)
+    /// Toggle the window's native full screen (green button double-click).
+    case toggleFullScreen(SidebarWindowID)
+    /// Press the window's own zoom button (green button ⌥-click).
+    case zoom(SidebarWindowID)
 
     var target: SidebarWindowID? {
         switch self {
         case .activateApp: return nil
-        case .focus(let id), .minimize(let id, _), .close(let id), .hide(let id), .place(let id, _): return id
+        case .focus(let id), .minimize(let id, _), .close(let id), .hide(let id), .place(let id, _),
+             .toggleFullScreen(let id), .zoom(let id): return id
         }
     }
 
     var processIdentifier: pid_t {
         switch self {
         case .activateApp(let pid): return pid
-        case .focus(let id), .minimize(let id, _), .close(let id), .hide(let id), .place(let id, _): return id.pid
+        case .focus(let id), .minimize(let id, _), .close(let id), .hide(let id), .place(let id, _),
+             .toggleFullScreen(let id), .zoom(let id): return id.pid
         }
     }
 }
@@ -1708,6 +1714,22 @@ final class SidebarWindowReader: @unchecked Sendable {
             guard let button = closeButton(for: element), token.isCurrent else { return .rejected }
             return AXUIElementPerformAction(button, kAXPressAction as CFString) == .success
                 ? .completed : .rejected
+        case .zoom:
+            // The app's own zoom control picks its standard size, exactly like ⌥-clicking the title bar.
+            guard !running.isHidden, !minimized,
+                  let button = titleBarButton(kAXZoomButtonAttribute, for: element), token.isCurrent else { return .rejected }
+            return AXUIElementPerformAction(button, kAXPressAction as CFString) == .success
+                ? .completed : .rejected
+        case .toggleFullScreen:
+            // Apps without native full screen do not expose a settable AXFullScreen; reject quietly.
+            let attribute = "AXFullScreen" as CFString
+            var settable = DarwinBoolean(false)
+            guard !running.isHidden, !minimized,
+                  AXUIElementIsAttributeSettable(element, attribute, &settable) == .success, settable.boolValue,
+                  token.isCurrent else { return .rejected }
+            let isFullScreen: Bool = element.getAttributeValue(NSAccessibility.Attribute(rawValue: "AXFullScreen")) ?? false
+            let value: CFBoolean = isFullScreen ? kCFBooleanFalse : kCFBooleanTrue
+            return AXUIElementSetAttributeValue(element, attribute, value) == .success ? .completed : .rejected
         case .minimize(_, let requireFocused):
             // A cached visible window may have moved to another Desktop before this
             // queued action runs. Navigate to the exact window instead of minimising it.
@@ -1787,8 +1809,14 @@ final class SidebarWindowReader: @unchecked Sendable {
     }
 
     private func closeButton(for element: AXUIElement) -> AXUIElement? {
+        titleBarButton(kAXCloseButtonAttribute, for: element)
+    }
+
+    /// An enabled title-bar button (close, zoom, …) that belongs to this exact window,
+    /// not to a parent window that owns a tab or sheet.
+    private func titleBarButton(_ attribute: String, for element: AXUIElement) -> AXUIElement? {
         var value: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(element, kAXCloseButtonAttribute as CFString, &value) == .success,
+        guard AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success,
               let value, CFGetTypeID(value) == AXUIElementGetTypeID() else { return nil }
         let button = value as! AXUIElement
         let enabled: Bool = button.getAttributeValue(

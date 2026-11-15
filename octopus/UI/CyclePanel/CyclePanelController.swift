@@ -173,9 +173,14 @@ final class CyclePanelController: NSObject {
                 Application.activateOrLaunch(bundleIdentifier: identifier, bundleURL: url)
             }
         }
-        windowMenu.onCloseWindow = { [weak self] id in
+        windowMenu.onWindowControl = { [weak self] id, command in
             guard let self, self.presentation == .sidebar else { return }
-            self.onSidebarWindowAction?(.close(id))
+            if command.dismissesMenu { self.hideSwitcher() }
+            if let action = command.sidebarAction(for: id) {
+                self.onSidebarWindowAction?(action)
+            } else {
+                self.onSidebarPlacement?(id, .maximize)
+            }
         }
         windowMenu.onDragWindow = { [weak self] id, title, source, event in
             guard let self, self.presentation == .sidebar else { return }

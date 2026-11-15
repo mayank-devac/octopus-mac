@@ -16,8 +16,8 @@ enum WindowMenuSource {
                 guard let id = window.cgWindowID, id != kCGNullWindowID else { return nil }
                 let state = entry.windowStates[id]
                 return WindowMenuWindowSnapshot(windowID: id, title: window.title,
-                                                desktopLabel: desktopLabel(state?.desktopLabel),
                                                 isMinimized: state?.isMinimized ?? false,
+                                                canMinimize: state?.canMinimize ?? false,
                                                 canClose: state?.canClose ?? true)
             }
             if var existing = apps[entry.pid] {
@@ -53,12 +53,6 @@ enum WindowMenuSource {
     }
 
     //////////////////
-
-    // "2. " and "Full screen · " prefixes become a compact "2" / "Full screen" tag.
-    private static func desktopLabel(_ prefix: String?) -> String? {
-        guard let trimmed = prefix?.trimmingCharacters(in: CharacterSet(charactersIn: " .·")), !trimmed.isEmpty else { return nil }
-        return trimmed
-    }
 }
 
 //////////////////

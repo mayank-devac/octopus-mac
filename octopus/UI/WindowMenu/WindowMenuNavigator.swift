@@ -14,7 +14,7 @@ enum WindowMenuNavigator {
         switch focus {
         case nil, .moreApps?, .moreWindows?:
             return initialFocus(in: content)
-        case .window(let id)?, .closeWindow(let id)?:
+        case .window(let id)?, .windowControl(let id, _)?:
             return moveInList(from: id, key, in: content)
         case .app(let id)?:
             return moveInApps(from: id, key, in: content)

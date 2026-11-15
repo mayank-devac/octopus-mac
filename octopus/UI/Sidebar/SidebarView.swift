@@ -455,7 +455,8 @@ struct SidebarView: View {
             }
         }
             .frame(width: SidebarLayout.compactWidth, height: SidebarLayout.iconSlotHeight)
-            .frame(height: reservesLabelSpace ? rowHeight : SidebarLayout.iconSlotHeight,
+            // Matches its app row, including that row's dropped title line.
+            .frame(height: reservesLabelSpace ? rowHeight - state.configuration.titleTrim(for: entry) : SidebarLayout.iconSlotHeight,
                    alignment: showsTitles ? .top : .center)
             .contentShape(Rectangle())
             .onTapGesture(perform: onReveal)
@@ -475,17 +476,14 @@ struct SidebarView: View {
         let maximumLabelScale: CGFloat = reduceMotion ? 1 : 1 + SidebarLayout.magnificationGrowth
         // Reserve width for the largest zoom so labels keep the same wrapping during hover.
         // The Dock draws no frost pill behind window titles, so they get that padding back as text width.
-        let labelPadding: CGFloat = isDock ? SidebarLayout.dockTitlePadding(windowless: hasNoWindows) : hasNoWindows ? 2 : 4
+        let labelPadding = SidebarLayout.titlePadding(isDock: isDock, windowless: hasNoWindows)
         // Dock titles wrap within the bar rather than the wider panel column.
         let itemWidth = state.isTopCentered ? SidebarLayout.notchItemWidth
             : isDock ? dock.barWidth : SidebarLayout.width
         let labelWidth = (itemWidth - 6) / maximumLabelScale - labelPadding * 2
         let windowCount = entry.windows.count
-        // The vertical Dock's last row drops its unused title line so the bar's ends match.
-        let rowTrim: CGFloat = showsTitles && state.configuration.usesFontSizedTitleRows
-            && entry.id == displayedEntries.last?.id
-            ? SidebarLayout.dockLastRowTrim(for: entry, fontSize: labelFontSize, maximumScale: maximumLabelScale)
-            : 0
+        // A one-line title drops its unused second line so every title has the same gap below it.
+        let rowTrim = state.configuration.titleTrim(for: entry)
         let showsBadges = state.highlightedEntryID == entry.id && state.dragSections == nil
             && !isDockStripClosed && !SidebarPinnedApps.isPlaceholder(entry)
         return VStack(alignment: .center, spacing: 0) {

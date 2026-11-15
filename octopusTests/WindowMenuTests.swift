@@ -15,7 +15,7 @@ struct WindowMenuTests {
     private func runningApp(_ pid: pid_t, _ bundle: String?, windows: [CGWindowID]) -> WindowMenuRunningApp {
         WindowMenuRunningApp(pid: pid, bundleIdentifier: bundle, title: bundle ?? "App \(pid)", bundleURL: nil,
                              windows: windows.map {
-                                 WindowMenuWindowSnapshot(windowID: $0, title: "W\($0)", desktopLabel: nil, isMinimized: false, canClose: true)
+                                 WindowMenuWindowSnapshot(windowID: $0, title: "W\($0)", isMinimized: false, canMinimize: true, canClose: true)
                              })
     }
 
@@ -91,8 +91,8 @@ struct WindowMenuTests {
         var content = WindowMenuContent()
         let base = WindowMenuLayout.cardSize(content: content, isCenter: false, status: .ready).height
         content.windows = (1...3).map {
-            WindowMenuWindow(id: SidebarWindowID(pid: 1, windowID: $0), appID: "a", title: "", desktopLabel: nil,
-                             isMinimized: false, canClose: true)
+            WindowMenuWindow(id: SidebarWindowID(pid: 1, windowID: $0), appID: "a", title: "",
+                             isMinimized: false, canMinimize: true, canClose: true)
         }
         let three = WindowMenuLayout.cardSize(content: content, isCenter: false, status: .ready).height
         #expect(three - base == 3 * WindowMenuMetrics.windowRowHeight - WindowMenuMetrics.emptyListHeight)

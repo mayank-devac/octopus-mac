@@ -33,6 +33,26 @@ enum SidebarEdgeMark {
         return inBand && distance >= 0 && distance <= nearDistance ? .near : .idle
     }
 
+    ////////////////////
+    //// Custom color
+    /// The chosen color is stored as "#RRGGBB" so profiles and preferences stay plain text.
+    // Anything unreadable falls back to the automatic, appearance-based color.
+
+    static func color(hex: String?) -> NSColor? {
+        guard let hex, hex.count == 7, hex.hasPrefix("#"), let value = UInt32(hex.dropFirst(), radix: 16) else { return nil }
+        return NSColor(srgbRed: CGFloat((value >> 16) & 0xFF) / 255, green: CGFloat((value >> 8) & 0xFF) / 255,
+                       blue: CGFloat(value & 0xFF) / 255, alpha: 1)
+    }
+
+    static func hex(_ color: NSColor) -> String? {
+        guard let rgb = color.usingColorSpace(.sRGB) else { return nil }
+        func byte(_ component: CGFloat) -> Int { Int((min(max(component, 0), 1) * 255).rounded()) }
+        return String(format: "#%02X%02X%02X", byte(rgb.redComponent), byte(rgb.greenComponent), byte(rgb.blueComponent))
+    }
+
+    //// Both directions round-trip, so reopening the picker shows the saved color.
+    //////////////////
+
     static func opacity(_ emphasis: Emphasis) -> CGFloat {
         switch emphasis {
         case .hidden: return 0
@@ -61,7 +81,9 @@ final class SidebarEdgeMarkController {
         panel.contentView = view
     }
 
-    func update(available: Bool, sidebarShown: Bool, edgeTrigger: CGRect, side nextSide: SidebarSide) {
+    func update(available: Bool, sidebarShown: Bool, edgeTrigger: CGRect, side nextSide: SidebarSide,
+                color: NSColor? = nil) {
+        view.customColor = color
         let next = SidebarEdgeMark.emphasis(available: available, sidebarShown: sidebarShown,
             pointer: NSEvent.mouseLocation, edgeTrigger: edgeTrigger, side: nextSide)
         let frame = SidebarEdgeMark.frame(edgeTrigger: edgeTrigger, side: nextSide)
@@ -119,6 +141,10 @@ final class SidebarEdgeMarkView: NSView {
     private let line = CAGradientLayer()
     private var side: SidebarSide = .right
     private var lineWidth = SidebarEdgeMark.idleLineWidth
+    // The user's chosen color; nil follows the system appearance.
+    var customColor: NSColor? {
+        didSet { if customColor != oldValue { applyAppearanceColors() } }
+    }
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -145,11 +171,11 @@ final class SidebarEdgeMarkView: NSView {
     }
 
     //////////////////// Appearance colors
-    /// White mark in dark mode, dark mark in light mode, so it stays visible on either wallpaper.
-    // Colors are rebuilt whenever the device appearance changes.
+    /// A chosen color wins; otherwise a white mark in dark mode and a dark mark in light mode.
+    // Colors are rebuilt whenever the device appearance or the chosen color changes.
     private func applyAppearanceColors() {
         let isDark = effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-        let base = isDark ? NSColor.white : NSColor(srgbRed: 0.08, green: 0.08, blue: 0.1, alpha: 1)
+        let base = customColor ?? (isDark ? NSColor.white : NSColor(srgbRed: 0.08, green: 0.08, blue: 0.1, alpha: 1))
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         line.colors = [base.withAlphaComponent(0), base.withAlphaComponent(0.9), base,

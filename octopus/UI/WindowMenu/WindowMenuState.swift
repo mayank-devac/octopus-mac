@@ -42,7 +42,7 @@ final class WindowMenuState: ObservableObject {
     var highlightedAppID: String? {
         switch focus {
         case .app(let id)?: return id
-        case .window(let id)?, .closeWindow(let id)?: return content.windows.first { $0.id == id }?.appID
+        case .window(let id)?, .windowControl(let id, _)?: return content.windows.first { $0.id == id }?.appID
         default: return restingAppID
         }
     }
@@ -94,7 +94,7 @@ final class WindowMenuState: ObservableObject {
         case .recent(let id): return content.recentApps.contains { $0.id == id }
         case .workspace(let id): return content.workspaces.contains { $0.id == id }
         case .app(let id): return content.apps.contains { $0.id == id }
-        case .window(let id), .closeWindow(let id): return content.windows.contains { $0.id == id }
+        case .window(let id), .windowControl(let id, _): return content.windows.contains { $0.id == id }
         case .moreApps, .moreWindows: return true
         }
     }

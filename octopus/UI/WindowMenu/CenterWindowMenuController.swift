@@ -17,6 +17,8 @@ final class CenterWindowMenuController {
     private let panel = CyclePanel(contentRect: .zero)
     private let presenter = WindowMenuPresenter()
     private let inventory = SidebarWindowInventory()
+    /// Runs the green button's fill through the same maximise path as the sidebar.
+    private lazy var placement = SidebarDragController(inventory: inventory)
     private let recents = RecentAppsStore()
     private let pointer = MenuPointerTracker()
     private let keys = MenuKeyMonitor()
@@ -173,7 +175,15 @@ final class CenterWindowMenuController {
                 Application.activateOrLaunch(bundleIdentifier: identifier, bundleURL: url)
             }
         }
-        presenter.onCloseWindow = { [weak self] id in self?.inventory.perform(.close(id)) }
+        presenter.onWindowControl = { [weak self] id, command in
+            guard let self else { return }
+            if command.dismissesMenu { self.hide() }
+            if let action = command.sidebarAction(for: id) {
+                self.inventory.perform(action)
+            } else {
+                self.placement.place(id, at: .maximize)
+            }
+        }
         presenter.onLayoutChange = { [weak self] in self?.layoutPanel() }
     }
 

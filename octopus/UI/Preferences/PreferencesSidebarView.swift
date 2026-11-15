@@ -68,6 +68,30 @@ struct PreferencesSidebarView: View {
         })
     }
 
+    ////////////////////
+    //// Edge mark color
+    /// Picking a color stores it as hex; the reset button clears it so the mark follows light and dark mode.
+    // Until a color is picked, the well shows the label color, close to the automatic mark.
+
+    @ViewBuilder private var edgeMarkColorControls: some View {
+        if configuration.autoHideEdgeMarkColor != nil {
+            Button { setting(\.autoHideEdgeMarkColor).wrappedValue = nil } label: {
+                Image(systemName: "arrow.counterclockwise")
+            }
+            .buttonStyle(.borderless)
+            .help("Use the automatic color: white in dark mode, dark in light mode.")
+        }
+        ColorPicker("Edge mark color", selection: Binding(
+            get: { Color(nsColor: SidebarEdgeMark.color(hex: configuration.autoHideEdgeMarkColor) ?? .labelColor) },
+            set: { setting(\.autoHideEdgeMarkColor).wrappedValue = SidebarEdgeMark.hex(NSColor($0)) }
+        ), supportsOpacity: false)
+        .labelsHidden()
+        .help("Color of the line on the screen edge where the hidden sidebar appears.")
+    }
+
+    //// Sits in the edge mark row, beside its switch, while the mark is on.
+    //////////////////
+
     private func save(_ value: SidebarConfiguration) {
         var next = value
         next.normalize()
@@ -220,9 +244,14 @@ struct PreferencesSidebarView: View {
                 .disabled(!editingEnabled)
                 .help("Fade makes the idle sidebar more transparent. Auto-Hide shows it at the screen edge. Always visible keeps it fully opaque. Compact keeps a strip of numbers or app icons visible. Mac Notch opens a horizontal app bar below a real or virtual notch; each app’s windows remain in one vertical list.")
                 if configuration.idleBehavior == .hide {
-                    Toggle("Show edge mark", isOn: setting(\.autoHideShowsEdgeMark))
-                        .disabled(!editingEnabled)
-                        .help("Show a thin line on the screen edge where the hidden sidebar appears.")
+                    LabeledContent("Show edge mark") {
+                        HStack {
+                            if configuration.autoHideShowsEdgeMark { edgeMarkColorControls }
+                            Toggle("Show edge mark", isOn: setting(\.autoHideShowsEdgeMark)).labelsHidden()
+                        }
+                    }
+                    .disabled(!editingEnabled)
+                    .help("Show a thin line on the screen edge where the hidden sidebar appears.")
                 }
                 if usesVirtualNotch {
                     HStack {

@@ -626,7 +626,8 @@ private final class SidebarDisplayController {
             available: settings.enabled && settings.configuration.autoHideShowsEdgeMark
                 && !missionControlPresented && screen != nil && presentation.autoHides,
             sidebarShown: panel.isVisible && panel.isOnActiveSpace,
-            edgeTrigger: edgeFrame, side: settings.side)
+            edgeTrigger: edgeFrame, side: settings.side,
+            color: SidebarEdgeMark.color(hex: settings.configuration.autoHideEdgeMarkColor))
     }
 
     private func stopSidebar() {

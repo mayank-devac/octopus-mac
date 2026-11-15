@@ -13,6 +13,12 @@ enum MenuPalette {
     static let badgeSymbol = Color.black.opacity(0.62)
     static let badgeStroke = Color.white.opacity(0.85)
 
+    // Window row traffic lights (close reuses badgeClose)
+    static let windowMinimize = Color(red: 1.0, green: 0.74, blue: 0.18)
+    static let windowZoom = Color(red: 0.16, green: 0.79, blue: 0.25)
+    static let windowControlDisabled = Color.primary.opacity(0.18)
+    static let windowControlStroke = Color.black.opacity(0.12)
+
     // Menus
     static let focusFill = Color.accentColor.opacity(0.24)
     static let groupFill = Color.accentColor.opacity(0.09)

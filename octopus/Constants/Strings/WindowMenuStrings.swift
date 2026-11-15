@@ -19,7 +19,6 @@ enum WindowMenuStrings {
     static func showWorkspace(_ name: String) -> String { "Show \(name)" }
     static func openApp(_ title: String) -> String { "Open \(title)" }
     static func focusWindow(_ title: String) -> String { "Focus \(title)" }
-    static func closeWindow(_ title: String) -> String { "Close \(title)" }
     static func runningApp(_ title: String) -> String { "\(title), running" }
 
     // Preferences > Sidebar

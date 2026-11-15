@@ -20,7 +20,8 @@ final class WindowMenuPresenter {
     // Outputs
     var onActivateWindow: (SidebarWindowID) -> Void = { _ in }
     var onActivateApp: (WindowMenuApp) -> Void = { _ in }
-    var onCloseWindow: (SidebarWindowID) -> Void = { _ in }
+    /// A traffic-light click, already resolved (minimise vs restore, fill vs full screen vs zoom).
+    var onWindowControl: (SidebarWindowID, WindowControlCommand) -> Void = { _, _ in }
     /// Nil disables dragging rows (the centre menu has no drop targets).
     var onDragWindow: ((SidebarWindowID, String, NSView, NSEvent) -> Void)?
     /// The card size may have changed; the owner resizes its panel.
@@ -31,6 +32,7 @@ final class WindowMenuPresenter {
     private var selectedWorkspaceID: UUID?
     private var appPageStart = 0
     private var windowPageStart = 0
+    private let zoomClicks = WindowZoomClickResolver()
 
     var cardSize: CGSize {
         WindowMenuLayout.cardSize(content: state.content, isCenter: state.isCenter, status: state.status)
@@ -115,7 +117,7 @@ final class WindowMenuPresenter {
             }
         case .window?, .recent?:
             state.setFocus(target, reveal: false)
-        case .closeWindow(let id)?:
+        case .windowControl(let id, _)?:
             state.setFocus(.window(id), reveal: false)
         case .workspace?, .moreApps?, .moreWindows?, nil:
             break
@@ -126,8 +128,8 @@ final class WindowMenuPresenter {
         switch target {
         case .window(let id):
             onActivateWindow(id)
-        case .closeWindow(let id):
-            onCloseWindow(id)
+        case .windowControl(let id, let control):
+            activateControl(control, of: id)
         case .app(let id):
             if let app = state.content.apps.first(where: { $0.id == id }) { onActivateApp(app) }
         case .recent(let id):
@@ -143,6 +145,30 @@ final class WindowMenuPresenter {
     }
 
     //// Escape and outside clicks belong to the owner, which also hides its panel.
+    //////////////////
+
+    ////////////////////
+    //// Window controls
+    /// Click count and ⌥ come from the triggering mouse event; keyboard and
+    // accessibility activation count as a plain single click.
+
+    private func activateControl(_ control: WindowControl, of id: SidebarWindowID) {
+        switch control {
+        case .close:
+            onWindowControl(id, .close)
+        case .minimize:
+            let isMinimized = state.content.windows.first { $0.id == id }?.isMinimized ?? false
+            onWindowControl(id, isMinimized ? .restore : .minimize)
+        case .zoom:
+            let event = NSApp.currentEvent
+            let isMouse = event?.type == .leftMouseUp || event?.type == .leftMouseDown
+            zoomClicks.handle(clickCount: isMouse ? event?.clickCount ?? 1 : 1,
+                              option: isMouse && event?.modifierFlags.contains(.option) == true) { [weak self] intent in
+                self?.onWindowControl(id, .zoom(intent))
+            }
+        }
+    }
+
     //////////////////
 
     ////////////////////

@@ -21,9 +21,6 @@ enum SidebarDockReveal {
     // Compact mode closes into a slim edge pill: each icon shrinks to the pill's size and centre.
     static let stripWidth: CGFloat = 22
     static let stripIconScale = 16 / SidebarLayout.iconSize
-    // Compact mode opens a slimmer Dock with smaller icons than the other Dock modes.
-    static let compactBarWidth: CGFloat = 44
-    static let compactIconScale = 30 / SidebarLayout.iconSize
     // Open Dock icons sit centred in the bar, which hugs the screen edge, instead of in the wider panel column.
     static func edgeShift(barWidth: CGFloat) -> CGFloat { (SidebarLayout.width - barWidth) / 2 }
     // Moves icons from the open bar's centre to the strip's centre, whichever bar width is in use.
@@ -70,9 +67,9 @@ struct SidebarDockMetrics {
     var isStripClosed: Bool { isCompactDock && !isOpen }
 
     // The icon column is shifted to the edge (see `contentOffset`), so the bar is just wide enough for it.
+    // Open Compact Dock uses the same bar as the other modes, so icons and titles match.
     var barWidth: CGFloat {
-        if showsTitles { return SidebarLayout.dockTitledBarWidth }
-        return isCompactDock ? SidebarDockReveal.compactBarWidth : SidebarLayout.dockBarWidth
+        showsTitles ? SidebarLayout.dockTitledBarWidth : SidebarLayout.dockBarWidth
     }
 
     // Keeps separator lines inside the bar's rounded edges, whichever bar width is in use.
@@ -81,8 +78,7 @@ struct SidebarDockMetrics {
     }
 
     var iconScale: CGFloat {
-        if isStripClosed { return SidebarDockReveal.stripIconScale }
-        return isCompactDock ? SidebarDockReveal.compactIconScale : 1
+        isStripClosed ? SidebarDockReveal.stripIconScale : 1
     }
 
     // The closed strip moves each icon to the strip's centre. It also hides titles, so a titled

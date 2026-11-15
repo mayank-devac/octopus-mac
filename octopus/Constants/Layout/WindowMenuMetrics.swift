@@ -47,7 +47,6 @@ enum WindowMenuMetrics {
     // Window list
     static let windowRowHeight: CGFloat = 32
     static let windowIconSize: CGFloat = 16
-    static let windowCloseWidth: CGFloat = 26
     static let sidebarMaximumRows = 8
     static let centerMaximumRows = 10
     static let emptyListHeight: CGFloat = 52

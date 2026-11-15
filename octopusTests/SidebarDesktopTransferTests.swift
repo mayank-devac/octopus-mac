@@ -139,13 +139,20 @@ struct SidebarDesktopTransferTests {
         #expect(SidebarMonitorGroup.displayed(groups, style: .floating).count == groups.count)
     }
 
-    @MainActor @Test func dockLastRowDropsOnlyAnUnusedTitleLine() {
+    @MainActor @Test func rowsDropOnlyAnUnusedTitleLine() {
         let app = Application(NSRunningApplication.current)
         let entry = SidebarEntry(pid: 1, application: app, windows: [], preferredID: nil)
-        let trim = SidebarLayout.dockLastRowTrim(for: entry, fontSize: 10)
-        // A short app name takes one of the two reserved lines.
-        #expect(trim > 0)
-        #expect(trim < SidebarLayout.titleHeight(fontSize: 10) / 2 + 1)
+        // A short app name takes one of the two reserved lines, in both vertical styles.
+        for isDock in [true, false] {
+            let trim = SidebarLayout.titleTrim(for: entry, fontSize: 10, isDock: isDock)
+            #expect(trim > 0)
+            #expect(trim < SidebarLayout.titleHeight(fontSize: 10) / 2 + 1)
+        }
+        // The Mac Notch bar keeps one row height for every app.
+        var notch = SidebarConfiguration.factoryDefaults
+        notch.showsWindowTitles = true
+        notch.idleBehavior = .notch
+        #expect(notch.titleTrim(for: entry) == 0)
     }
 
     @Test func threeMonitorsUseDistinctNumbersAndFilteredDisplaysKeepTheirNumber() {

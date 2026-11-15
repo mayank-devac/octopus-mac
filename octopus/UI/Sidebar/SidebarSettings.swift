@@ -163,6 +163,8 @@ struct SidebarConfiguration: Codable, Equatable {
     var style: SidebarStyle
     var compactShowsIcons: Bool
     var autoHideShowsEdgeMark: Bool
+    // Edge mark color as "#RRGGBB"; nil follows the system appearance.
+    var autoHideEdgeMarkColor: String?
     var showSingleWindowMenu: Bool
     var showsWindowTitles: Bool
     // Choices of the styles that are not active, keyed by style raw value.
@@ -184,6 +186,7 @@ struct SidebarConfiguration: Codable, Equatable {
         style = .saved(defaults?.string(forKey: SidebarStyle.key))
         compactShowsIcons = defaults?.bool(forKey: SidebarSettings.compactIconsKey) ?? false
         autoHideShowsEdgeMark = defaults?.object(forKey: SidebarSettings.edgeMarkKey) as? Bool ?? true
+        autoHideEdgeMarkColor = defaults?.string(forKey: SidebarSettings.edgeMarkColorKey)
         showSingleWindowMenu = defaults?.object(forKey: SidebarSettings.singleWindowMenuKey) as? Bool
             ?? style.defaultShowsSingleWindowMenu
         showsWindowTitles = defaults?.object(forKey: SidebarSettings.windowTitlesKey) as? Bool
@@ -235,7 +238,7 @@ struct SidebarConfiguration: Codable, Equatable {
     var usesFontSizedTitleRows: Bool { style == .dock && idleBehavior != .notch }
 
     private enum CodingKeys: String, CodingKey {
-        case enabled, desktopScope, displayScope, side, position, idleBehavior, style, compactShowsIcons, autoHideShowsEdgeMark
+        case enabled, desktopScope, displayScope, side, position, idleBehavior, style, compactShowsIcons, autoHideShowsEdgeMark, autoHideEdgeMarkColor
         case showSingleWindowMenu, showsWindowTitles, inactiveStyleChoices, appSpacing, fontSize, shadowOpacity, dockOpacity, virtualNotchWidth
     }
 
@@ -252,6 +255,7 @@ struct SidebarConfiguration: Codable, Equatable {
         style = try saved.decodeIfPresent(SidebarStyle.self, forKey: .style) ?? style
         compactShowsIcons = try saved.decodeIfPresent(Bool.self, forKey: .compactShowsIcons) ?? false
         autoHideShowsEdgeMark = try saved.decodeIfPresent(Bool.self, forKey: .autoHideShowsEdgeMark) ?? true
+        autoHideEdgeMarkColor = try saved.decodeIfPresent(String.self, forKey: .autoHideEdgeMarkColor)
         // Older profiles without these choices get the defaults of their saved style.
         showSingleWindowMenu = try saved.decodeIfPresent(Bool.self, forKey: .showSingleWindowMenu)
             ?? style.defaultShowsSingleWindowMenu
@@ -298,6 +302,7 @@ struct SidebarConfiguration: Codable, Equatable {
             SidebarSettings.virtualNotchWidthKey: virtualNotchWidth
         ]
         for (key, value) in values { defaults.set(value, forKey: key) }
+        defaults.set(autoHideEdgeMarkColor, forKey: SidebarSettings.edgeMarkColorKey)
         defaults.set(try? JSONEncoder().encode(inactiveStyleChoices), forKey: SidebarSettings.inactiveStyleChoicesKey)
     }
 }
@@ -320,6 +325,7 @@ enum SidebarDisplayTarget: Hashable {
 enum SidebarSettings {
     static let compactIconsKey = "sidebarCompactShowsIcons"
     static let edgeMarkKey = "sidebarAutoHideEdgeMark"
+    static let edgeMarkColorKey = "sidebarAutoHideEdgeMarkColor"
     static let singleWindowMenuKey = "sidebarShowSingleWindowMenu"
     static let windowTitlesKey = "sidebarShowWindowTitles"
     static let inactiveStyleChoicesKey = "sidebarInactiveStyleChoices"
@@ -567,16 +573,21 @@ enum SidebarLayout {
                              appSpacing: CGFloat = SidebarLayout.appSpacing, separatorCount: Int = 0,
                              contentHeight: CGFloat? = nil, minimumHeight: CGFloat = rowHeight,
                              itemHeight: CGFloat = rowHeight) -> CGRect {
-        let gaps = CGFloat(max(0, count - 1)) * appSpacing
         let separators = CGFloat(max(0, separatorCount)) * (desktopSeparatorHeight + appSpacing)
         let height = min(max(minimumHeight,
-            contentHeight ?? (CGFloat(count) * itemHeight + gaps + separators + 16)), visibleFrame.height)
+            contentHeight ?? (listContentHeight(count: count, appSpacing: appSpacing, itemHeight: itemHeight) + separators)),
+            visibleFrame.height)
         let width = min(Self.width, visibleFrame.width)
         return CGRect(
             x: side == .left ? visibleFrame.minX : visibleFrame.maxX - width,
             y: visibleFrame.minY + (visibleFrame.height - height) * (1 - min(1, max(0, position))),
             width: width, height: height
         )
+    }
+
+    // Height of a plain list of rows with no Desktop or display headers.
+    static func listContentHeight(count: Int, appSpacing: CGFloat, itemHeight: CGFloat = rowHeight) -> CGFloat {
+        CGFloat(count) * itemHeight + CGFloat(max(0, count - 1)) * appSpacing + 16
     }
 
     static func compactContentHeight(count: Int, appSpacing: CGFloat, itemHeight: CGFloat = rowHeight) -> CGFloat {

@@ -3,7 +3,7 @@ import SwiftUI
 ////////////////////
 //// Window list: every window of the workspace apps, grouped by app
 /// Rows of the highlighted app share a soft tint; the focused row has a stronger
-/// pill that glides between rows. A close button appears on the focused row.
+/// pill that glides between rows. Close / minimise / zoom buttons appear on the focused row.
 /// Rows reuse SidebarPointerRegion so click and drag behave like the classic menu.
 // A chevron pages through windows that do not fit.
 
@@ -62,16 +62,8 @@ struct WindowMenuWindowList: View {
                     .foregroundStyle(.secondary)
                     .help(WindowMenuStrings.minimised)
             }
-            if let label = window.desktopLabel {
-                Text(label)
-                    .font(.system(size: 10, weight: .semibold, design: .rounded))
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 5)
-                    .padding(.vertical, 1)
-                    .background(Capsule().fill(MenuPalette.hoverFill))
-            }
-            // Room for the close button overlay, so titles never run under it.
-            Color.clear.frame(width: Metrics.windowCloseWidth)
+            // Room for the window controls overlay, so titles never run under it.
+            Color.clear.frame(width: WindowControlMetrics.groupWidth)
         }
         .padding(.leading, 8)
         .frame(height: Metrics.windowRowHeight)
@@ -93,7 +85,7 @@ struct WindowMenuWindowList: View {
                                      { source, event in drag(window.id, window.title, source, event) }
                                  })
         }
-        .overlay(alignment: .trailing) { closeButton(window, isVisible: isFocused) }
+        .overlay(alignment: .trailing) { windowControls(window, isVisible: isFocused) }
         .background(SidebarGeometryAnchor(id: target) { presenter.anchors.apply($1, for: $0) })
         .animation(MenuMotion.highlight, value: isFocused)
         .animation(MenuMotion.highlight, value: isGrouped)
@@ -102,34 +94,43 @@ struct WindowMenuWindowList: View {
         .accessibilityAddTraits(.isButton)
         .accessibilityAction { presenter.activate(target) }
         .accessibilityActions {
-            if window.canClose {
-                Button(WindowMenuStrings.closeWindow(window.title)) { presenter.activate(.closeWindow(window.id)) }
+            ForEach(WindowControl.allCases.filter { isEnabled($0, for: window) }, id: \.self) { control in
+                Button(control.title(windowTitle: window.title, isMinimized: window.isMinimized)) {
+                    presenter.activate(.windowControl(window.id, control))
+                }
             }
         }
     }
 
-    private func closeButton(_ window: WindowMenuWindow, isVisible: Bool) -> some View {
-        let target = WindowMenuTarget.closeWindow(window.id)
-        let isHovered = state.hovered == target
-        let shows = isVisible && window.canClose
-        return Button { presenter.activate(target) } label: {
-            Image(systemName: "xmark")
-                .font(.system(size: 8, weight: .bold))
-                .foregroundStyle(isHovered ? Color.white : Color.secondary)
-                .frame(width: 18, height: 18)
-                .background(Circle().fill(isHovered ? MenuPalette.badgeClose : MenuPalette.hoverFill))
-                .frame(width: Metrics.windowCloseWidth, height: Metrics.windowRowHeight)
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(MenuPressButtonStyle())
-        .focusEffectDisabled()
-        .opacity(shows ? 1 : 0)
-        .allowsHitTesting(shows)
-        .background(SidebarGeometryAnchor(id: target) { presenter.anchors.apply($1, for: $0) })
-        .help(WindowMenuStrings.closeWindow(window.title))
+    ////////////////////
+    //// Window controls (close / minimise / zoom)
+
+    private func windowControls(_ window: WindowMenuWindow, isVisible: Bool) -> some View {
+        let showsGlyphs: Bool
+        if case .windowControl(window.id, _)? = state.hovered { showsGlyphs = true } else { showsGlyphs = false }
+        return WindowControlButtons(
+            windowTitle: window.title, isMinimized: window.isMinimized, showsGlyphs: showsGlyphs,
+            isEnabled: { isEnabled($0, for: window) },
+            onSelect: { presenter.activate(.windowControl(window.id, $0)) },
+            anchor: { control in
+                SidebarGeometryAnchor(id: WindowMenuTarget.windowControl(window.id, control)) {
+                    presenter.anchors.apply($1, for: $0)
+                }
+            })
+        .opacity(isVisible ? 1 : 0)
+        .allowsHitTesting(isVisible)
     }
 
-    //// Hovering the close area focuses its row first, so the button never appears under a still pointer by surprise.
+    // Yellow also restores, so it stays enabled for a minimised window.
+    private func isEnabled(_ control: WindowControl, for window: WindowMenuWindow) -> Bool {
+        switch control {
+        case .close: return window.canClose
+        case .minimize: return window.canMinimize || window.isMinimized
+        case .zoom: return !window.isMinimized
+        }
+    }
+
+    //// Hovering a control focuses its row first, so the buttons never appear under a still pointer by surprise.
     //////////////////
 
     private var moreButton: some View {

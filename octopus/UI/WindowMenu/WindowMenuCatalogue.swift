@@ -69,13 +69,9 @@ enum WindowMenuCatalogue {
         let windows = apps.flatMap { app -> [WindowMenuWindow] in
             guard let pid = app.pid, let source = runningByPID[pid] else { return [] }
             return source.windows.map { window in
-                // The desktop badge only helps tell a multi-window app's windows
-                // apart; a single window always shows "1", so drop the badge.
-                let showsDesktopBadge = source.windows.count > 1
-                return WindowMenuWindow(id: SidebarWindowID(pid: pid, windowID: window.windowID), appID: app.id,
-                                        title: window.title,
-                                        desktopLabel: showsDesktopBadge ? window.desktopLabel : nil,
-                                        isMinimized: window.isMinimized, canClose: window.canClose)
+                WindowMenuWindow(id: SidebarWindowID(pid: pid, windowID: window.windowID), appID: app.id,
+                                 title: window.title, isMinimized: window.isMinimized,
+                                 canMinimize: window.canMinimize, canClose: window.canClose)
             }
         }
         let runningBundleIDs = Set(running.compactMap(\.bundleIdentifier))

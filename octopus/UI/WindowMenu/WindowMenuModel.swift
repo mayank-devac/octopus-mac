@@ -33,8 +33,8 @@ struct WindowMenuWindow: Identifiable, Equatable {
     let id: SidebarWindowID
     let appID: String
     let title: String
-    let desktopLabel: String?
     let isMinimized: Bool
+    let canMinimize: Bool
     let canClose: Bool
 }
 
@@ -53,7 +53,8 @@ enum WindowMenuTarget: Hashable {
     case workspace(UUID)
     case app(String)
     case window(SidebarWindowID)
-    case closeWindow(SidebarWindowID)
+    /// A traffic-light button on a window row.
+    case windowControl(SidebarWindowID, WindowControl)
     case moreApps
     case moreWindows
 }
@@ -77,8 +78,8 @@ struct WindowMenuRunningApp: Equatable {
 struct WindowMenuWindowSnapshot: Equatable {
     let windowID: CGWindowID
     let title: String
-    let desktopLabel: String?
     let isMinimized: Bool
+    let canMinimize: Bool
     let canClose: Bool
 }
 

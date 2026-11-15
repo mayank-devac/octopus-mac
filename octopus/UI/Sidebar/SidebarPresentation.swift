@@ -60,16 +60,13 @@ struct SidebarPresentation {
         if collapsedCompact && style != .dock {
             contentHeight = SidebarLayout.compactContentHeight(count: displayedCount, appSpacing: spacing,
                                                                itemHeight: rowHeight)
-        } else if configuration.desktopScope == .allDesktops {
-            // The vertical Dock's last row drops its unused title line, matching the view.
-            let lastEntry = groups.flatMap(\.sections).flatMap(\.entries).last
-            let lastRowTrim = configuration.showsWindowTitles && configuration.usesFontSizedTitleRows
-                ? lastEntry.map { SidebarLayout.dockLastRowTrim(for: $0, fontSize: configuration.fontSize) } ?? 0
-                : 0
-            contentHeight = SidebarMonitorGroup.contentHeight(groups, spacing: spacing, style: style,
-                                                              rowHeight: rowHeight) - lastRowTrim
         } else {
-            contentHeight = nil
+            // Rows with one-line titles drop their unused line, matching the view.
+            let titleTrim = groups.flatMap(\.sections).flatMap(\.entries)
+                .reduce(0) { $0 + configuration.titleTrim(for: $1) }
+            contentHeight = configuration.desktopScope == .allDesktops
+                ? SidebarMonitorGroup.contentHeight(groups, spacing: spacing, style: style, rowHeight: rowHeight) - titleTrim
+                : SidebarLayout.listContentHeight(count: entryCount, appSpacing: spacing, itemHeight: rowHeight) - titleTrim
         }
         let edge = SidebarLayout.sidebarFrame(in: available, count: entryCount, side: side,
             position: configuration.position, appSpacing: spacing, contentHeight: contentHeight,
