@@ -67,8 +67,8 @@ enum SidebarActiveAppClickAction: String, CaseIterable {
 enum SidebarIdleBehavior: String, CaseIterable, Codable {
     case fade, hide, stayVisible, compact, notch
 
-    /// Behavior used when the user has not chosen one yet ("Compact" in Preferences).
-    static let defaultBehavior: Self = .compact
+    /// Behavior used when the user has not chosen one yet ("Auto-Hide" in Preferences).
+    static let defaultBehavior: Self = .hide
 
     /// Decodes a persisted raw value, falling back to `defaultBehavior` when it is missing or unknown.
     static func saved(_ value: String?) -> Self {
