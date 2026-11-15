@@ -22,7 +22,7 @@ enum WindowMenuMetrics {
 
     /// Beside a sidebar icon, the app strip's centre sits this far above the hovered icon's centre.
     /// The card is pinned by its top, so this one value sets the menu's height for every window count.
-    static let sidebarStripLift: CGFloat = 34
+    static let sidebarStripLift: CGFloat = 23
 
     /// The centre menu sits this fraction of the screen height above centre, like Spotlight.
     static let centerVerticalBias: CGFloat = 0.08

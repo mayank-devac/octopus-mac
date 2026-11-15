@@ -149,7 +149,7 @@ struct SidebarTests {
 
     @Test func choosingAStyleAppliesItsTitleAndSingleWindowMenuDefaults() throws {
         var config = SidebarConfiguration.factoryDefaults
-        #expect(config.style == .dock && config.showsWindowTitles && !config.showSingleWindowMenu)
+        #expect(config.style == .dock && config.showsWindowTitles && config.showSingleWindowMenu)
         // The vertical Dock sizes its two title lines to the font; the Mac Notch bar keeps a fixed row.
         let titledRow = SidebarLayout.iconSlotHeight + SidebarLayout.titleHeight(fontSize: config.fontSize)
             - SidebarLayout.dockTitleLift
@@ -169,7 +169,7 @@ struct SidebarTests {
         #expect(config.showsWindowTitles)
         config.selectedStyle = .dock
         config.showsWindowTitles = false
-        #expect(!config.showSingleWindowMenu)
+        #expect(config.showSingleWindowMenu)
         config.selectedStyle = .floating
         #expect(config.showsWindowTitles && config.showSingleWindowMenu)
         config.selectedStyle = .dock
@@ -927,7 +927,7 @@ struct SidebarTests {
         changed.side = .right
         changed.position = 0.75
         changed.idleBehavior = .stayVisible
-        changed.showSingleWindowMenu = true
+        changed.showSingleWindowMenu = false
         changed.appSpacing = 1
         changed.fontSize = 9
         changed.shadowOpacity = 0
@@ -947,9 +947,9 @@ struct SidebarTests {
         // Reset uses factory defaults, not the customized single-sidebar settings.
         let factory = SidebarConfiguration.factoryDefaults
         #expect(factory.enabled && factory.desktopScope == .allDesktops && factory.side == .right)
-        // The factory Dock style starts without the single-window menu.
+        // The factory Dock style starts with the single-window menu on.
         #expect(factory.position == 0.5 && factory.idleBehavior == SidebarIdleBehavior.defaultBehavior
-            && !factory.showSingleWindowMenu)
+            && factory.showSingleWindowMenu)
         #expect(factory.appSpacing == SidebarSettings.defaultAppSpacing)
         #expect(factory.fontSize == SidebarSettings.defaultFontSize)
         #expect(factory.shadowOpacity == SidebarSettings.defaultShadowOpacity)

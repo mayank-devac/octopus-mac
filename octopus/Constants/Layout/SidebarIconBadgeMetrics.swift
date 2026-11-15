@@ -15,7 +15,8 @@ enum SidebarIconBadgeMetrics {
     /// Badge column centre, measured inward from the icon edge the column sits on.
     static let leadingInset: CGFloat = 5
     /// Extra gap between an icon and a menu card beside it.
-    static let menuClearance: CGFloat = 10
+    /// A hovered badge pokes about 3.4 pt past the icon edge (size × hoverScale / 2 − leadingInset).
+    static let menuClearance: CGFloat = 4
 }
 
 //////////////////

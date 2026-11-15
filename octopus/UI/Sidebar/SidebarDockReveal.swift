@@ -12,6 +12,9 @@ enum SidebarDockReveal {
     static let closeDuration: TimeInterval = 0.22
 
     static let openAnimation = Animation.spring(response: 0.42, dampingFraction: 0.72)
+    // Roughly when the open spring has landed. Hover menus wait for it, because icon frames
+    // read mid-animation are still offset toward the edge and place the menu wrongly.
+    static let openSettleDuration: TimeInterval = 0.45
     static let closeAnimation = Animation.spring(response: 0.22, dampingFraction: 1)
     // The Mac Notch bar lands on a visible (virtual) notch, so it uses a fixed-length curve that
     // ends a few frames before `closeDuration`. A spring's slow tail would still be moving when the

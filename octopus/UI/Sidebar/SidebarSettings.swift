@@ -115,7 +115,7 @@ enum SidebarStyle: String, CaseIterable, Codable {
 
     // Applied the first time a style is chosen and when nothing is saved yet.
     var defaultShowsWindowTitles: Bool { self == .dock }
-    var defaultShowsSingleWindowMenu: Bool { self == .floating }
+    var defaultShowsSingleWindowMenu: Bool { true }
     var defaultChoices: SidebarStyleChoices {
         SidebarStyleChoices(showsWindowTitles: defaultShowsWindowTitles,
                             showSingleWindowMenu: defaultShowsSingleWindowMenu)

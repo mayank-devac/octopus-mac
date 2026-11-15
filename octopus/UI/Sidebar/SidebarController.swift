@@ -230,6 +230,8 @@ private final class SidebarDisplayController {
     private var revealWork: DispatchWorkItem?
     private var hideWork: DispatchWorkItem?
     private var dockCloseWork: DispatchWorkItem?
+    /// When the running Dock open animation lands; hover menus are held until then.
+    private var dockOpenSettlesAt: Date?
     private var anchors: [SidebarEntryID: NSView] = [:]
     private var iconAnchors: [SidebarEntryID: NSView] = [:]
     private var frozeForAnotherDrag = false
@@ -696,11 +698,20 @@ private final class SidebarDisplayController {
         }
         panel.orderFrontRegardless()
         guard !viewState.isDockOpen else { return }
+        // Noted before the open is queued: the same pointer pass goes on to schedule the hover
+        // menu, and it must already see the bar as opening.
+        noteDockOpening()
         DispatchQueue.main.async { [weak self] in
             guard let self, self.dockCloseWork == nil, self.panel.isVisible,
                   self.presentation.showsMainSidebar(expanded: self.viewState.isExpanded) else { return }
             self.viewState.isDockOpen = true
         }
+    }
+
+    // Notes when the Dock open spring lands, so hover menus wait for the icons' final frames.
+    private func noteDockOpening() {
+        let animates = usesDockReveal && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        dockOpenSettlesAt = animates ? Date().addingTimeInterval(SidebarDockReveal.openSettleDuration) : nil
     }
 
     // Shrink the dock into the edge, then run the hide. Other styles and Reduce Motion hide at once.
@@ -729,7 +740,8 @@ private final class SidebarDisplayController {
     }
 
     private func reopenDockIfShown() {
-        guard panel.isVisible, presentation.showsMainSidebar(expanded: viewState.isExpanded) else { return }
+        guard panel.isVisible, presentation.showsMainSidebar(expanded: viewState.isExpanded), !viewState.isDockOpen else { return }
+        noteDockOpening()
         viewState.isDockOpen = true
     }
 
@@ -851,7 +863,9 @@ private final class SidebarDisplayController {
         wasFullScreen = isFullScreen
         restoreSidebarIfNeeded()
         // A second window can appear while the pointer stays on an app whose menu was hidden.
-        if let entryID = sidebarEntryID ?? (panel.isVisible ? hoveredEntryID : nil) {
+        // A pending hover opens its own menu once the Dock bar lands; opening it here would
+        // place it mid-animation and then jump when the hover re-places it.
+        if let entryID = sidebarEntryID ?? (panel.isVisible && hoverWork == nil ? hoveredEntryID : nil) {
             if let entry = inventory.entries.first(where: { $0.id == entryID }), let icon = iconFrame(entryID) {
                 showMenu(entry, icon: icon)
             } else {
@@ -963,16 +977,16 @@ private final class SidebarDisplayController {
                 return
             }
             let work = DispatchWorkItem { [weak self] in
-                guard let self, self.hoveredEntryID == entryID, self.panel.isVisible,
+                guard let self else { return }
+                self.hoverWork = nil
+                guard self.hoveredEntryID == entryID, self.panel.isVisible,
                       !self.cycleController.isKeyboardSwitcherVisible else { return }
                 let point = pointerLocation
                 guard self.sidebarFrame.contains(point), self.hoveredSidebarEntryID(at: point) == entryID,
                       !(self.sidebarEntryID != nil && self.cycleController.panel.frame.contains(point)) else {
-                    self.hoverWork = nil
                     self.updatePointer()
                     return
                 }
-                self.hoverWork = nil
                 // Show the published list immediately and refresh in the background.
                 if let entry = self.inventory.entries.first(where: { $0.id == entryID }), let icon = self.iconFrame(entryID) {
                     self.showMenu(entry, icon: icon)
@@ -980,7 +994,13 @@ private final class SidebarDisplayController {
                 self.inventory.refresh()
             }
             hoverWork = work
-            DispatchQueue.main.async(execute: work)
+            // While the Dock bar is still growing in, icon frames are mid-flight: open after it lands.
+            let settleDelay = dockOpenSettlesAt.map { max(0, $0.timeIntervalSinceNow) } ?? 0
+            if settleDelay > 0 {
+                DispatchQueue.main.asyncAfter(deadline: .now() + settleDelay, execute: work)
+            } else {
+                DispatchQueue.main.async(execute: work)
+            }
         } else {
             if hoveredEntryID == entryID { hoveredEntryID = nil }
             updatePointer()
@@ -990,10 +1010,9 @@ private final class SidebarDisplayController {
     private func showMenu(_ entry: SidebarEntry, icon: CGRect) {
         guard !missionControlPresented, let screen, let settings else { return }
         guard !otherDragActive(), ownsMenu || (panel.isVisible && sidebarFrame.contains(pointerLocation)) else { return }
-        // The Modern menu lists the whole workspace, so it opens for single-window apps too.
+        // Both menu styles respect "Show menu for apps with one window".
         guard !entry.windows.isEmpty,
-              entry.windows.count > 1 || entry.hasOtherWindows || settings.showSingleWindowMenu
-                || SidebarWindowMenuStyle.current() == .modern else {
+              entry.windows.count > 1 || entry.hasOtherWindows || settings.showSingleWindowMenu else {
             dismissSidebar()
             return
         }

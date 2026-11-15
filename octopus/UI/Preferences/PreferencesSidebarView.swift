@@ -152,10 +152,6 @@ struct PreferencesSidebarView: View {
             Toggle("Number shortcuts for sidebar apps", isOn: $numberShortcuts)
                 .disabled(!enabled)
                 .help("Open sidebar apps from top to bottom with 1–9 or 0; choose the modifier keys in Shortcuts settings.")
-            if configuration.idleBehavior == .compact {
-                Toggle("Show app icons instead of numbers", isOn: setting(\.compactShowsIcons))
-                    .disabled(!editingEnabled)
-            }
             if numberShortcuts {
                 Text(SidebarNumberShortcuts.hint(for: NSEvent.ModifierFlags(rawValue: UInt(clamping: numberShortcutModifierMask))))
                     .font(.caption).foregroundStyle(.secondary)
@@ -171,7 +167,7 @@ struct PreferencesSidebarView: View {
                             Text(display.name).tag(display.id)
                         }
                     }
-                    .pickerStyle(.menu)
+                    .pickerStyle(.segmented)
                     .labelsHidden()
                     .fixedSize()
                     .accessibilityLabel("Display")
@@ -186,7 +182,7 @@ struct PreferencesSidebarView: View {
                             Text(display.name).tag(display.id)
                         }
                     }
-                    .pickerStyle(.menu)
+                    .pickerStyle(.segmented)
                     .labelsHidden()
                     .fixedSize()
                     .accessibilityLabel("Display")
@@ -221,9 +217,8 @@ struct PreferencesSidebarView: View {
                     .disabled(windowMenuStyle != .modern)
                     .help(WindowMenuStrings.showsOpenAppsHelp)
                 Toggle("Show menu for apps with one window", isOn: setting(\.showSingleWindowMenu))
-                    .disabled(!editingEnabled || windowMenuStyle == .modern)
-                    .help(windowMenuStyle == .modern ? WindowMenuStrings.singleWindowModernHelp
-                          : "Choosing a style resets this: off for Dock, on for Floating.")
+                    .disabled(!editingEnabled)
+                    .help("Off opens the window menu only for apps with more than one window.")
             }
             .disabled(!enabled)
 
@@ -248,6 +243,10 @@ struct PreferencesSidebarView: View {
                 }
                 .disabled(!editingEnabled)
                 .help("Fade makes the idle sidebar more transparent. Auto-Hide shows it at the screen edge. Always visible keeps it fully opaque. Compact keeps a strip of numbers or app icons visible. Mac Notch opens a horizontal app bar below a real or virtual notch; each app’s windows remain in one vertical list.")
+                if configuration.idleBehavior == .compact {
+                    Toggle("Show app icons instead of numbers", isOn: setting(\.compactShowsIcons))
+                        .disabled(!editingEnabled)
+                }
                 if configuration.idleBehavior == .hide {
                     LabeledContent("Show edge mark") {
                         HStack {
