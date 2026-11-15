@@ -33,6 +33,16 @@ final class CyclePanelController: NSObject {
     private var sidebarHideAnchor: NSView?
     private var sidebarQuitAnchor: NSView?
     private var sidebarActionClickGate = SidebarClickGate()
+    // Modern sidebar window menu: the same card as the centre menu, hosted in this panel
+    // so the sidebar's existing menu ownership, hover and dismissal rules still apply.
+    private let windowMenu = WindowMenuPresenter()
+    private var classicHost: NSView?
+    private var modernHost: NSView?
+    private var showsModernMenu = false
+    var windowMenuProfiles: () -> (profiles: [Profile], currentID: UUID?) {
+        get { windowMenu.profiles }
+        set { windowMenu.profiles = newValue }
+    }
     var onSidebarActivate: ((SidebarWindowID) -> Void)?
     var onSidebarWindowAction: ((SidebarWindowAction) -> Void)?
     var onSidebarDismiss: (() -> Void)?
@@ -130,23 +140,65 @@ final class CyclePanelController: NSObject {
             self.onSidebarPlacement?(SidebarWindowID(pid: pid, windowID: id), target)
         })
         let hostingView = NSHostingView(rootView: contentView)
+        let windowMenuView = NSHostingView(rootView: WindowMenuView(state: windowMenu.state, presenter: windowMenu))
+        windowMenuView.isHidden = true
         // Panel dimensions are controlled by updatePanelSize, not content-size probes.
         hostingView.sizingOptions = []
-        hostingView.translatesAutoresizingMaskIntoConstraints = false
-        
+        windowMenuView.sizingOptions = []
         guard let containerView = panel.contentView else { return }
-        containerView.addSubview(hostingView)
-        NSLayoutConstraint.activate([
-            hostingView.leadingAnchor.constraint(equalTo: containerView.leadingAnchor),
-            hostingView.trailingAnchor.constraint(equalTo: containerView.trailingAnchor),
-            hostingView.topAnchor.constraint(equalTo: containerView.topAnchor),
-            hostingView.bottomAnchor.constraint(equalTo: containerView.bottomAnchor)
-        ])
+        containerView.addFillingSubview(hostingView)
+        containerView.addFillingSubview(windowMenuView)
+        classicHost = hostingView
+        modernHost = windowMenuView
+        configureWindowMenu()
     }
+
+    ////////////////////
+    //// Modern sidebar window menu wiring
+    /// Window and app actions reuse the classic menu's sidebar callbacks, so the
+    // owning display's inventory performs them exactly as before.
+
+    private func configureWindowMenu() {
+        windowMenu.onActivateWindow = { [weak self] id in
+            guard let self, self.presentation == .sidebar else { return }
+            self.hideSwitcher()
+            self.onSidebarActivate?(id)
+        }
+        windowMenu.onActivateApp = { [weak self] app in
+            guard let self, self.presentation == .sidebar else { return }
+            self.hideSwitcher()
+            if let pid = app.pid {
+                self.onSidebarWindowAction?(.activateApp(pid))
+            } else if let identifier = app.bundleIdentifier, let url = app.bundleURL {
+                Application.activateOrLaunch(bundleIdentifier: identifier, bundleURL: url)
+            }
+        }
+        windowMenu.onCloseWindow = { [weak self] id in
+            guard let self, self.presentation == .sidebar else { return }
+            self.onSidebarWindowAction?(.close(id))
+        }
+        windowMenu.onDragWindow = { [weak self] id, title, source, event in
+            guard let self, self.presentation == .sidebar else { return }
+            self.onSidebarDrag?(id, title, source, event)
+        }
+        windowMenu.onLayoutChange = { [weak self] in self?.updatePanelSize() }
+    }
+
+    private func setModernMenuVisible(_ modern: Bool) {
+        guard showsModernMenu != modern else { return }
+        showsModernMenu = modern
+        modernHost?.isHidden = !modern
+        classicHost?.isHidden = modern
+        panel.showsBackdrop = !modern
+    }
+
+    //// The keyboard switcher always uses the classic content (see showSwitcher).
+    //////////////////
     
     // Called when user presses the configured window-switching shortcut.
     func showSwitcher(for application: Application, startIndex: Int = 0) {
         if presentation == .sidebar { hideSwitcher() }
+        setModernMenuVisible(false)
         presentation = .keyboard
         panel.level = .floating
         panel.hidesOnDeactivate = true
@@ -167,14 +219,7 @@ final class CyclePanelController: NSObject {
         }
         
         if !panel.isVisible {
-            let defaults = UserDefaults.standard
-            // Preserve the earlier primary-display toggle until a display is explicitly chosen.
-            let display = defaults.string(forKey: "windowMenuDisplay")
-                ?? (defaults.bool(forKey: "showWindowMenuOnPrimaryDisplay") ? "primary" : "automatic")
-            let screens = NSScreen.screens
-            if display != "automatic",
-               let screen = screens.first(where: { SidebarSettings.monitorID($0) == display }) ?? screens.first {
-                // screens.first is the primary display and the fallback for a disconnected selection.
+            if let screen = WindowMenuDisplayPreference.chosenScreen() {
                 let visibleFrame = screen.visibleFrame
                 panel.setFrameOrigin(CGPoint(x: visibleFrame.midX - panel.frame.width / 2,
                                              y: visibleFrame.midY - panel.frame.height / 2))
@@ -195,21 +240,35 @@ final class CyclePanelController: NSObject {
         }
     }
 
-    func showSidebar(for entry: SidebarEntry, icon: CGRect, screen: CGRect, side: SidebarSide,
-                     belowBar: CGRect? = nil) {
+    /// `entries` is the owning sidebar's whole inventory; the Modern menu lists every workspace app from it.
+    func showSidebar(for entry: SidebarEntry, entries: [SidebarEntry] = [], icon: CGRect, screen: CGRect,
+                     side: SidebarSide, belowBar: CGRect? = nil) {
         guard !isKeyboardSwitcherVisible, !entry.windows.isEmpty else { return }
+        let modern = SidebarWindowMenuStyle.current() == .modern
         panel.level = belowBar == nil ? SidebarWindowLevels.menu : SidebarWindowLevels.notchMenu
-        let isRefresh = sidebarEntryID == entry.id
+        // The Modern menu shows the whole workspace, so moving to another icon refreshes it in place.
+        let isRefresh = modern ? sidebarEntryID != nil && showsModernMenu : sidebarEntryID == entry.id
         let selectedID = isRefresh ? state.currentWindow?.cgWindowID : nil
         presentation = .sidebar
         removeFlagsMonitor()
         currentApplication = entry.application
         currentSidebarEntryID = entry.id
         sidebarAnchor = (icon, screen, side, belowBar)
-        state.setWindows(entry.windows, applicationTitle: entry.application.title,
-                         selectedID: selectedID ?? entry.preferredID?.windowID,
-                         preserveInteraction: isRefresh, sidebarWindowStates: entry.windowStates,
-                         sidebarAppIsHidden: entry.isHidden)
+        setModernMenuVisible(modern)
+        if modern {
+            if isRefresh {
+                windowMenu.update(entries: entries, focusPID: entry.pid, status: .ready)
+            } else {
+                // The card grows out of the side that faces the icon.
+                let edge: HorizontalEdge? = belowBar != nil ? nil : side == .right ? .trailing : .leading
+                windowMenu.present(placement: .sidebar(edge), entries: entries, focusPID: entry.pid, status: .ready)
+            }
+        } else {
+            state.setWindows(entry.windows, applicationTitle: entry.application.title,
+                             selectedID: selectedID ?? entry.preferredID?.windowID,
+                             preserveInteraction: isRefresh, sidebarWindowStates: entry.windowStates,
+                             sidebarAppIsHidden: entry.isHidden)
+        }
         updatePanelSize()
         // Refreshing the same menu must not steal focus or order the panel forward again.
         if isRefresh { return }
@@ -230,6 +289,10 @@ final class CyclePanelController: NSObject {
 
     func updateSidebarPointer(at point: CGPoint) {
         guard presentation == .sidebar, panel.isVisible else { return }
+        if showsModernMenu {
+            windowMenu.updatePointer(at: point)
+            return
+        }
         let target = panel.frame.contains(point) ? Self.sidebarPointerTarget(
             at: point, items: state.items, anchors: sidebarRowAnchors, hideAnchor: sidebarHideAnchor,
             quitAnchor: sidebarQuitAnchor) : nil
@@ -271,6 +334,17 @@ final class CyclePanelController: NSObject {
     }
 
     private func updatePanelSize() {
+        if presentation == .sidebar, showsModernMenu, let anchor = sidebarAnchor {
+            // Place the whole panel (card plus shadow margin) beside the icon; the margin is left out
+            // on the icon side, so the panel never covers the icon or its badges.
+            let size = MenuShadowMargin.panelSize(card: windowMenu.cardSize, facing: windowMenu.state.appearEdge)
+            let frame = anchor.bar.map {
+                SidebarLayout.notchMenuFrame(size: size, icon: anchor.icon, bar: $0, screen: anchor.screen, belowIcon: true)
+            } ?? SidebarLayout.menuFrame(size: size, icon: MenuShadowMargin.clearedIcon(anchor.icon),
+                                         screen: anchor.screen, side: anchor.side)
+            if panel.frame != frame { panel.setFrame(frame, display: true, animate: false) }
+            return
+        }
         let isSidebar = presentation == .sidebar
         let rowHeight = isSidebar ? SidebarLayout.menuRowHeight : self.rowHeight
         let rowSpacing = isSidebar ? dividerHeight : self.rowSpacing
@@ -396,6 +470,8 @@ final class CyclePanelController: NSObject {
         currentSidebarEntryID = nil
         panelAnchorCenter = nil
         if panel.isVisible { panel.orderOut(nil) }
+        windowMenu.reset()
+        setModernMenuVisible(false)
         if wasSidebar { onSidebarDismiss?() }
     }
     
@@ -444,6 +520,12 @@ final class CyclePanelController: NSObject {
 
         keyDownMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self else { return event }
+
+            // Modern menu: arrows and Return go to the shared navigator; Escape falls through below.
+            if self.panel.isVisible, self.presentation == .sidebar, self.showsModernMenu,
+               let key = MenuKey(keyCode: event.keyCode), key != .cancel {
+                return self.windowMenu.handle(key) ? nil : event
+            }
 
             if self.panel.isVisible, self.presentation == .sidebar {
                 switch event.keyCode {

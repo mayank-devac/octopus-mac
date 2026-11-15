@@ -11,6 +11,19 @@ import SwiftUI
 
 final class CyclePanel: NSPanel, NSWindowDelegate {
     var onResignKey: (() -> Void)?
+    private let backdrop = NSVisualEffectView(frame: .zero)
+
+    /// Off for content that draws its own card (the window menus): the panel is then fully
+    /// transparent and shadowless, so the card can animate with its own blur and shadow.
+    var showsBackdrop: Bool {
+        get { !backdrop.isHidden }
+        set {
+            guard newValue != showsBackdrop else { return }
+            backdrop.isHidden = !newValue
+            hasShadow = newValue
+        }
+    }
+
     init(contentRect: NSRect) {
         super.init(
             contentRect: contentRect,
@@ -34,7 +47,7 @@ final class CyclePanel: NSPanel, NSWindowDelegate {
         self.backgroundColor = .clear
         self.hidesOnDeactivate = true
         
-        let effectView = NSVisualEffectView(frame: .zero)
+        let effectView = backdrop
         effectView.autoresizingMask = [.width, .height]
         effectView.material = .popover
         effectView.blendingMode = .behindWindow
@@ -59,7 +72,12 @@ final class CyclePanel: NSPanel, NSWindowDelegate {
         effectView.maskImage = mask
 
         // Inherit system appearance so the existing blur adapts to Light and Dark mode.
-        self.contentView = effectView
+        // Content is hosted in a plain container above the backdrop so the backdrop can be hidden alone.
+        let container = NSView(frame: contentRect)
+        container.autoresizingMask = [.width, .height]
+        effectView.frame = container.bounds
+        container.addSubview(effectView)
+        self.contentView = container
     }
     
     override var canBecomeKey: Bool {

@@ -61,6 +61,8 @@ struct SidebarView: View {
     var onDesktopTransfer: (SidebarWindowID, SidebarDesktop) -> Void = { _, _ in }
     var onMonitorAnchor: (String, SidebarAnchorChange) -> Void = { _, _ in }
     var onReveal: () -> Void = {}
+    var onAppMenu: (SidebarEntryID) -> Void = { _ in }
+    var onIconBadge: (SidebarEntryID, SidebarIconBadge) -> Void = { _, _ in }
 
     private var isCompact: Bool { state.configuration.idleBehavior == .compact }
     private var isDock: Bool { state.usesDockBar }
@@ -437,7 +439,7 @@ struct SidebarView: View {
         return Group {
             if state.configuration.compactShowsIcons {
                 Group {
-                    if let icon = entry.application.runningApplication?.icon {
+                    if let icon = entry.application.icon {
                         Image(nsImage: icon).resizable()
                     } else {
                         Image(systemName: "app.fill").resizable()
@@ -484,9 +486,11 @@ struct SidebarView: View {
             && entry.id == displayedEntries.last?.id
             ? SidebarLayout.dockLastRowTrim(for: entry, fontSize: labelFontSize, maximumScale: maximumLabelScale)
             : 0
+        let showsBadges = state.highlightedEntryID == entry.id && state.dragSections == nil
+            && !isDockStripClosed && !SidebarPinnedApps.isPlaceholder(entry)
         return VStack(alignment: .center, spacing: 0) {
             Group {
-                if let icon = entry.application.runningApplication?.icon {
+                if let icon = entry.application.icon {
                     Image(nsImage: icon).resizable()
                 } else {
                     Image(systemName: "app.fill").resizable()
@@ -516,13 +520,12 @@ struct SidebarView: View {
             }
             .overlay(alignment: .topLeading) {
                 // Placed on the icon so it scales with magnification and the Dock strip.
-                if windowCount > 1 {
+                // The action badges take the same corner while the icon is hovered.
+                if windowCount > 1, !showsBadges {
                     SidebarWindowCountBadge(count: windowCount).offset(x: -2, y: -1).allowsHitTesting(false)
                 }
             }
-            .scaleEffect(isDockStripClosed ? dock.iconScale : dock.iconScale * scale(for: index))
-            .offset(x: compactContentOffset + dock.stripIconOffset.width, y: dock.stripIconOffset.height)
-            .frame(height: SidebarLayout.iconSlotHeight)
+            .modifier(iconPlacement(index: index))
 
             if showsTitles {
                 Text(title)
@@ -569,13 +572,30 @@ struct SidebarView: View {
                 onDrag: { onDrag(entry.id, dragTarget, title, $0, $1) },
                 dragShortcut: mouseBindings.place,
                 onMouseClick: { shortcut in
-                    if let action = mouseBindings.clickAction(for: shortcut) { onMouseAction(entry.id, action, dragTarget) }
+                    // The app menu click wins, so it never also hides or minimises.
+                    if shortcut == mouseShortcuts.appMenuShortcut { onAppMenu(entry.id) }
+                    else if let action = mouseBindings.clickAction(for: shortcut) { onMouseAction(entry.id, action, dragTarget) }
                     else if shortcut == .left { onClick(entry.id) }
                 },
                 onDoubleClick: { if let id = dragTarget { onPlacement(id, .maximize) } },
                 doubleClickTarget: dragTarget
             )
         }
+        .overlay(alignment: .top) {
+            // Above the row's pointer region so badge clicks reach the badges; placed and
+            // scaled exactly like the icon so they stay on its leading edge.
+            if showsBadges {
+                SidebarIconBadgeColumn(canClose: dragTarget.flatMap { entry.windowStates[$0.windowID]?.canClose } ?? false) {
+                    onIconBadge(entry.id, $0)
+                }
+                .frame(width: SidebarIconBadgeMetrics.size)
+                .offset(x: SidebarIconBadgeMetrics.leadingInset - SidebarIconBadgeMetrics.size / 2)
+                .frame(width: SidebarLayout.iconSize, height: SidebarLayout.iconSize, alignment: .leading)
+                .modifier(iconPlacement(index: index))
+                .transition(.scale(scale: 0.6).combined(with: .opacity))
+            }
+        }
+        .animation(reduceMotion ? nil : MenuMotion.hoverGrow, value: showsBadges)
         .overlay {
             // A click on a strip icon opens the Dock, matching the number strip, rather than focusing the app.
             if isDockStripClosed {
@@ -585,12 +605,20 @@ struct SidebarView: View {
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("\(entry.application.title): \(title), \(entry.desktop?.title ?? "Other apps")"
             + (windowCount > 1 ? ", \(windowCount) windows" : ""))
-        .accessibilityHint(entry.preferredID == nil ? "Activate app"
+        .accessibilityHint(SidebarPinnedApps.isPlaceholder(entry) ? "Open app"
+            : entry.preferredID == nil ? "Activate app"
             : entry.isHidden || entry.preferredID.flatMap { entry.windowStates[$0.windowID]?.isMinimized } == true
                 ? "Restore window" : "Focus window")
         .accessibilityAddTraits(.isButton)
         .accessibilityAction { onClick(entry.id) }
         .accessibilityActions {
+            Button(SidebarAppMenuStrings.accessibilityLabel) { onAppMenu(entry.id) }
+            if !SidebarPinnedApps.isPlaceholder(entry) {
+                Button(SidebarIconBadgeStrings.quit) { onIconBadge(entry.id, .quit) }
+            }
+            if dragTarget != nil {
+                Button(SidebarIconBadgeStrings.close) { onIconBadge(entry.id, .close) }
+            }
             Button("Hide app") { onMouseAction(entry.id, .hide, dragTarget) }
             if dragTarget != nil {
                 Button("Minimise or restore window") { onMouseAction(entry.id, .minimize, dragTarget) }
@@ -624,6 +652,13 @@ struct SidebarView: View {
     private func accessiblePairTargets(excluding source: SidebarWindowID) -> [SidebarIconPairTarget] {
         var seen = Set<SidebarWindowID>()
         return pairTargetsProvider().filter { $0.isVisible && $0.window != source && seen.insert($0.window).inserted }
+    }
+
+    // The icon and its hover badges share one transform, so badges track magnification and the Dock strip.
+    private func iconPlacement(index: Int) -> SidebarIconPlacement {
+        SidebarIconPlacement(scale: isDockStripClosed ? dock.iconScale : dock.iconScale * scale(for: index),
+                             offset: CGSize(width: compactContentOffset + dock.stripIconOffset.width,
+                                            height: dock.stripIconOffset.height))
     }
 
     private func scale(for index: Int) -> CGFloat {
@@ -714,6 +749,18 @@ private struct SidebarIconDropBorder: View {
 }
 
 // Dock-style count of an app's windows in this row.
+private struct SidebarIconPlacement: ViewModifier {
+    let scale: CGFloat
+    let offset: CGSize
+
+    func body(content: Content) -> some View {
+        content
+            .scaleEffect(scale)
+            .offset(offset)
+            .frame(height: SidebarLayout.iconSlotHeight)
+    }
+}
+
 private struct SidebarWindowCountBadge: View {
     let count: Int
 

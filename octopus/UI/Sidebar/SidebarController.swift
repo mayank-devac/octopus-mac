@@ -237,6 +237,7 @@ private final class SidebarDisplayController {
     private var desktopAnchors: [UInt64: NSView] = [:]
     private var monitorAnchors: [String: NSView] = [:]
     private let desktopMenu = SidebarDesktopMenu()
+    private let appMenu = SidebarAppMenuController()
     private var lastDragScroll: TimeInterval = 0
     private var hoveredEntryID: SidebarEntryID?
     private var settings: Settings?
@@ -388,10 +389,14 @@ private final class SidebarDisplayController {
                 guard let self else { return }
                 change.apply(to: &self.monitorAnchors, id: id)
             },
-            onReveal: { [weak self] in self?.revealSidebarFromPersistentTrigger() }
+            onReveal: { [weak self] in self?.revealSidebarFromPersistentTrigger() },
+            onAppMenu: { [weak self] entryID in self?.openAppMenu(entryID) },
+            onIconBadge: { [weak self] entryID, badge in self?.performIconBadge(badge, entryID: entryID) }
         ))
         hostingView.sizingOptions = []
         panel.contentView = hostingView
+        appMenu.onCommand = { [weak self] command, entryID in self?.performAppMenuCommand(command, entryID: entryID) }
+        appMenu.onDismiss = { [weak self] in self?.updatePointer() }
         inventory.onChange = { [weak self] in self?.inventoryChanged() }
         inventory.onDesktopChange = { [weak self] in
             guard let self else { return }
@@ -984,14 +989,16 @@ private final class SidebarDisplayController {
     private func showMenu(_ entry: SidebarEntry, icon: CGRect) {
         guard !missionControlPresented, let screen, let settings else { return }
         guard !otherDragActive(), ownsMenu || (panel.isVisible && sidebarFrame.contains(pointerLocation)) else { return }
+        // The Modern menu lists the whole workspace, so it opens for single-window apps too.
         guard !entry.windows.isEmpty,
-              entry.windows.count > 1 || entry.hasOtherWindows || settings.showSingleWindowMenu else {
+              entry.windows.count > 1 || entry.hasOtherWindows || settings.showSingleWindowMenu
+                || SidebarWindowMenuStyle.current() == .modern else {
             dismissSidebar()
             return
         }
-        guard !cycleController.isKeyboardSwitcherVisible else { return }
+        guard !cycleController.isKeyboardSwitcherVisible, !appMenu.isVisible else { return }
         claimMenu()
-        cycleController.showSidebar(for: entry, icon: icon,
+        cycleController.showSidebar(for: entry, entries: inventory.entries, icon: icon,
                                     screen: isFullScreen ? screen.frame : screen.visibleFrame,
                                     side: settings.side, belowBar: presentation.hasTopTrigger ? sidebarFrame : nil)
     }
@@ -1001,6 +1008,12 @@ private final class SidebarDisplayController {
         guard let entry = inventory.entries.first(where: { $0.id == entryID }) else { return }
         guard !inventory.hasPendingAction(for: entry.pid) else { return }
         cancelPendingHover()
+        // A pinned app that is not running has no process to activate yet.
+        if SidebarPinnedApps.isPlaceholder(entry) {
+            dismissSidebar()
+            SidebarPinnedApps.launch(entry)
+            return
+        }
         let frontmostPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
         let action = SidebarIconClickPolicy.action(for: entry, frontmostPID: frontmostPID,
                                                   setting: .none)
@@ -1020,6 +1033,11 @@ private final class SidebarDisplayController {
         guard !missionControlPresented else { return }
         guard let entry = inventory.entries.first(where: { $0.id == entryID }) else { return }
         guard !inventory.hasPendingAction(for: entry.pid) else { return }
+        // Hide and minimise mean nothing for a pinned app that is not running; a click opens it.
+        if SidebarPinnedApps.isPlaceholder(entry) {
+            activate(entryID)
+            return
+        }
         let frontmostPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
         let windowAction = SidebarIconMousePolicy.action(action, for: entry, frontmostPID: frontmostPID, target: target)
         cancelPendingHover()
@@ -1027,6 +1045,99 @@ private final class SidebarDisplayController {
         if let windowAction { inventory.perform(windowAction, frontmostPID: frontmostPID) }
         else { inventory.refresh() }
     }
+
+    ////////////////////
+    //// App menu (Control-click) and icon badges
+    /// Both act on the live entry: the menu or badge only passes the entry's ID.
+
+    private func openAppMenu(_ entryID: SidebarEntryID) {
+        guard !missionControlPresented, let screen, let settings,
+              let entry = inventory.entries.first(where: { $0.id == entryID }), let icon = iconFrame(entryID) else { return }
+        cancelPendingHover()
+        // The window menu would cover the app menu, so it closes first.
+        dismissSidebar()
+        appMenu.show(context: appMenuContext(for: entry), pid: SidebarPinnedApps.isPlaceholder(entry) ? nil : entry.pid,
+                     bundleURL: entry.application.bundleUrl, entryID: entryID, icon: icon,
+                     screen: isFullScreen ? screen.frame : screen.visibleFrame, side: settings.side,
+                     belowBar: presentation.hasTopTrigger ? sidebarFrame : nil)
+    }
+
+    private func appMenuContext(for entry: SidebarEntry) -> SidebarAppMenuContext {
+        let target = SidebarIconDragPolicy.target(for: entry)
+        let bundleIdentifier = entry.application.bundleIdentifier
+        // Same rule as the sidebar's accessibility "Move to" actions.
+        var desktops: [SidebarAppMenuDesktop] = []
+        if let target, inventory.canTransferDesktops, !entry.isHidden,
+           entry.windowStates[target.windowID]?.isMinimized == false, let source = entry.desktop {
+            desktops = inventory.desktops
+                .filter { SidebarDesktopTransferPolicy.allows(source: source, destination: $0) }
+                .compactMap { desktop in desktop.number.map { SidebarAppMenuDesktop(id: desktop.id, number: $0) } }
+        }
+        let windows = entry.windows.compactMap { window -> SidebarAppMenuWindow? in
+            guard let id = window.cgWindowID else { return nil }
+            return SidebarAppMenuWindow(id: SidebarWindowID(pid: entry.pid, windowID: id), title: window.title,
+                                        isMinimized: entry.windowStates[id]?.isMinimized ?? false)
+        }
+        return SidebarAppMenuContext(
+            title: entry.application.title, isRunning: !SidebarPinnedApps.isPlaceholder(entry), isHidden: entry.isHidden,
+            isPinned: bundleIdentifier.map { SidebarPinnedApps.isPinned($0) } ?? false, canPin: bundleIdentifier != nil,
+            hasBundleURL: entry.application.bundleUrl != nil, windows: windows, targetWindow: target,
+            canCloseTarget: target.flatMap { entry.windowStates[$0.windowID]?.canClose } ?? false, desktops: desktops)
+    }
+
+    private func performAppMenuCommand(_ command: SidebarAppMenuCommand, entryID: SidebarEntryID) {
+        guard !missionControlPresented, let entry = inventory.entries.first(where: { $0.id == entryID }) else { return }
+        let target = SidebarIconDragPolicy.target(for: entry)
+        switch command {
+        case .focusWindow(let id):
+            inventory.focus(id)
+        case .open:
+            activate(entryID)
+        case .snap(let snap):
+            if let target { dragController.place(target, at: snap) }
+        case .moveToDesktop(let desktopID):
+            if let target, let desktop = inventory.desktops.first(where: { $0.id == desktopID }) {
+                inventory.moveToDesktop(target, to: desktop)
+            }
+        case .toggleHidden:
+            toggleAppVisibility(entry)
+        case .closeWindow:
+            if let target { inventory.perform(.close(target)) }
+        case .togglePin:
+            if let identifier = entry.application.bundleIdentifier { SidebarPinnedApps.toggle(identifier) }
+        case .showInFinder:
+            if let url = entry.application.bundleUrl { NSWorkspace.shared.activateFileViewerSelecting([url]) }
+        case .quit:
+            entry.application.runningApplication?.terminate()
+        }
+    }
+
+    private func performIconBadge(_ badge: SidebarIconBadge, entryID: SidebarEntryID) {
+        guard !missionControlPresented, let entry = inventory.entries.first(where: { $0.id == entryID }),
+              !SidebarPinnedApps.isPlaceholder(entry), !inventory.hasPendingAction(for: entry.pid) else { return }
+        cancelPendingHover()
+        switch badge {
+        case .close:
+            if let target = SidebarIconDragPolicy.target(for: entry) { inventory.perform(.close(target)) }
+        case .hide:
+            toggleAppVisibility(entry)
+        case .quit:
+            dismissSidebar()
+            entry.application.runningApplication?.terminate()
+        }
+    }
+
+    // Hidden apps come back with their window under the icon; visible apps hide.
+    private func toggleAppVisibility(_ entry: SidebarEntry) {
+        if let preferred = entry.preferredID {
+            inventory.perform(entry.isHidden ? .focus(preferred) : .hide(preferred))
+        } else if let application = entry.application.runningApplication {
+            if entry.isHidden { application.unhide() } else { application.hide() }
+        }
+    }
+
+    //// Quit asks the app politely (terminate), so it can still offer to save documents.
+    //////////////////
 
     private func installMouseMonitors() {
         let events: NSEvent.EventTypeMask = [.mouseMoved, .leftMouseDragged, .rightMouseDragged,
@@ -1119,6 +1230,11 @@ private final class SidebarDisplayController {
         }
         guard !radialPresented, !missionControlPresented else { return }
         guard !dragController.isActive, !otherDragActive() else { return }
+        // The app menu shares this pointer path: hover selects its items, a click outside closes it.
+        if appMenu.isVisible {
+            if [.mouseMoved, .leftMouseDragged, .rightMouseDragged].contains(event.type) { appMenu.updatePointer(at: point) }
+            if [.leftMouseDown, .rightMouseDown, .otherMouseDown].contains(event.type) { appMenu.handleMouseDown(at: point) }
+        }
         // One pointer-position path owns row and button hover. Native row/button hover
         // callbacks must not compete with it or miss movement over overlapping controls.
         if [.mouseMoved, .leftMouseDragged, .rightMouseDragged].contains(event.type) {
@@ -1222,7 +1338,7 @@ private final class SidebarDisplayController {
         // A running dock close already owns the hide; scheduling another would cut its animation short.
         if presentation.closesWhenOutside(expanded: viewState.isExpanded), panel.isVisible,
            !positionScrollCapture.isActive, !inSidebar, !inCompact, !inNotch, !inMenu, !inEdge,
-           sidebarEntryID == nil, !isPeeking, dockCloseWork == nil {
+           sidebarEntryID == nil, !appMenu.isVisible, !isPeeking, dockCloseWork == nil {
             if hideWork == nil {
                 let work = DispatchWorkItem { [weak self] in
                     guard let self else { return }
@@ -1263,6 +1379,7 @@ private final class SidebarDisplayController {
         dragController.cancel()
         endPeek()
         cancelDockClose()
+        appMenu.hide(animated: false)
         if !keepMenu {
             hoveredEntryID = nil
             dismissSidebar()

@@ -7,6 +7,7 @@ struct PreferencesSidebarView: View {
     @AppStorage(SidebarNumberShortcuts.enabledKey) private var numberShortcuts = false
     @AppStorage(SidebarNumberShortcuts.modifiersKey) private var numberShortcutModifierMask = Int(SidebarNumberShortcuts.defaultModifiers.rawValue)
     @AppStorage("sidebarMonitor") private var monitor = "primary"
+    @AppStorage(PreferenceKeys.sidebarWindowMenuStyle) private var windowMenuStyle = SidebarWindowMenuStyle.defaultStyle
     @State private var screens = NSScreen.screens
     @AppStorage(SidebarSettings.settingsSelectedDisplayKey) private var selectedDisplayID = ""
     @State private var configuration = SidebarConfiguration()
@@ -184,9 +185,16 @@ struct PreferencesSidebarView: View {
                 }
                 .disabled(!editingEnabled)
                 .help("Current display shows only windows belonging to the display where this sidebar appears. Show windows still controls which desktops are included.")
+                Picker(WindowMenuStrings.styleTitle, selection: $windowMenuStyle) {
+                    ForEach(SidebarWindowMenuStyle.allCases, id: \.self) { style in
+                        Text(style.title).tag(style)
+                    }
+                }
+                .help(WindowMenuStrings.styleHelp)
                 Toggle("Show menu for apps with one window", isOn: setting(\.showSingleWindowMenu))
-                    .disabled(!editingEnabled)
-                    .help("Choosing a style resets this: off for Dock, on for Floating.")
+                    .disabled(!editingEnabled || windowMenuStyle == .modern)
+                    .help(windowMenuStyle == .modern ? WindowMenuStrings.singleWindowModernHelp
+                          : "Choosing a style resets this: off for Dock, on for Floating.")
             }
             .disabled(!enabled)
 

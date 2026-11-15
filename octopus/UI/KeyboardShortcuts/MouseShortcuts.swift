@@ -139,13 +139,23 @@ final class MouseShortcutStore: ObservableObject {
     @Published private(set) var bindings: MouseShortcutBindings
     @Published private(set) var positionScrollModifiers: NSEvent.ModifierFlags
     @Published private(set) var cornerSnapModifiers: NSEvent.ModifierFlags
+    @Published private(set) var appMenuButton: SidebarAppMenuButton
     private let defaults: UserDefaults
+
+    /// Checked before the hide / minimise click bindings, so the two never both fire.
+    var appMenuShortcut: MouseShortcut { appMenuButton.shortcut }
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         bindings = MouseShortcutBindings(defaults: defaults)
         positionScrollModifiers = SidebarPositionScrollShortcut.read(in: defaults)
         cornerSnapModifiers = SidebarCornerSnapShortcut.read(in: defaults)
+        appMenuButton = SidebarAppMenuButton.read(in: defaults)
+    }
+
+    func setAppMenuButton(_ button: SidebarAppMenuButton) {
+        defaults.set(button.rawValue, forKey: PreferenceKeys.sidebarAppMenuButton)
+        appMenuButton = button
     }
 
     func setCornerSnapModifiers(_ modifiers: NSEvent.ModifierFlags) {
@@ -174,6 +184,9 @@ final class MouseShortcutStore: ObservableObject {
             if shortcut == MouseShortcut(button: 2), defaults.bool(forKey: RadialWindowSettings.mouseKey) {
                 return "Middle click is reserved for the radial window selector. Disable it there first."
             }
+            if action != .place, shortcut == appMenuShortcut {
+                return ShortcutPreferenceStrings.appMenuConflict
+            }
             let other: MouseShortcutAction? = action == .hide ? .minimize : action == .minimize ? .hide : nil
             if let other, bindings[other] == shortcut {
                 return "\(shortcut.title) is already assigned to \(other.title.lowercased()). Choose another shortcut or clear that assignment first."
@@ -199,5 +212,6 @@ final class MouseShortcutStore: ObservableObject {
         bindings = MouseShortcutBindings(defaults: defaults)
         resetPositionScrollModifiers()
         resetCornerSnapModifiers()
+        setAppMenuButton(SidebarAppMenuButton.defaultButton)
     }
 }

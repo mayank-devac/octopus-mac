@@ -54,6 +54,9 @@ class Application {
         }
     }
 
+    /// The running app's icon, or the bundle's icon when it is not running (pinned sidebar apps).
+    @MainActor var icon: NSImage? { AppIconCache.icon(pid: pid, bundleURL: bundleUrl) }
+
     convenience init?(bundleIdentifier: String) {
         if let runningApp = NSRunningApplication
             .runningApplications(withBundleIdentifier: bundleIdentifier)

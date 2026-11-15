@@ -149,10 +149,11 @@ struct MouseShortcutTests {
 
     @MainActor @Test func modifierCombosAreDistinctAndAdditionalMouseButtonsPersist() throws {
         try withStore { store, defaults in
-            let modifiedLeft = MouseShortcut(button: 0, modifiers: [.control, .capsLock])
+            // Control + left alone opens the sidebar app menu, so use another combination.
+            let modifiedLeft = MouseShortcut(button: 0, modifiers: [.control, .option, .capsLock])
             #expect(store.assign(modifiedLeft, to: .minimize) == nil)
             #expect(store.bindings.hide == .right)
-            #expect(modifiedLeft.modifiers == .control)
+            #expect(modifiedLeft.modifiers == [.control, .option])
             let sideButton = MouseShortcut(button: 4, modifiers: [.option, .shift])
             #expect(store.assign(sideButton, to: .place) == nil)
             #expect(MouseShortcutBindings(defaults: defaults).place == sideButton)

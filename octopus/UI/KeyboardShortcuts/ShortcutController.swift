@@ -26,6 +26,7 @@ extension KeyboardShortcuts.Name {
     static let showRadialWindows = Self("showRadialWindows", default: .init(.space, modifiers: [.control, .option]))
     static let moveWindowLeftMonitor = Self("moveWindowLeftMonitor", default: .init(.leftArrow, modifiers: [.control, .shift]))
     static let moveWindowRightMonitor = Self("moveWindowRightMonitor", default: .init(.rightArrow, modifiers: [.control, .shift]))
+    static let showWindowMenu = Self("showWindowMenu", default: .init(.space, modifiers: [.shift]))
 
     static let bindShortcuts: [KeyboardShortcuts.Name] = (0...9).map { number in
         Self("bind\(number)")
@@ -68,7 +69,7 @@ enum WindowMonitorShortcuts {
         }
     }
 
-    static let names: [KeyboardShortcuts.Name] = [.moveWindowLeftMonitor, .moveWindowRightMonitor, .showRadialWindows]
+    static let names: [KeyboardShortcuts.Name] = [.moveWindowLeftMonitor, .moveWindowRightMonitor, .showRadialWindows, .showWindowMenu]
         + KeyboardShortcuts.Name.bindShortcuts + KeyboardShortcuts.Name.activateShortcuts
         + KeyboardShortcuts.Name.profileShortcuts + KeyboardShortcuts.Name.bindKeypadShortcuts
         + KeyboardShortcuts.Name.activateKeypadShortcuts + KeyboardShortcuts.Name.profileKeypadShortcuts

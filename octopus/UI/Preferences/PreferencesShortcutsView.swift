@@ -29,6 +29,7 @@ struct PreferencesShortcutsView: View {
     @State private var monitorShortcutConflict = false
     @StateObject private var radialSettings = RadialWindowSettings.shared
     @State private var radialError: String?
+    @State private var windowMenuError: String?
     private struct ShortcutAssignment {
         let name: KeyboardShortcuts.Name
         let shortcut: KeyboardShortcuts.Shortcut
@@ -77,6 +78,23 @@ struct PreferencesShortcutsView: View {
             .help("Remove this shortcut and return the key combination to other apps")
             .accessibilityLabel("Disable \(title.lowercased()) shortcut")
         }
+    }
+
+    // Row name with a one-line explanation of what the modifier does.
+    private func modifierLabel(_ title: String, detail: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(verbatim: title)
+            Text(detail)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(minWidth: 150, maxWidth: 240, alignment: .leading)
+    }
+
+    // ⇧Space is also typed in text fields, so warn while it is the window menu shortcut.
+    private var windowMenuUsesTypingShortcut: Bool {
+        KeyboardShortcuts.getShortcut(for: .showWindowMenu) == KeyboardShortcuts.Shortcut(.space, modifiers: [.shift])
     }
 
     private func sidebarNumberModifier(_ flag: NSEvent.ModifierFlags, name: String) -> some View {
@@ -167,6 +185,31 @@ struct PreferencesShortcutsView: View {
     var body: some View {
         Form {
             Section {
+                HStack {
+                    Text(ShortcutPreferenceStrings.windowMenuTitle).frame(maxWidth: .infinity, alignment: .leading)
+                    KeyboardShortcutRecorder(name: .showWindowMenu, onRecord: { saveShortcut($0, for: .showWindowMenu) },
+                                             onError: { windowMenuError = $0 })
+                        .frame(width: 135, height: 26)
+                        .accessibilityLabel(ShortcutPreferenceStrings.windowMenuTitle)
+                    Button("Disable") {
+                        windowMenuError = saveShortcut(nil, for: .showWindowMenu)
+                    }
+                    .help("Remove this shortcut and return the key combination to other apps")
+                }
+                Text(ShortcutPreferenceStrings.windowMenuDetail)
+                    .font(.caption).foregroundStyle(.secondary)
+                if windowMenuUsesTypingShortcut {
+                    Text(ShortcutPreferenceStrings.windowMenuTypingWarning)
+                        .font(.caption).foregroundStyle(.orange)
+                }
+                if let windowMenuError {
+                    Text(windowMenuError).font(.caption).foregroundStyle(.red)
+                }
+            } header: {
+                Text(ShortcutPreferenceStrings.windowMenuSection)
+            }
+
+            Section {
                 Button("Reset keyboard modifiers") {
                     showingResetConfirmation = true
                 }
@@ -188,8 +231,7 @@ struct PreferencesShortcutsView: View {
                     Divider()
 
                     GridRow {
-                        Text(verbatim: "Switch app")
-                            .frame(minWidth: 150, alignment: .leading)
+                        modifierLabel("Switch app", detail: ShortcutPreferenceStrings.switchAppDetail)
                         Toggle("", isOn: $modifierManager.activateControl).toggleStyle(.checkbox)
                         Toggle("", isOn: $modifierManager.activateOption).toggleStyle(.checkbox)
                         Toggle("", isOn: $modifierManager.activateShift).toggleStyle(.checkbox)
@@ -197,8 +239,7 @@ struct PreferencesShortcutsView: View {
                     }
 
                     GridRow {
-                        Text(verbatim: "Open workspace")
-                            .frame(minWidth: 150, alignment: .leading)
+                        modifierLabel("Open workspace", detail: ShortcutPreferenceStrings.openWorkspaceDetail)
                         Toggle("", isOn: $modifierManager.profileControl).toggleStyle(.checkbox)
                         Toggle("", isOn: $modifierManager.profileOption).toggleStyle(.checkbox)
                         Toggle("", isOn: $modifierManager.profileShift).toggleStyle(.checkbox)
@@ -206,16 +247,14 @@ struct PreferencesShortcutsView: View {
                     }
 
                     GridRow {
-                        Text(verbatim: "Bind app")
-                            .frame(minWidth: 150, alignment: .leading)
+                        modifierLabel("Bind app", detail: ShortcutPreferenceStrings.bindAppDetail)
                         Toggle("", isOn: $modifierManager.bindControl).toggleStyle(.checkbox)
                         Toggle("", isOn: $modifierManager.bindOption).toggleStyle(.checkbox)
                         Toggle("", isOn: $modifierManager.bindShift).toggleStyle(.checkbox)
                         Toggle("", isOn: $modifierManager.bindCommand).toggleStyle(.checkbox)
                     }
                     GridRow {
-                        Text(verbatim: "Sidebar apps")
-                            .frame(minWidth: 150, alignment: .leading)
+                        modifierLabel("Sidebar apps", detail: ShortcutPreferenceStrings.sidebarAppsDetail)
                         sidebarNumberModifier(.control, name: "Control")
                         sidebarNumberModifier(.option, name: "Option")
                         sidebarNumberModifier(.shift, name: "Shift")
@@ -223,8 +262,7 @@ struct PreferencesShortcutsView: View {
                     }
                     .help("Use these modifiers with 1–9 or 0 for sidebar apps; enable number shortcuts in Sidebar settings.")
                     GridRow {
-                        Text(verbatim: "Desktop map")
-                            .frame(minWidth: 150, alignment: .leading)
+                        modifierLabel("Desktop map", detail: ShortcutPreferenceStrings.desktopMapDetail)
                         desktopMapModifier(.control, name: "Control")
                         desktopMapModifier(.option, name: "Option")
                         desktopMapModifier(.shift, name: "Shift")
@@ -350,6 +388,21 @@ struct PreferencesShortcutsView: View {
                     Text(mouseShortcutError).font(.caption).foregroundStyle(.red)
                 }
                 HStack {
+                    Text(ShortcutPreferenceStrings.appMenuTitle).frame(width: 155, alignment: .leading)
+                    Picker(ShortcutPreferenceStrings.appMenuTitle, selection: Binding(
+                        get: { mouseShortcuts.appMenuButton },
+                        set: { mouseShortcuts.setAppMenuButton($0) }
+                    )) {
+                        ForEach(SidebarAppMenuButton.allCases, id: \.self) { Text($0.title).tag($0) }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.segmented)
+                    .frame(maxWidth: 280)
+                    Spacer(minLength: 0)
+                }
+                Text(ShortcutPreferenceStrings.appMenuDetail)
+                    .font(.caption).foregroundStyle(.secondary)
+                HStack {
                     Text("Snap to corners while dragging").frame(width: 155, alignment: .leading)
                     cornerModifier(.control, symbol: "⌃", name: "Control")
                     cornerModifier(.option, symbol: "⌥", name: "Option (Alt)")
@@ -409,6 +462,7 @@ struct PreferencesShortcutsView: View {
             Button("Use Anyway") {
                 let error = saveShortcut(assignment.shortcut, for: assignment.name, allowingSystemConflict: true)
                 if assignment.name == .showRadialWindows { radialError = error }
+                else if assignment.name == .showWindowMenu { windowMenuError = error }
                 else { monitorShortcutError = error }
             }
         } message: { assignment in

@@ -59,6 +59,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var shortcutManager: ShortcutController!
     private var windowManager: PreferencesController!
     private var sidebarController: SidebarController!
+    private var centerWindowMenu: CenterWindowMenuController!
     private let radialController = RadialWindowController()
     let windowLayoutController = WindowLayoutController()
     let windowTabGroupController = WindowTabGroupController()
@@ -98,6 +99,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             guard let sidebar = self?.sidebarController else { completion(false); return nil }
             return sidebar.focusWindow(id, completion: completion)
         }
+
+        // Both window menus read workspaces from the same profiles.
+        let profileManager: ProfileManager = AppDelegate.profileManager
+        cycleController.windowMenuProfiles = { [weak profileManager] in
+            (profileManager?.profiles ?? [], profileManager?.currentProfileID)
+        }
+        centerWindowMenu = CenterWindowMenuController(profileManager: profileManager)
+        centerWindowMenu.canPresent = { [weak self] in
+            guard let self else { return false }
+            return !self.cycleController.isKeyboardSwitcherVisible && !self.sidebarController.hasActiveInteraction
+        }
+        centerWindowMenu.start()
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -105,6 +118,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if let appearanceObserver { NotificationCenter.default.removeObserver(appearanceObserver) }
         appearanceObserver = nil
         sidebarController?.stop()
+        centerWindowMenu?.stop()
         shortcutManager?.stop()
         windowTabGroupController.stop()
         windowLayoutController.stop()

@@ -452,6 +452,7 @@ final class SidebarWindowInventory: ObservableObject {
         DispatchQueue.main.async { self?.refresh() }
     }, tracksFrontmostFocus: tracksFrontmostFocus)
     private var notifications: [NSObjectProtocol] = []
+    private var pinnedAppsObserver: NSObjectProtocol?
     private var permissionTimer: Timer?
     private var presentationObserver: NSKeyValueObservation?
     private var pendingRefresh: DispatchWorkItem?
@@ -601,6 +602,10 @@ final class SidebarWindowInventory: ObservableObject {
         if tracksFrontmostFocus, let pid = NSWorkspace.shared.frontmostApplication?.processIdentifier {
             reader.queue.async { [reader] in reader.recordFrontmostWindow(pid: pid) }
         }
+        // Pinning or unpinning adds or removes a placeholder entry.
+        pinnedAppsObserver = NotificationCenter.default.addObserver(
+            forName: SidebarPinnedApps.didChange, object: nil, queue: .main
+        ) { [weak self] _ in Task { @MainActor in self?.refresh() } }
         refresh()
     }
 
@@ -616,6 +621,8 @@ final class SidebarWindowInventory: ObservableObject {
         refreshCompletions.removeAll()
         notifications.forEach { NSWorkspace.shared.notificationCenter.removeObserver($0) }
         notifications.removeAll()
+        if let pinnedAppsObserver { NotificationCenter.default.removeObserver(pinnedAppsObserver) }
+        pinnedAppsObserver = nil
         permissionTimer?.invalidate()
         permissionTimer = nil
         presentationObserver = nil
@@ -662,8 +669,10 @@ final class SidebarWindowInventory: ObservableObject {
                 if desktop == self.desktopGeneration {
                     self.hasPermission = snapshot.hasPermission
                     self.recentWindows = snapshot.recency
-                    self.entries = Self.entries(for: applications, windowEntries: snapshot.entries, scope: scope,
-                                                displayIdentifier: displayIdentifier)
+                    self.entries = SidebarPinnedApps.appendingPlaceholders(
+                        to: Self.entries(for: applications, windowEntries: snapshot.entries, scope: scope,
+                                         displayIdentifier: displayIdentifier),
+                        displayIdentifier: displayIdentifier)
                     self.fullScreenDisplays = snapshot.fullScreenDisplays
                     self.desktops = snapshot.desktops.filter {
                         displayIdentifier == nil || $0.displayIdentifier == displayIdentifier
