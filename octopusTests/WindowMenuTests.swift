@@ -30,7 +30,8 @@ struct WindowMenuTests {
         let first = Profile(name: "first", profileNumber: 1)
         let unnumbered = Profile(name: "  zed ")
         let workspaces = WindowMenuCatalogue.workspaces(from: [unnumbered, second, first])
-        #expect(workspaces.map(\.label) == ["1", "2", "Z"])
+        // Unnumbered profiles are labelled by switch position, not by name initial.
+        #expect(workspaces.map(\.label) == ["1", "2", "3"])
         #expect(workspaces[1].bundleIdentifiers == ["b", "c"])
     }
 
@@ -51,6 +52,17 @@ struct WindowMenuTests {
             running: [runningApp(1, "a", windows: []), runningApp(2, nil, windows: [5])],
             focusPID: nil, installed: installed)
         #expect(content.apps.map(\.id) == ["pid:2"])
+    }
+
+    @Test func openAppsFollowWorkspaceAppsOnlyWhenEnabled() {
+        let running = [runningApp(1, "a", windows: [1]), runningApp(2, "x", windows: [2]), runningApp(3, "y", windows: [])]
+        let workspaceOnly = WindowMenuCatalogue.content(
+            workspaces: [workspace(["a"])], selectedWorkspaceID: nil, running: running, focusPID: nil, installed: installed)
+        #expect(workspaceOnly.apps.map(\.id) == ["a"])
+        let withOpenApps = WindowMenuCatalogue.content(
+            workspaces: [workspace(["a"])], selectedWorkspaceID: nil, running: running, focusPID: nil,
+            includesOpenApps: true, installed: installed)
+        #expect(withOpenApps.apps.map(\.id) == ["a", "x"])
     }
 
     @Test func recentAppsSkipRunningAppsAndStopAtTheLimit() {
@@ -98,6 +110,16 @@ struct WindowMenuTests {
         #expect(three - base == 3 * WindowMenuMetrics.windowRowHeight - WindowMenuMetrics.emptyListHeight)
         #expect(WindowMenuLayout.hasMoreWindows(WindowMenuMetrics.sidebarMaximumRows + 1, isCenter: false))
         #expect(!WindowMenuLayout.hasMoreWindows(WindowMenuMetrics.sidebarMaximumRows, isCenter: false))
+    }
+
+    @Test func sidebarPanelKeepsItsTopBesideTheIconForAnyHeight() {
+        let screen = CGRect(x: 0, y: 0, width: 1440, height: 900)
+        let icon = CGRect(x: 1390, y: 500, width: 40, height: 40)
+        let short = WindowMenuLayout.sidebarPanelFrame(size: CGSize(width: 300, height: 150), icon: icon, screen: screen, side: .right)
+        let tall = WindowMenuLayout.sidebarPanelFrame(size: CGSize(width: 300, height: 380), icon: icon, screen: screen, side: .right)
+        #expect(short.maxY == tall.maxY)
+        #expect(short.maxY > icon.maxY)
+        #expect(short.maxX <= icon.minX)
     }
 }
 

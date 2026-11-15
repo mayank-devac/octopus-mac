@@ -49,17 +49,20 @@ enum WindowMenuCatalogue {
     ////////////////////
     //// Menu content
     /// `focusPID` is the hovered sidebar app (or frontmost app for the centre menu);
-    // it is added to the strip when the workspace does not include it.
+    /// it is added to the strip when the workspace does not include it.
+    // `includesOpenApps` appends every other running app with windows after the workspace apps.
 
     static func content(workspaces: [WindowMenuWorkspace], selectedWorkspaceID: UUID?,
                         running: [WindowMenuRunningApp], focusPID: pid_t?,
+                        includesOpenApps: Bool = false,
                         recentBundleIdentifiers: [String] = [],
                         recentLimit: Int = WindowMenuMetrics.recentAppLimit,
                         installed: (String) -> WindowMenuInstalledApp?) -> WindowMenuContent {
         let workspace = workspaces.first { $0.id == selectedWorkspaceID } ?? workspaces.first
         var apps = workspaceApps(workspace?.bundleIdentifiers ?? [], running: running, installed: installed)
-        if apps.isEmpty {
-            apps = running.filter { !$0.windows.isEmpty }.map(app(for:))
+        if apps.isEmpty || includesOpenApps {
+            let shownPIDs = Set(apps.compactMap(\.pid))
+            apps += running.filter { !$0.windows.isEmpty && !shownPIDs.contains($0.pid) }.map(app(for:))
         }
         if let focusPID, !apps.contains(where: { $0.pid == focusPID }),
            let focused = running.first(where: { $0.pid == focusPID }) {

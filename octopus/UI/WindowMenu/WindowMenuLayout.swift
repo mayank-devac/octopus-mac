@@ -14,9 +14,12 @@ enum WindowMenuLayout {
         height += headerHeight(workspaceCount: content.workspaces.count)
         height += Metrics.sectionSpacing
         height += listHeight(windowCount: content.windows.count, isCenter: isCenter, status: status)
-        let width = isCenter ? Metrics.centerWidth
+        return CGSize(width: cardWidth(content: content, isCenter: isCenter), height: height)
+    }
+
+    static func cardWidth(content: WindowMenuContent, isCenter: Bool) -> CGFloat {
+        isCenter ? Metrics.centerWidth
             : sidebarCardWidth(appCount: content.apps.count, workspaceCount: content.workspaces.count)
-        return CGSize(width: width, height: height)
     }
 
     /// The workspace switch appears only with two or more workspaces.
@@ -65,6 +68,31 @@ enum WindowMenuLayout {
         width += CGFloat(cells) * Metrics.appCellSize + CGFloat(max(0, cells - 1)) * Metrics.appCellSpacing
         return min(max(width, Metrics.sidebarMinimumWidth), Metrics.sidebarWidth)
     }
+
+    /// Width of the workspace app strip's scroll area, so short app lists can
+    /// be pushed against the side that faces the sidebar.
+    static func stripWidth(content: WindowMenuContent, isCenter: Bool, reservingChevron: Bool) -> CGFloat {
+        var width = cardWidth(content: content, isCenter: isCenter) - Metrics.padding * 2
+        if showsWorkspaceSwitch(workspaceCount: content.workspaces.count) { width -= Metrics.workspaceWidth + Metrics.sectionSpacing }
+        if reservingChevron { width -= Metrics.stripChevronWidth }
+        return max(0, width)
+    }
+
+    ////////////////////
+    //// Sidebar panel frame
+    /// The card is pinned by its top rather than centred on the icon: the app
+    /// strip stays level with the hovered icon (lifted by `sidebarStripLift`)
+    // however many window rows the list shows, so the menu never jumps.
+
+    static func sidebarPanelFrame(size: CGSize, icon: CGRect, screen: CGRect, side: SidebarSide) -> CGRect {
+        let beside = SidebarLayout.menuFrame(size: size, icon: icon, screen: screen, side: side)
+        let top = icon.midY + Metrics.sidebarStripLift + Metrics.appStripHeight / 2 + Metrics.padding + MenuShadowMargin.size
+        let y = min(max(top - beside.height, screen.minY), screen.maxY - beside.height)
+        return CGRect(x: beside.minX, y: y, width: beside.width, height: beside.height)
+    }
+
+    //// Only y changes; x and screen clamping come from SidebarLayout.menuFrame.
+    //////////////////
 }
 
 //// Keep in step with the block heights in WindowMenuView.

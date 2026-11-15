@@ -23,6 +23,17 @@ struct WindowMenuAppStrip: View {
             isCenter: state.isCenter, workspaceCount: state.content.workspaces.count, reservingChevron: false)
     }
 
+    /// With the sidebar on the right, apps sit against the trailing edge so they are a short reach from it.
+    private var alignsTrailing: Bool { kind == .workspace && state.appearEdge == .trailing }
+
+    private var contentAlignment: Alignment { alignsTrailing ? .trailing : .leading }
+
+    /// Filling the strip lets a short app list be pushed to the trailing edge; overflowing lists still scroll.
+    private var minimumContentWidth: CGFloat? {
+        guard alignsTrailing else { return nil }
+        return WindowMenuLayout.stripWidth(content: state.content, isCenter: state.isCenter, reservingChevron: overflows)
+    }
+
     var body: some View {
         HStack(spacing: 0) {
             if apps.isEmpty {
@@ -39,7 +50,7 @@ struct WindowMenuAppStrip: View {
                             }
                         }
                         .padding(.horizontal, 2)
-                        .frame(maxHeight: .infinity)
+                        .frame(minWidth: minimumContentWidth, maxHeight: .infinity, alignment: contentAlignment)
                     }
                     .onChange(of: state.scrollRequest) { _, request in
                         guard let request, apps.contains(where: { target(for: $0) == request.target }) else { return }

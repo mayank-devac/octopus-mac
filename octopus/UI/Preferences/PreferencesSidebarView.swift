@@ -8,6 +8,7 @@ struct PreferencesSidebarView: View {
     @AppStorage(SidebarNumberShortcuts.modifiersKey) private var numberShortcutModifierMask = Int(SidebarNumberShortcuts.defaultModifiers.rawValue)
     @AppStorage("sidebarMonitor") private var monitor = "primary"
     @AppStorage(PreferenceKeys.sidebarWindowMenuStyle) private var windowMenuStyle = SidebarWindowMenuStyle.defaultStyle
+    @AppStorage(PreferenceKeys.sidebarWindowMenuShowsOpenApps) private var windowMenuShowsOpenApps = false
     @State private var screens = NSScreen.screens
     @AppStorage(SidebarSettings.settingsSelectedDisplayKey) private var selectedDisplayID = ""
     @State private var configuration = SidebarConfiguration()
@@ -216,6 +217,9 @@ struct PreferencesSidebarView: View {
                     }
                 }
                 .help(WindowMenuStrings.styleHelp)
+                Toggle(WindowMenuStrings.showsOpenAppsTitle, isOn: $windowMenuShowsOpenApps)
+                    .disabled(windowMenuStyle != .modern)
+                    .help(WindowMenuStrings.showsOpenAppsHelp)
                 Toggle("Show menu for apps with one window", isOn: setting(\.showSingleWindowMenu))
                     .disabled(!editingEnabled || windowMenuStyle == .modern)
                     .help(windowMenuStyle == .modern ? WindowMenuStrings.singleWindowModernHelp

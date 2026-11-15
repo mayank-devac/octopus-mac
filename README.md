@@ -1,8 +1,8 @@
 # octopus
 
 <p align="center">
-  <a href="octopus/assets/app.gif">
-    <img src="octopus/assets/app.gif" width="100%" alt="Octopus app demo">
+  <a href="docs/assets/app.gif">
+    <img src="docs/assets/app.gif" width="100%" alt="Octopus app demo">
   </a>
 </p>
 
@@ -39,51 +39,51 @@ Click any screenshot for a closer look.
 <table>
   <tr>
     <td width="50%" align="center" valign="top">
-      <a href="octopus/assets/sidebar.png"><img src="octopus/assets/sidebar.png" width="80" alt="Octopus sidebar with app icons and number bindings"></a>
+      <a href="docs/assets/sidebar.png"><img src="docs/assets/sidebar.png" width="80" alt="Octopus sidebar with app icons and number bindings"></a>
       <p><strong>🧭 Window sidebar</strong><br>Keep your apps and windows within reach.</p>
     </td>
     <td width="50%" align="center" valign="top">
-      <a href="octopus/assets/windows.png"><img src="octopus/assets/windows.png" width="180" alt="Sidebar menu listing multiple Brave windows"></a>
+      <a href="docs/assets/windows.png"><img src="docs/assets/windows.png" width="180" alt="Sidebar menu listing multiple Brave windows"></a>
       <p><strong>🪟 Find a window</strong><br>Pick a window, minimise it, or close it from the sidebar.</p>
     </td>
   </tr>
   <tr>
     <td width="50%" align="center" valign="top">
-      <a href="octopus/assets/mac%20notch.png"><img src="octopus/assets/mac%20notch.png" width="400" alt="Horizontal Octopus app bar beneath the MacBook notch"></a>
+      <a href="docs/assets/mac%20notch.png"><img src="docs/assets/mac%20notch.png" width="400" alt="Horizontal Octopus app bar beneath the MacBook notch"></a>
       <p><strong>💻 Mac Notch mode</strong><br>Keep your app bar just below the notch.</p>
     </td>
     <td width="50%" align="center" valign="top">
-      <a href="octopus/assets/preferences.png"><img src="octopus/assets/preferences.png" width="240" alt="Sidebar preferences for displays, visibility, position, and appearance"></a>
+      <a href="docs/assets/preferences.png"><img src="docs/assets/preferences.png" width="240" alt="Sidebar preferences for displays, visibility, position, and appearance"></a>
       <p><strong>🎨 Make it yours</strong><br>Choose displays, sidebar position, spacing, and visibility.</p>
     </td>
   </tr>
   <tr>
     <td width="50%" align="center" valign="top">
-      <a href="octopus/assets/snap.png"><img src="octopus/assets/snap.png" width="400" alt="Blue window placement preview covering the available screen area"></a>
+      <a href="docs/assets/snap.png"><img src="docs/assets/snap.png" width="400" alt="Blue window placement preview covering the available screen area"></a>
       <p><strong>🖱️ Drag to position</strong><br>Preview where your window will go before dropping it.</p>
     </td>
     <td width="50%" align="center" valign="top">
-      <a href="octopus/assets/rightsnap.png"><img src="octopus/assets/rightsnap.png" width="400" alt="Blue snap preview covering the right half of the display"></a>
+      <a href="docs/assets/rightsnap.png"><img src="docs/assets/rightsnap.png" width="400" alt="Blue snap preview covering the right half of the display"></a>
       <p><strong>🧲 Snap to a half (auto-snap)</strong><br>drag app icon from sidebar and Place a window on one side</p>
     </td>
   </tr>
   <tr>
     <td width="50%" align="center" valign="top">
-      <a href="octopus/assets/darg%20to%20snap%20.png"><img src="octopus/assets/darg%20to%20snap%20.png" width="300" alt="Window layout preferences for automatic adjustment, monitor moves, and snap areas"></a>
+      <a href="docs/assets/darg%20to%20snap%20.png"><img src="docs/assets/darg%20to%20snap%20.png" width="300" alt="Window layout preferences for automatic adjustment, monitor moves, and snap areas"></a>
       <p><strong>🤝 Window layouts</strong><br>Adjust other windows after snapping, or pair two app windows.</p>
     </td>
     <td width="50%" align="center" valign="top">
-      <a href="octopus/assets/shortcuts.png"><img src="octopus/assets/shortcuts.png" width="320" alt="Keyboard and mouse shortcut settings for monitor moves and window actions"></a>
+      <a href="docs/assets/shortcuts.png"><img src="docs/assets/shortcuts.png" width="320" alt="Keyboard and mouse shortcut settings for monitor moves and window actions"></a>
       <p><strong>⌨️ Your shortcuts</strong><br>Customise keyboard and mouse actions for windows and monitors.</p>
     </td>
   </tr>
   <tr>
     <td width="50%" align="center" valign="top">
-      <a href="octopus/assets/desktops.png"><img src="octopus/assets/desktops.png" width="200" alt="Desktop selection popup while dragging a window from the sidebar"></a>
+      <a href="docs/assets/desktops.png"><img src="docs/assets/desktops.png" width="200" alt="Desktop selection popup while dragging a window from the sidebar"></a>
       <p><strong>🌐 Move between Desktops</strong><br>Send a window to another macOS Desktop from the sidebar.</p>
     </td>
     <td width="50%" align="center" valign="top">
-      <a href="octopus/assets/open.png"><img src="octopus/assets/open.png" width="400" alt="Desktop overview with sidebar apps grouped under two monitor headings"></a>
+      <a href="docs/assets/open.png"><img src="docs/assets/open.png" width="400" alt="Desktop overview with sidebar apps grouped under two monitor headings"></a>
       <p><strong>🖥️ Multiple monitors</strong><br>See your running apps grouped by display.</p>
     </td>
   </tr>

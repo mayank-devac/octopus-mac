@@ -38,7 +38,6 @@
 		C0F0C9712F3285B300564BA6 /* Exceptions for "octopus" folder in "octopus" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
-				assets,
 				Info.plist,
 			);
 			target = C0DA3E322E74664400F50FB1 /* octopus */;

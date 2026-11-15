@@ -16,6 +16,8 @@ final class WindowMenuPresenter {
     // Inputs
     var profiles: () -> (profiles: [Profile], currentID: UUID?) = { ([], nil) }
     var recentBundleIdentifiers: () -> [String] = { [] }
+    /// True adds every open app after the workspace apps; read on each rebuild so the setting applies live.
+    var includesOpenApps: () -> Bool = { false }
 
     // Outputs
     var onActivateWindow: (SidebarWindowID) -> Void = { _ in }
@@ -200,6 +202,7 @@ final class WindowMenuPresenter {
             workspaces: WindowMenuCatalogue.workspaces(from: source.profiles),
             selectedWorkspaceID: selectedWorkspaceID ?? source.currentID,
             running: running, focusPID: focusPID,
+            includesOpenApps: includesOpenApps(),
             recentBundleIdentifiers: isCenter ? recentBundleIdentifiers() : [],
             installed: WindowMenuSource.installedApp)
     }

@@ -20,6 +20,10 @@ enum WindowMenuMetrics {
     static let shadowRadius: CGFloat = 14
     static let shadowOffsetY: CGFloat = 6
 
+    /// Beside a sidebar icon, the app strip's centre sits this far above the hovered icon's centre.
+    /// The card is pinned by its top, so this one value sets the menu's height for every window count.
+    static let sidebarStripLift: CGFloat = 34
+
     /// The centre menu sits this fraction of the screen height above centre, like Spotlight.
     static let centerVerticalBias: CGFloat = 0.08
 
@@ -36,8 +40,9 @@ enum WindowMenuMetrics {
     static let runningRingCornerRatio: CGFloat = 0.25
     static let stripChevronWidth: CGFloat = 18
     static let highlightedAppScale: CGFloat = 1.08
-    /// The centre menu's top strip shows this many recently quit apps.
-    static let recentAppLimit = 6
+    /// The centre menu's top strip shows this many recently quit apps: one full row
+    /// of the 420pt card (8 × 42 + 7 × 6 = 378pt fits the tray's 384pt).
+    static let recentAppLimit = 8
 
     // Workspace switch
     static let workspaceWidth: CGFloat = 24

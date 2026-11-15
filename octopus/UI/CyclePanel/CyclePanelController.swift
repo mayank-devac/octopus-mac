@@ -187,6 +187,7 @@ final class CyclePanelController: NSObject {
             self.onSidebarDrag?(id, title, source, event)
         }
         windowMenu.onLayoutChange = { [weak self] in self?.updatePanelSize() }
+        windowMenu.includesOpenApps = { UserDefaults.standard.bool(forKey: PreferenceKeys.sidebarWindowMenuShowsOpenApps) }
     }
 
     private func setModernMenuVisible(_ modern: Bool) {
@@ -345,8 +346,8 @@ final class CyclePanelController: NSObject {
             let size = MenuShadowMargin.panelSize(card: windowMenu.cardSize, facing: windowMenu.state.appearEdge)
             let frame = anchor.bar.map {
                 SidebarLayout.notchMenuFrame(size: size, icon: anchor.icon, bar: $0, screen: anchor.screen, belowIcon: true)
-            } ?? SidebarLayout.menuFrame(size: size, icon: MenuShadowMargin.clearedIcon(anchor.icon),
-                                         screen: anchor.screen, side: anchor.side)
+            } ?? WindowMenuLayout.sidebarPanelFrame(size: size, icon: MenuShadowMargin.clearedIcon(anchor.icon),
+                                                    screen: anchor.screen, side: anchor.side)
             if panel.frame != frame { panel.setFrame(frame, display: true, animate: false) }
             return
         }

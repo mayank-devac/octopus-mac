@@ -483,7 +483,8 @@ struct SidebarTests {
     @MainActor @Test func windowPopupBackdropHasTransparentRoundedCorners() throws {
         let panel = CyclePanel(contentRect: CGRect(x: 0, y: 0, width: 280, height: 120))
         defer { panel.close() }
-        let effect = try #require(panel.contentView as? NSVisualEffectView)
+        // The backdrop sits inside a plain container so window menus can hide it alone.
+        let effect = try #require(panel.contentView?.subviews.first as? NSVisualEffectView)
         let mask = try #require(effect.maskImage)
         let pixels = try #require(mask.tiffRepresentation.flatMap(NSBitmapImageRep.init(data:)))
         #expect(try #require(pixels.colorAt(x: 0, y: 0)).alphaComponent == 0)
