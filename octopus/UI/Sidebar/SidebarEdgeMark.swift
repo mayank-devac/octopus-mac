@@ -36,7 +36,7 @@ enum SidebarEdgeMark {
     ////////////////////
     //// Custom color
     /// The chosen color is stored as "#RRGGBB" so profiles and preferences stay plain text.
-    // Anything unreadable falls back to the automatic, appearance-based color.
+    // Anything unreadable falls back to the automatic macOS accent color.
 
     static func color(hex: String?) -> NSColor? {
         guard let hex, hex.count == 7, hex.hasPrefix("#"), let value = UInt32(hex.dropFirst(), radix: 16) else { return nil }
@@ -44,8 +44,9 @@ enum SidebarEdgeMark {
                        blue: CGFloat(value & 0xFF) / 255, alpha: 1)
     }
 
+    // Palette and crayon picks are catalog colors, which cannot convert to sRGB until resolved to components.
     static func hex(_ color: NSColor) -> String? {
-        guard let rgb = color.usingColorSpace(.sRGB) else { return nil }
+        guard let rgb = color.usingType(.componentBased)?.usingColorSpace(.sRGB) else { return nil }
         func byte(_ component: CGFloat) -> Int { Int((min(max(component, 0), 1) * 255).rounded()) }
         return String(format: "#%02X%02X%02X", byte(rgb.redComponent), byte(rgb.greenComponent), byte(rgb.blueComponent))
     }
@@ -136,7 +137,7 @@ final class SidebarEdgeMarkController {
     }
 }
 
-// Draws the line with faded ends and a soft blue glow. It never takes pointer input.
+// Draws the line with faded ends and a soft glow. It never takes pointer input.
 final class SidebarEdgeMarkView: NSView {
     private let line = CAGradientLayer()
     private var side: SidebarSide = .right
@@ -159,6 +160,9 @@ final class SidebarEdgeMarkView: NSView {
         line.shadowRadius = 3
         applyAppearanceColors()
         layer?.addSublayer(line)
+        // Changing the accent in System Settings does not change the appearance, so listen for it directly.
+        NotificationCenter.default.addObserver(self, selector: #selector(systemColorsDidChange),
+                                               name: NSColor.systemColorsDidChangeNotification, object: nil)
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
@@ -171,17 +175,23 @@ final class SidebarEdgeMarkView: NSView {
     }
 
     //////////////////// Appearance colors
-    /// A chosen color wins; otherwise a white mark in dark mode and a dark mark in light mode.
-    // Colors are rebuilt whenever the device appearance or the chosen color changes.
+    /// A chosen color wins; otherwise the mark uses the macOS accent (theme) color.
+    // Colors are rebuilt whenever the appearance, the accent color or the chosen color changes.
+    // The accent is dynamic, so its cgColor is resolved under this view's appearance.
     private func applyAppearanceColors() {
-        let isDark = effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-        let base = customColor ?? (isDark ? NSColor.white : NSColor(srgbRed: 0.08, green: 0.08, blue: 0.1, alpha: 1))
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        line.colors = [base.withAlphaComponent(0), base.withAlphaComponent(0.9), base,
-                       base.withAlphaComponent(0.9), base.withAlphaComponent(0)].map(\.cgColor)
-        line.shadowColor = base.cgColor
-        CATransaction.commit()
+        let base = customColor ?? NSColor.controlAccentColor
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            line.colors = [base.withAlphaComponent(0), base.withAlphaComponent(0.9), base,
+                           base.withAlphaComponent(0.9), base.withAlphaComponent(0)].map(\.cgColor)
+            line.shadowColor = base.cgColor
+            CATransaction.commit()
+        }
+    }
+
+    @objc private func systemColorsDidChange() {
+        applyAppearanceColors()
     }
     //// Panel appearance follows the system, so no manual override is needed.
     //////////////////

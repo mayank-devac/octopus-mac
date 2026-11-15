@@ -1936,6 +1936,9 @@ struct SidebarTests {
     @Test func edgeMarkColorRoundTripsThroughHexAndRejectsBadValues() {
         let color = SidebarEdgeMark.color(hex: "#FF8000")
         #expect(color.flatMap(SidebarEdgeMark.hex) == "#FF8000")
+        // Palette picks arrive as catalog or gray colors and must still convert.
+        #expect(SidebarEdgeMark.hex(.systemRed) != nil)
+        #expect(SidebarEdgeMark.hex(NSColor(white: 1, alpha: 1)) == "#FFFFFF")
         #expect(SidebarEdgeMark.color(hex: nil) == nil)
         #expect(SidebarEdgeMark.color(hex: "FF8000") == nil)
         #expect(SidebarEdgeMark.color(hex: "#GG0000") == nil)
@@ -1944,7 +1947,7 @@ struct SidebarTests {
     @Test func edgeMarkBrightensNearItsEdgeAndHidesWhileTheSidebarIsShown() {
         let edge = CGRect(x: 1437, y: 200, width: 3, height: 400)
         func emphasis(_ point: CGPoint, available: Bool = true, shown: Bool = false,
-                      side: SidebarSide = .right, trigger: CGRect = edge) -> SidebarEdgeMark.Emphasis {
+                      side: SidebarSide = .right, trigger: CGRect = edge) -> SidebarEdgeMark.Emphasis { 
             SidebarEdgeMark.emphasis(available: available, sidebarShown: shown, pointer: point,
                                      edgeTrigger: trigger, side: side)
         }

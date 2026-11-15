@@ -70,8 +70,8 @@ struct PreferencesSidebarView: View {
 
     ////////////////////
     //// Edge mark color
-    /// Picking a color stores it as hex; the reset button clears it so the mark follows light and dark mode.
-    // Until a color is picked, the well shows the label color, close to the automatic mark.
+    /// Picking a color stores it as hex; the reset button clears it so the mark follows the macOS accent color.
+    // Until a color is picked, the well shows the accent color, matching the automatic mark.
 
     @ViewBuilder private var edgeMarkColorControls: some View {
         if configuration.autoHideEdgeMarkColor != nil {
@@ -79,11 +79,12 @@ struct PreferencesSidebarView: View {
                 Image(systemName: "arrow.counterclockwise")
             }
             .buttonStyle(.borderless)
-            .help("Use the automatic color: white in dark mode, dark in light mode.")
+            .help("Use the automatic color: the macOS accent color.")
         }
         ColorPicker("Edge mark color", selection: Binding(
-            get: { Color(nsColor: SidebarEdgeMark.color(hex: configuration.autoHideEdgeMarkColor) ?? .labelColor) },
-            set: { setting(\.autoHideEdgeMarkColor).wrappedValue = SidebarEdgeMark.hex(NSColor($0)) }
+            get: { Color(nsColor: SidebarEdgeMark.color(hex: configuration.autoHideEdgeMarkColor) ?? .controlAccentColor) },
+            // A color that cannot be read as RGB (e.g. an image pattern) keeps the current one rather than resetting it.
+            set: { if let hex = SidebarEdgeMark.hex(NSColor($0)) { setting(\.autoHideEdgeMarkColor).wrappedValue = hex } }
         ), supportsOpacity: false)
         .labelsHidden()
         .help("Color of the line on the screen edge where the hidden sidebar appears.")
