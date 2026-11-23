@@ -156,7 +156,8 @@ struct EmojiPickerView: View {
     }
 }
 
-/// One emoji button; highlights for keyboard selection and pointer hover.
+/// One emoji button; highlights for keyboard selection, grows slightly on hover
+/// and names itself in a tooltip when the pointer rests on it.
 private struct EmojiCell: View {
     let emoji: Emoji
     let isSelected: Bool
@@ -174,8 +175,12 @@ private struct EmojiCell: View {
                 .font(.system(size: 24))
                 .frame(width: 34, height: 34)
                 .background(RoundedRectangle(cornerRadius: 6).fill(highlight))
+                .scaleEffect(hovered == emoji ? 1.15 : 1)
+                .animation(.easeOut(duration: 0.12), value: hovered == emoji)
         }
         .buttonStyle(.plain)
+        // Native tooltip: appears after the pointer rests on the emoji.
+        .help(emoji.description.capitalized)
         .onHover { inside in
             if inside {
                 hovered = emoji
