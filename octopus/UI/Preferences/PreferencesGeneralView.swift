@@ -15,6 +15,7 @@ struct PreferencesGeneralView: View {
     @AppStorage("launchOnLogin") private var launchOnLogin = true
 //    @AppStorage("hideMenubarIcon") private var hideMenubarIcon = false
     @AppStorage("showActiveProfileInMenuBar") private var showActiveProfileInMenuBar = false
+    @AppStorage(EmojiPickerSettings.showMenuBarItemKey) private var showEmojiMenuBarItem = true
     @AppStorage("appearance") private var appearance = "system"
     @AppStorage("defaultNumberOrder") private var defaultNumberOrder = "rightHanded"
     @AppStorage("instantSwitch") private var instantSwitch = "never"
@@ -70,6 +71,7 @@ struct PreferencesGeneralView: View {
             Section {
 //                Toggle("Hide menubar icon", isOn: $hideMenubarIcon)
                 Toggle("Show active profile in menu bar", isOn: $showActiveProfileInMenuBar)
+                Toggle("Show emoji picker in menu bar", isOn: $showEmojiMenuBarItem)
                 Picker("Window menu display:", selection: $windowMenuDisplay) {
                     Text("Automatic").tag("automatic")
                     Text("Primary display").tag("primary")

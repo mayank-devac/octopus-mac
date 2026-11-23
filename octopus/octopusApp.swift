@@ -15,6 +15,7 @@ struct octopusApp: App {
     @StateObject private var profileManager: ProfileManager
     @StateObject private var sparkleConnector = SparkleConnector()
     @AppStorage("launchOnLogin") private var launchOnLogin = true
+    @AppStorage(EmojiPickerSettings.showMenuBarItemKey) private var showEmojiMenuBarItem = true
 
     init() {
         SidebarSettings.registerDefaults()
@@ -46,6 +47,11 @@ struct octopusApp: App {
         } label: {
             MenuBarLabel(profileManager: profileManager)
         }
+
+        MenuBarExtra("Emoji", systemImage: "face.smiling", isInserted: $showEmojiMenuBarItem) {
+            EmojiPickerView()
+        }
+        .menuBarExtraStyle(.window)
     }
 }
 
