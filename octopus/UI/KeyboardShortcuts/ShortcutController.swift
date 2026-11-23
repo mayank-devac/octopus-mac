@@ -69,7 +69,8 @@ enum WindowMonitorShortcuts {
         }
     }
 
-    static let names: [KeyboardShortcuts.Name] = [.moveWindowLeftMonitor, .moveWindowRightMonitor, .showRadialWindows, .showWindowMenu]
+    static let names: [KeyboardShortcuts.Name] = [.moveWindowLeftMonitor, .moveWindowRightMonitor, .showRadialWindows, .showWindowMenu,
+                                                  .showEmojiPicker]
         + KeyboardShortcuts.Name.bindShortcuts + KeyboardShortcuts.Name.activateShortcuts
         + KeyboardShortcuts.Name.profileShortcuts + KeyboardShortcuts.Name.bindKeypadShortcuts
         + KeyboardShortcuts.Name.activateKeypadShortcuts + KeyboardShortcuts.Name.profileKeypadShortcuts

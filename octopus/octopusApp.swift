@@ -15,7 +15,6 @@ struct octopusApp: App {
     @StateObject private var profileManager: ProfileManager
     @StateObject private var sparkleConnector = SparkleConnector()
     @AppStorage("launchOnLogin") private var launchOnLogin = true
-    @AppStorage(EmojiPickerSettings.showMenuBarItemKey) private var showEmojiMenuBarItem = true
 
     init() {
         SidebarSettings.registerDefaults()
@@ -47,11 +46,6 @@ struct octopusApp: App {
         } label: {
             MenuBarLabel(profileManager: profileManager)
         }
-
-        MenuBarExtra("Emoji", systemImage: "face.smiling", isInserted: $showEmojiMenuBarItem) {
-            EmojiPickerView()
-        }
-        .menuBarExtraStyle(.window)
     }
 }
 
@@ -67,6 +61,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var sidebarController: SidebarController!
     private var centerWindowMenu: CenterWindowMenuController!
     private let radialController = RadialWindowController()
+    private let emojiPickerController = EmojiPickerController()
     let windowLayoutController = WindowLayoutController()
     let windowTabGroupController = WindowTabGroupController()
     private var appearanceObserver: NSObjectProtocol?
@@ -119,10 +114,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             return !self.cycleController.isKeyboardSwitcherVisible && !self.sidebarController.hasActiveInteraction
         }
         centerWindowMenu.start()
+        emojiPickerController.start()
     }
 
     func applicationWillTerminate(_ notification: Notification) {
         radialController.stop()
+        emojiPickerController.stop()
         if let appearanceObserver { NotificationCenter.default.removeObserver(appearanceObserver) }
         appearanceObserver = nil
         sidebarController?.stop()
