@@ -5,6 +5,7 @@
 //  Emoji search, category filtering and recents ordering.
 //
 
+import AppKit
 import Testing
 @testable import octopus
 
@@ -40,5 +41,22 @@ struct EmojiPickerTests {
         let recents = EmojiPickerSettings.recents(adding: "🐶", to: ["😍", "🐶", "❤️"], limit: 2)
         #expect(recents == ["🐶", "😍"])
         #expect(catalog.emojis(for: ["🆕", "❤️"]).map(\.emoji) == ["❤️"])
+    }
+
+    @Test func gridRowsMatchColumnsAndNeverMixGroups() {
+        let groups = catalog.sections(matching: "").map { EmojiGroup(title: $0.category.rawValue, emojis: $0.emojis) }
+        let rows = EmojiPickerModel.grid(for: groups, columns: 1)
+        #expect(rows.map { $0.map(\.emoji) } == [["😍"], ["❤️"], ["🐶"]])
+        #expect(EmojiPickerModel.grid(for: groups, columns: 9).map(\.count) == [2, 1])
+    }
+
+    @Test func keysMapToPickerActionsAndLeaveTypingToSearch() {
+        #expect(EmojiPickerKeyAction(keyCode: 125, modifiers: []) == .move(.down))
+        #expect(EmojiPickerKeyAction(keyCode: 123, modifiers: .option) == nil)
+        #expect(EmojiPickerKeyAction(keyCode: 36, modifiers: []) == .copy(keepOpen: false))
+        #expect(EmojiPickerKeyAction(keyCode: 36, modifiers: .option) == .copy(keepOpen: true))
+        #expect(EmojiPickerKeyAction(keyCode: 48, modifiers: .shift) == .previousCategory)
+        #expect(EmojiPickerKeyAction(keyCode: 53, modifiers: []) == .cancel)
+        #expect(EmojiPickerKeyAction(keyCode: 0, modifiers: []) == nil)
     }
 }

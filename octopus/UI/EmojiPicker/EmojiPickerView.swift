@@ -2,17 +2,19 @@
 //  EmojiPickerView.swift
 //  octopus
 //
-//  The emoji menu-bar window: search field, category filter buttons,
-//  a sectioned emoji grid and a footer naming the hovered/copied emoji.
+//  The emoji menu-bar popover: search field, category filter buttons,
+//  a sectioned emoji grid and a footer naming the selected/hovered emoji.
+//  Keyboard handling lives in `EmojiPickerController`; this view only
+//  reflects `model.selection`.
 //
 
 import SwiftUI
 
 struct EmojiPickerView: View {
-    @StateObject private var model = EmojiPickerModel()
+    @ObservedObject var model: EmojiPickerModel
     @FocusState private var searchFocused: Bool
 
-    private let columns = [GridItem(.adaptive(minimum: 34), spacing: 2)]
+    private let columns = Array(repeating: GridItem(.flexible(), spacing: 2), count: EmojiPickerModel.columnCount)
 
     var body: some View {
         VStack(spacing: 0) {
@@ -28,6 +30,7 @@ struct EmojiPickerView: View {
         }
         .frame(width: 360, height: 440)
         .onAppear { searchFocused = true }
+        .onChange(of: model.openCount) { searchFocused = true }
     }
 
     // MARK: - Search
@@ -76,41 +79,48 @@ struct EmojiPickerView: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .help(title)
+        .help("\(title) (Tab / Shift-Tab)")
     }
 
     // MARK: - Grid
 
     private var grid: some View {
-        ScrollView {
-            LazyVGrid(columns: columns, spacing: 2, pinnedViews: [.sectionHeaders]) {
-                if model.showsRecents {
-                    section("Recently Used", emojis: model.recentEmojis)
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVGrid(columns: columns, spacing: 2, pinnedViews: [.sectionHeaders]) {
+                    ForEach(model.groups) { group in
+                        section(group)
+                    }
                 }
-                ForEach(model.sections) { section in
-                    self.section(section.category.rawValue, emojis: section.emojis)
-                }
+                .padding(.horizontal, 8)
+                .padding(.bottom, 8)
             }
-            .padding(.horizontal, 8)
-            .padding(.bottom, 8)
+            // A new filter starts at the top instead of keeping the old scroll offset.
+            .id(model.category)
+            .onChange(of: model.selection) { _, slot in
+                if let slot { proxy.scrollTo(slot) }
+            }
         }
-        // A new filter starts at the top instead of keeping the old scroll offset.
-        .id(model.category)
         .overlay {
-            if !model.hasResults {
+            if model.groups.isEmpty {
                 Text("No emoji found")
                     .foregroundStyle(.secondary)
             }
         }
     }
 
-    private func section(_ title: String, emojis: [Emoji]) -> some View {
+    private func section(_ group: EmojiGroup) -> some View {
         Section {
-            ForEach(emojis) { emoji in
-                EmojiCell(emoji: emoji, hovered: $model.hovered) { model.pick(emoji) }
+            ForEach(group.emojis) { emoji in
+                let slot = EmojiSlot(group: group.title, emoji: emoji.emoji)
+                EmojiCell(emoji: emoji, isSelected: model.selection == slot, hovered: $model.hovered) {
+                    model.selection = slot
+                    model.pick(emoji)
+                }
+                .id(slot)
             }
         } header: {
-            Text(title)
+            Text(group.title)
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -123,7 +133,7 @@ struct EmojiPickerView: View {
 
     private var footer: some View {
         HStack(spacing: 8) {
-            if let emoji = model.hovered {
+            if let emoji = model.hovered ?? model.selectedEmoji {
                 Text(emoji.emoji).font(.title2)
                 VStack(alignment: .leading, spacing: 0) {
                     Text(emoji.description.capitalized).lineLimit(1)
@@ -133,11 +143,12 @@ struct EmojiPickerView: View {
                 }
             } else if let emoji = model.lastCopied {
                 Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
-                Text("Copied \(emoji.emoji) to clipboard")
-            } else {
-                Text("Click an emoji to copy it").foregroundStyle(.secondary)
+                Text("Copied \(emoji.emoji)")
             }
             Spacer()
+            Text("↩ copy  ⌥↩ keep open  ⇥ filter  esc close")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
         }
         .font(.callout)
         .padding(.horizontal, 12)
@@ -145,21 +156,24 @@ struct EmojiPickerView: View {
     }
 }
 
-/// One emoji button; reports hover to the footer and highlights itself.
+/// One emoji button; highlights for keyboard selection and pointer hover.
 private struct EmojiCell: View {
     let emoji: Emoji
+    let isSelected: Bool
     @Binding var hovered: Emoji?
     let onPick: () -> Void
+
+    private var highlight: Color {
+        if isSelected { return Color.accentColor.opacity(0.3) }
+        return hovered == emoji ? Color.primary.opacity(0.1) : .clear
+    }
 
     var body: some View {
         Button(action: onPick) {
             Text(emoji.emoji)
                 .font(.system(size: 24))
                 .frame(width: 34, height: 34)
-                .background(
-                    RoundedRectangle(cornerRadius: 6)
-                        .fill(hovered == emoji ? Color.primary.opacity(0.1) : .clear)
-                )
+                .background(RoundedRectangle(cornerRadius: 6).fill(highlight))
         }
         .buttonStyle(.plain)
         .onHover { inside in
