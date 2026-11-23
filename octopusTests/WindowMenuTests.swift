@@ -121,6 +121,30 @@ struct WindowMenuTests {
         #expect(short.maxY > icon.maxY)
         #expect(short.maxX <= icon.minX)
     }
+
+    ////////////////////
+    //// Menu position: cursor anchor, screen centre and edge clamping
+
+    @Test func menuCentresOnPointerAndStaysInsideTheScreen() {
+        let screen = CGRect(x: 0, y: 0, width: 1000, height: 800)
+        let size = CGSize(width: 400, height: 300)
+        let free = WindowMenuPositionPreference.anchor(pointer: CGPoint(x: 500, y: 400), visibleFrame: screen)
+        #expect(WindowMenuPositionPreference.panelFrame(size: size, anchor: free) == CGRect(x: 300, y: 250, width: 400, height: 300))
+        let corner = WindowMenuPositionPreference.anchor(pointer: CGPoint(x: 990, y: 10), visibleFrame: screen)
+        #expect(WindowMenuPositionPreference.panelFrame(size: size, anchor: corner) == CGRect(x: 600, y: 0, width: 400, height: 300))
+        let centre = WindowMenuPositionPreference.anchor(pointer: nil, visibleFrame: screen)
+        #expect(centre.center == CGPoint(x: 500, y: 400 + 800 * WindowMenuMetrics.centerVerticalBias))
+    }
+
+    @Test func menuPositionDefaultsToCursor() throws {
+        let defaults = try #require(UserDefaults(suiteName: "WindowMenuPositionTests"))
+        defaults.removePersistentDomain(forName: "WindowMenuPositionTests")
+        #expect(WindowMenuPositionPreference.current(in: defaults) == .cursor)
+        defaults.set("screenCenter", forKey: WindowMenuPositionPreference.key)
+        #expect(WindowMenuPositionPreference.current(in: defaults) == .screenCenter)
+    }
+
+    //////////////////
 }
 
 //////////////////

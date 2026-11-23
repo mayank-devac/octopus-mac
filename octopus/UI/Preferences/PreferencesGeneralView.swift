@@ -20,6 +20,7 @@ struct PreferencesGeneralView: View {
     @AppStorage("instantSwitch") private var instantSwitch = "never"
     @AppStorage("windowMenuDisplay") private var windowMenuDisplay =
         UserDefaults.standard.bool(forKey: "showWindowMenuOnPrimaryDisplay") ? "primary" : "automatic"
+    @AppStorage(WindowMenuPositionPreference.key) private var windowMenuPosition = WindowMenuPositionPreference.cursor.rawValue
     
     @State private var hasAccessibilityPermission = AXIsProcessTrusted()
     @State private var screens = NSScreen.screens
@@ -86,6 +87,13 @@ struct PreferencesGeneralView: View {
                 }
                 .pickerStyle(.menu)
                 .help("Automatic keeps the current placement. A disconnected display uses the primary display. Applies when the window menu next opens.")
+
+                Picker("Window menu position:", selection: $windowMenuPosition) {
+                    Text("Cursor").tag(WindowMenuPositionPreference.cursor.rawValue)
+                    Text("Screen centre").tag(WindowMenuPositionPreference.screenCenter.rawValue)
+                }
+                .pickerStyle(.menu)
+                .help("Where the window menu opens. A chosen display without the pointer uses its centre.")
 
                 Picker("Instant switch:", selection: $instantSwitch) {
                     Text("Never").tag("never")
