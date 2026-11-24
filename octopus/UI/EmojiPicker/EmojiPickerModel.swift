@@ -104,7 +104,7 @@ final class EmojiPickerModel: ObservableObject {
     }
 
     /// Splits each group into rows of `columns`; groups never share a row.
-    static func grid(for groups: [EmojiGroup], columns: Int = columnCount) -> [[EmojiSlot]] {
+    nonisolated static func grid(for groups: [EmojiGroup], columns: Int = columnCount) -> [[EmojiSlot]] {
         groups.flatMap { group in
             stride(from: 0, to: group.emojis.count, by: columns).map { start in
                 group.emojis[start..<min(start + columns, group.emojis.count)]
