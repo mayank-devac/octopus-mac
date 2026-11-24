@@ -6,7 +6,7 @@ struct PreferencesWindowLayoutView: View {
     @AppStorage(WindowLayoutSettings.selectionKey) private var selection = WindowLayoutSelection.mostRecent.rawValue
     @AppStorage(WindowLayoutSettings.maximumWindowsKey) private var maximumWindows = WindowLayoutSettings.defaultMaximumWindows
     @AppStorage(WindowLayoutSettings.moveSizeKey) private var moveSize = VisibleDisplayMoveSize.fullScreen.rawValue
-    @AppStorage(SidebarSettings.snapDistanceKey) private var snapDistance = SidebarSettings.defaultSnapDistance
+    @AppStorage(SidebarSettings.snapDistanceKey) private var snapDistance = SidebarSettingsValues.defaultSnapDistance
     @EnvironmentObject private var controller: WindowLayoutController
 
     var body: some View {
@@ -19,7 +19,7 @@ struct PreferencesWindowLayoutView: View {
                 HStack {
                     Text("Snap distance")
                     Slider(value: $snapDistance,
-                           in: SidebarSettings.minimumSnapDistance...SidebarSettings.maximumSnapDistance, step: 20)
+                           in: SidebarSettingsValues.minimumSnapDistance...SidebarSettingsValues.maximumSnapDistance, step: 20)
                         .accessibilityLabel("Window snap distance from screen sides")
                         .accessibilityValue("\(Int(snapDistance)) points")
                     Text("\(Int(SidebarSettings.normalizedSnapDistance(snapDistance))) pt")

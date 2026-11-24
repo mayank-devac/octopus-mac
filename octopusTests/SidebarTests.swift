@@ -154,7 +154,7 @@ struct SidebarTests {
         let titledRow = SidebarLayout.iconSlotHeight + SidebarLayout.titleHeight(fontSize: config.fontSize)
             - SidebarLayout.dockTitleLift
         #expect(config.rowHeight == titledRow && titledRow < SidebarLayout.rowHeight)
-        config.fontSize = SidebarSettings.maximumFontSize
+        config.fontSize = SidebarSettingsValues.maximumFontSize
         #expect(config.rowHeight > titledRow)
         config.idleBehavior = .notch
         #expect(config.rowHeight == SidebarLayout.rowHeight)
@@ -257,7 +257,7 @@ struct SidebarTests {
         #expect(updatedA.side == .left)
         #expect(updatedB.compactShowsIcons)
         #expect(updatedB.position == 0.25)
-        #expect(updatedB.fontSize == SidebarSettings.defaultFontSize)
+        #expect(updatedB.fontSize == SidebarSettingsValues.defaultFontSize)
     }
 
     @Test func presentationPreservesVisibilityAndFullScreenRules() {
@@ -628,8 +628,8 @@ struct SidebarTests {
         #expect(twoApps.width == SidebarLayout.notchItemWidth * 2 + 4 + SidebarLayout.notchBarPadding * 2)
         let noGap = SidebarLayout.notchBarSize(count: 2, appSpacing: 0, availableFrame: available)
         let widestGap = SidebarLayout.notchBarSize(count: 2,
-            appSpacing: CGFloat(SidebarSettings.maximumAppSpacing), availableFrame: available)
-        #expect(widestGap.width - noGap.width == CGFloat(SidebarSettings.maximumAppSpacing))
+            appSpacing: CGFloat(SidebarSettingsValues.maximumAppSpacing), availableFrame: available)
+        #expect(widestGap.width - noGap.width == CGFloat(SidebarSettingsValues.maximumAppSpacing))
         #expect(SidebarLayout.notchItemWidth >= SidebarLayout.iconSize * (1 + SidebarLayout.magnificationGrowth))
         let manyApps = SidebarLayout.notchBarSize(count: 100, appSpacing: 4, availableFrame: available)
         #expect(manyApps.width == available.width * SidebarLayout.notchBarMaximumScreenFraction)
@@ -970,10 +970,10 @@ struct SidebarTests {
         // The factory Dock style starts with the single-window menu on.
         #expect(factory.position == 0.5 && factory.idleBehavior == SidebarIdleBehavior.defaultBehavior
             && factory.showSingleWindowMenu)
-        #expect(factory.appSpacing == SidebarSettings.defaultAppSpacing)
-        #expect(factory.fontSize == SidebarSettings.defaultFontSize)
-        #expect(factory.shadowOpacity == SidebarSettings.defaultShadowOpacity)
-        #expect(factory.dockOpacity == SidebarSettings.defaultDockOpacity)
+        #expect(factory.appSpacing == SidebarSettingsValues.defaultAppSpacing)
+        #expect(factory.fontSize == SidebarSettingsValues.defaultFontSize)
+        #expect(factory.shadowOpacity == SidebarSettingsValues.defaultShadowOpacity)
+        #expect(factory.dockOpacity == SidebarSettingsValues.defaultDockOpacity)
         SidebarSettings.save(factory, for: "A", name: "Renamed display", in: restarted)
         #expect(SidebarSettings.configuration(for: "A", in: restarted) == factory)
         #expect(SidebarSettings.configuration(for: "B", in: restarted) == original)
@@ -1027,8 +1027,8 @@ struct SidebarTests {
         let loaded = SidebarSettings.configuration(for: "A", in: defaults)
         #expect(loaded.position == 0.5)
         #expect(loaded.appSpacing == 0)
-        #expect(loaded.fontSize == SidebarSettings.maximumFontSize)
-        #expect(loaded.shadowOpacity == SidebarSettings.defaultShadowOpacity)
+        #expect(loaded.fontSize == SidebarSettingsValues.maximumFontSize)
+        #expect(loaded.shadowOpacity == SidebarSettingsValues.defaultShadowOpacity)
         #expect(loaded.dockOpacity == 1)
         SidebarSettings.rememberDisplay(id: "broken", name: "Recovered", in: defaults)
         #expect(SidebarSettings.configuration(for: "A", in: defaults) == loaded)
@@ -1141,6 +1141,26 @@ struct SidebarTests {
 
         #expect(SidebarIdleBehavior.saved(nil) == SidebarIdleBehavior.defaultBehavior)
         #expect(SidebarIdleBehavior.saved("bogus") == SidebarIdleBehavior.defaultBehavior)
+    }
+
+    @Test func legacyPerDisplaySnapDistanceMovesToTheAppWideValueOnce() throws {
+        let suite = "SidebarSnapMigration-\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        func legacyPreference(_ distance: Double) -> Data {
+            Data(#"{"name":"Display","configuration":{"side":"left","snapDistance":\#(distance)}}"#.utf8)
+        }
+        defaults.set(true, forKey: SidebarSettings.multiDisplayKey)
+        defaults.set(["A": legacyPreference(120), "B": legacyPreference(300)], forKey: SidebarSettings.displayPreferencesKey)
+
+        SidebarSettings.migrateLegacyDisplaySnapDistance(primaryDisplayID: "B", in: defaults)
+        #expect(defaults.double(forKey: SidebarSettings.snapDistanceKey) == 300)
+        #expect(SidebarSettings.displayPreferences(in: defaults)["A"]?.configuration.side == .left)
+
+        // A later app-wide choice is not replaced, because the old field is gone.
+        defaults.set(250.0, forKey: SidebarSettings.snapDistanceKey)
+        SidebarSettings.migrateLegacyDisplaySnapDistance(primaryDisplayID: "B", in: defaults)
+        #expect(defaults.double(forKey: SidebarSettings.snapDistanceKey) == 250)
     }
 
     @Test func windowOnEveryDesktopOfADisplayCollapsesToTheVisibleDesktop() {

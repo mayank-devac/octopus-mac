@@ -127,7 +127,7 @@ enum SidebarPlacementGeometry {
         CGRect(x: rect.minX, y: primaryTop - rect.maxY, width: rect.width, height: rect.height)
     }
 
-    static func snap(at point: CGPoint, screen: CGRect, distance: Double = SidebarSettings.defaultSnapDistance,
+    static func snap(at point: CGPoint, screen: CGRect, distance: Double = SidebarSettingsValues.defaultSnapDistance,
                      corners: Bool = false) -> SidebarSnapTarget? {
         guard screen.contains(point) else { return nil }
         let left = point.x - screen.minX

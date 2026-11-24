@@ -56,7 +56,7 @@ struct SidebarDelayedOpeningTests {
         let unknown = Data("{\"delayedOpening\":\"later\",\"openingDelay\":9}".utf8)
         let clamped = try JSONDecoder().decode(SidebarConfiguration.self, from: unknown)
         #expect(clamped.delayedOpening == .hideEdge)
-        #expect(clamped.openingDelay == SidebarSettingsValues.openingDelayRange.upperBound)
+        #expect(clamped.openingDelay == SidebarSettingsValues.delayRange.upperBound)
         #expect(clamped.closingDelay == SidebarSettingsValues.defaultClosingDelay)
         let prior = Data("{\"delayedOpening\":\"stepAside\",\"openingDelay\":1.2}".utf8)
         let restoredPrior = try JSONDecoder().decode(SidebarConfiguration.self, from: prior)

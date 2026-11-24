@@ -37,7 +37,7 @@ final class SidebarDragController: NSObject, NSDraggingSource {
     private var dragIcon: NSImage?
     private let feedback = WindowPlacementFeedback()
     private var generation = 0
-    private var snapDistance = SidebarSettings.defaultSnapDistance
+    private var snapDistance = SidebarSettingsValues.defaultSnapDistance
     private var cornerModifiers: NSEvent.ModifierFlags = []
     private var moveSize = VisibleDisplayMoveSize.fullScreen
     private var sourceDisplay: CGRect?

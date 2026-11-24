@@ -199,22 +199,22 @@ struct SidebarDragTests {
     }
 
     @Test func snapDistanceRejectsInvalidValuesAndStaysWithinTheSliderRange() {
-        #expect(SidebarSettings.normalizedSnapDistance(0) == SidebarSettings.minimumSnapDistance)
-        #expect(SidebarSettings.normalizedSnapDistance(SidebarSettings.maximumSnapDistance + 50) == SidebarSettings.maximumSnapDistance)
+        #expect(SidebarSettings.normalizedSnapDistance(0) == SidebarSettingsValues.minimumSnapDistance)
+        #expect(SidebarSettings.normalizedSnapDistance(SidebarSettingsValues.maximumSnapDistance + 50) == SidebarSettingsValues.maximumSnapDistance)
         #expect(SidebarSettings.normalizedSnapDistance(180) == 180)
-        #expect(SidebarSettings.normalizedSnapDistance(.nan) == SidebarSettings.defaultSnapDistance)
-        #expect(SidebarSettings.normalizedSnapDistance(.infinity) == SidebarSettings.defaultSnapDistance)
+        #expect(SidebarSettings.normalizedSnapDistance(.nan) == SidebarSettingsValues.defaultSnapDistance)
+        #expect(SidebarSettings.normalizedSnapDistance(.infinity) == SidebarSettingsValues.defaultSnapDistance)
     }
 
     @Test func snapDistanceUsesTheDefaultAndPersistsTheUsersChoice() throws {
         let name = "SidebarDragTests.snapDistance.\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: name))
         defer { defaults.removePersistentDomain(forName: name) }
-        #expect(SidebarSettings.snapDistance(in: defaults) == SidebarSettings.defaultSnapDistance)
+        #expect(SidebarSettings.snapDistance(in: defaults) == SidebarSettingsValues.defaultSnapDistance)
         defaults.set(192.0, forKey: "sidebarSnapDistance")
         #expect(SidebarSettings.snapDistance(in: try #require(UserDefaults(suiteName: name))) == 192)
         defaults.set(900.0, forKey: "sidebarSnapDistance")
-        #expect(SidebarSettings.snapDistance(in: defaults) == SidebarSettings.maximumSnapDistance)
+        #expect(SidebarSettings.snapDistance(in: defaults) == SidebarSettingsValues.maximumSnapDistance)
     }
 
     @Test func coordinatesUseThePrimaryDisplayForEveryMonitor() {

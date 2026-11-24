@@ -87,7 +87,7 @@ struct PreferencesSidebarView: View {
             LabeledContent(delay.title) {
                 HStack(spacing: 6) {
                     Text("Short").font(.caption).foregroundStyle(.secondary)
-                    Slider(value: selectedDelayBinding, in: SidebarSettingsValues.openingDelayRange, step: 0.1)
+                    Slider(value: selectedDelayBinding, in: SidebarSettingsValues.delayRange, step: 0.1)
                         .accessibilityLabel("Sidebar " + delay.title.lowercased())
                         .accessibilityValue(Text(selectedDelayText))
                     Text("Long").font(.caption).foregroundStyle(.secondary)
@@ -343,7 +343,7 @@ struct PreferencesSidebarView: View {
                     : "Move the sidebar vertically along its screen edge.")
                 HStack {
                     Text("Gap between apps")
-                    Slider(value: setting(\.appSpacing), in: 0...SidebarSettings.maximumAppSpacing, step: 1)
+                    Slider(value: setting(\.appSpacing), in: 0...SidebarSettingsValues.maximumAppSpacing, step: 1)
                         .accessibilityLabel("Gap between apps")
                     Text("\(Int(configuration.appSpacing)) pt")
                         .monospacedDigit()
@@ -352,7 +352,7 @@ struct PreferencesSidebarView: View {
                 }
                 HStack {
                     Text("Font size")
-                    Slider(value: setting(\.fontSize), in: SidebarSettings.minimumFontSize...SidebarSettings.maximumFontSize, step: 1)
+                    Slider(value: setting(\.fontSize), in: SidebarSettingsValues.minimumFontSize...SidebarSettingsValues.maximumFontSize, step: 1)
                         .accessibilityLabel("Sidebar label font size")
                     Text("\(Int(configuration.fontSize)) pt")
                         .monospacedDigit()
@@ -385,7 +385,7 @@ struct PreferencesSidebarView: View {
                             Slider(value: Binding(
                                 get: { configuration.shadowOpacity },
                                 set: { setting(\.shadowOpacity).wrappedValue = ($0 * 20).rounded() / 20 }
-                            ), in: 0...SidebarSettings.maximumShadowOpacity)
+                            ), in: 0...SidebarSettingsValues.maximumShadowOpacity)
                                 .accessibilityLabel("Sidebar text shadow opacity")
                             Text("\(Int((configuration.shadowOpacity * 100).rounded()))%")
                                 .monospacedDigit()
