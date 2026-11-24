@@ -75,24 +75,20 @@ struct PreferencesSidebarView: View {
     // Step aside fades a sidebar the pointer rests on unused; Hide until edge hides it until the pointer rests at the edge.
 
     @ViewBuilder private var delayedOpeningControls: some View {
-        Toggle("Delay opening", isOn: setting(\.delaysOpening).animation())
-            .disabled(!editingEnabled)
-            .help("Wait before the sidebar opens, so you can click buttons underneath it.")
-        if configuration.delaysOpening {
-            Picker("When the pointer arrives", selection: setting(\.delayedOpening)) {
-                ForEach(SidebarDelayedOpening.allCases, id: \.rawValue) { choice in
-                    Text(choice.title).tag(choice)
-                }
+        Picker("Delay opening", selection: setting(\.delayedOpening).animation()) {
+            ForEach(SidebarDelayedOpening.allCases, id: \.rawValue) { choice in
+                Text(choice.title).tag(choice)
             }
-            .disabled(!editingEnabled)
-            .help("Step aside fades the sidebar and lets clicks through when the pointer rests on it without using it. Hide until edge hides the sidebar until the pointer rests at the screen edge.")
-            // Step aside waits before closing the sidebar; Hide until edge waits before opening it.
-            LabeledContent(configuration.delayedOpening == .stepAside ? "Closing delay" : "Opening delay") {
+        }
+        .disabled(!editingEnabled)
+        .help("Step aside fades the sidebar and lets clicks through when the pointer rests on it without using it. Hide until edge hides the sidebar until the pointer rests at the screen edge.")
+        // Step aside waits before closing the sidebar; Hide until edge waits before opening it.
+        if let delay = configuration.delayedOpening.delayCopy {
+            LabeledContent(delay.title) {
                 HStack(spacing: 6) {
                     Text("Short").font(.caption).foregroundStyle(.secondary)
                     Slider(value: setting(\.openingDelay), in: SidebarSettings.openingDelayRange, step: 0.1)
-                        .accessibilityLabel(configuration.delayedOpening == .stepAside
-                            ? "Sidebar closing delay" : "Sidebar opening delay")
+                        .accessibilityLabel("Sidebar " + delay.title.lowercased())
                         .accessibilityValue(Text(openingDelayText))
                     Text("Long").font(.caption).foregroundStyle(.secondary)
                     Text(openingDelayText)
@@ -101,9 +97,7 @@ struct PreferencesSidebarView: View {
                 }
             }
             .disabled(!editingEnabled)
-            .help(configuration.delayedOpening == .stepAside
-                ? "How long the pointer must rest on the sidebar before it steps aside."
-                : "How long the pointer must rest at the edge before the sidebar opens.")
+            .help(delay.help)
         }
     }
 

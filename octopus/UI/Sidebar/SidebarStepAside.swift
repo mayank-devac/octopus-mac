@@ -15,13 +15,12 @@ struct SidebarStepAside: Equatable {
     }
 
     enum Action: Equatable {
+        // Nothing to wait for: stepped aside already, or the pointer is off the sidebar.
         case none
         // Check again after this long; a resting pointer sends no events to trigger the check itself.
         case checkAfter(TimeInterval)
         // Unused for the delay: fade out and pass clicks through.
         case stepAside
-        // Pointer left: stop waiting and return to the normal look.
-        case restore
     }
 
     // Timer callbacks can land a little early relative to the recorded start.
@@ -33,10 +32,10 @@ struct SidebarStepAside: Equatable {
 
     // `inUse` covers state the pointer path sees directly, such as an open window list.
     mutating func update(pointerInside: Bool, inUse: Bool, now: TimeInterval, delay: TimeInterval) -> Action {
+        // Leaving returns the sidebar to its normal look.
         guard pointerInside else {
-            let wasActive = phase != .idle
             phase = .idle
-            return wasActive ? .restore : .none
+            return .none
         }
         switch phase {
         case .idle:

@@ -290,10 +290,8 @@ private final class SidebarDisplayController {
     private var ownsMenu: Bool { cycleController.sidebarOwnerID == menuOwnerID }
     /// Presentation for the current settings; uses the default idle behavior until settings load.
     private var presentation: SidebarPresentation {
-        SidebarPresentation(behavior: settings?.idleBehavior ?? .defaultBehavior,
-                            hasNotchTrigger: !notchFrame.isEmpty, fullScreen: isFullScreen,
-                            delayedOpening: settings?.configuration.activeDelayedOpening,
-                            openingDelay: settings?.configuration.openingDelay ?? SidebarSettings.defaultOpeningDelay)
+        SidebarPresentation(configuration: settings?.configuration ?? .factoryDefaults,
+                            hasNotchTrigger: !notchFrame.isEmpty, fullScreen: isFullScreen)
     }
     // Pointer location for sidebar hit tests; the screen's top edge counts as inside the top row.
     private var pointerLocation: CGPoint {
@@ -799,7 +797,7 @@ private final class SidebarDisplayController {
     // Returns true while the sidebar is stepped aside, so the caller skips hover and menus.
 
     private func updateStepAside(at point: CGPoint) -> Bool {
-        guard presentation.stepsAside, !isPeeking, !cycleController.isKeyboardSwitcherVisible else {
+        guard let delay = presentation.stepAsideDelay, !isPeeking, !cycleController.isKeyboardSwitcherVisible else {
             endStepAside()
             return false
         }
@@ -807,14 +805,12 @@ private final class SidebarDisplayController {
         // An open window list, app menu or position drag means the sidebar is being used.
         let inUse = sidebarEntryID != nil || appMenu.isVisible || positionScrollCapture.isActive
         applyStepAside(stepAside.update(pointerInside: inside, inUse: inUse,
-                                        now: ProcessInfo.processInfo.systemUptime, delay: presentation.stepAsideDelay))
+                                        now: ProcessInfo.processInfo.systemUptime, delay: delay))
         return stepAside.isSteppedAside
     }
 
     private func applyStepAside(_ action: SidebarStepAside.Action) {
         switch action {
-        case .none:
-            return
         case .checkAfter(let delay):
             // One pending check is enough; it re-reads the latest use time when it fires.
             guard stepAsideWork == nil else { return }
@@ -828,10 +824,10 @@ private final class SidebarDisplayController {
             DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
         // The rest of `updatePointer` then drops hover and applies the opacity for the new state.
         case .stepAside:
-            stepAsideWork?.cancel()
-            stepAsideWork = nil
             cancelPendingHover()
-        case .restore:
+            fallthrough
+        // Stepped aside or no longer watching: nothing is left to check.
+        case .none:
             stepAsideWork?.cancel()
             stepAsideWork = nil
         }
@@ -841,13 +837,19 @@ private final class SidebarDisplayController {
     private func endStepAside() {
         stepAsideWork?.cancel()
         stepAsideWork = nil
-        guard stepAside.phase != .idle else { return }
         let wasSteppedAside = stepAside.isSteppedAside
         stepAside.reset()
         if wasSteppedAside { updateIdleOpacity(inUse: false) }
     }
 
-    //// Opacity follows `updateIdleOpacity`; mouse pass-through follows the `ignoresMouseEvents` checks.
+    // The popup can overlap the sidebar's wide icon hit area, so it takes all input there.
+    // A stepped-aside sidebar takes none, so clicks reach the window underneath.
+    private func panelAcceptsPointer(at point: CGPoint) -> Bool {
+        !stepAside.isSteppedAside && SidebarLayout.acceptsSidebarPointer(
+            at: point, sidebar: pointerFrame, menu: sidebarEntryID == nil ? nil : cycleController.panel.frame)
+    }
+
+    //// Opacity follows `updateIdleOpacity`; mouse pass-through follows `panelAcceptsPointer`.
     //////////////////
 
     private func layout() {
@@ -899,9 +901,7 @@ private final class SidebarDisplayController {
         } else {
             notchPanel.orderOut(nil)
         }
-        let menuFrame = sidebarEntryID == nil ? nil : cycleController.panel.frame
-        panel.ignoresMouseEvents = stepAside.isSteppedAside || !SidebarLayout.acceptsSidebarPointer(
-            at: pointerLocation, sidebar: pointerFrame, menu: menuFrame)
+        panel.ignoresMouseEvents = !panelAcceptsPointer(at: pointerLocation)
         updateEdgeMark()
     }
 
@@ -1367,10 +1367,7 @@ private final class SidebarDisplayController {
         let inMenu = sidebarEntryID != nil && cycleController.panel.isVisible
             && cycleController.panel.isOnActiveSpace
             && (cycleController.panel.frame.contains(point) || isInNotchMenuBridge(point))
-        // The popup can overlap the sidebar's wide icon hit area. Give it all input there.
-        panel.ignoresMouseEvents = steppedAside || !panel.isVisible || !SidebarLayout.acceptsSidebarPointer(
-            at: point, sidebar: pointerFrame,
-            menu: sidebarEntryID == nil ? nil : cycleController.panel.frame)
+        panel.ignoresMouseEvents = !panel.isVisible || !panelAcceptsPointer(at: point)
         let inEdge = edgeFrame.contains(point)
         // Once the pointer reaches the peeking sidebar, normal hover rules take over.
         if isPeeking, inSidebar || inMenu { endPeek() }

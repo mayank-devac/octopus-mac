@@ -64,7 +64,7 @@ struct SidebarView: View {
     var onAppMenu: (SidebarEntryID) -> Void = { _ in }
     var onIconBadge: (SidebarEntryID, SidebarIconBadge) -> Void = { _, _ in }
 
-    private var isCompact: Bool { state.configuration.usesCompactStrip }
+    private var isCompact: Bool { state.configuration.effectiveIdleBehavior == .compact }
     private var isDock: Bool { state.usesDockBar }
     private var showsTitles: Bool { state.configuration.showsWindowTitles }
     private var rowHeight: CGFloat { state.configuration.rowHeight }
