@@ -1,6 +1,126 @@
-<?xml version="1.0" encoding="utf-8"?>
-<rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
+<?xml version='1.0' encoding='utf-8'?>
+<rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
   <channel>
+    <item>
+      <title>Octopus 2.1.14 Beta</title>
+      <pubDate>Tue, 24 Nov 2026 19:05:56 GMT</pubDate>
+      <sparkle:version>19</sparkle:version>
+      <sparkle:shortVersionString>2.1.14</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>14.6</sparkle:minimumSystemVersion>
+      <enclosure url="https://github.com/mayank-devac/octopus-dist/releases/download/v2.1.14-build.19/Octopus-2.1.14-19.zip" length="5809448" type="application/octet-stream" sparkle:edSignature="Rbcf1m8UyuHPCDOuhtUYwVAn/H9+cmzGpP8Ir/30ZWTyRlBVgIokcUY6GSx4gP/lR1M+2Yt4v1jIr1S6b1iUBg==" />
+    </item>
+    <item>
+      <title>Octopus 2.1.13 Beta</title>
+      <pubDate>Tue, 24 Nov 2026 15:42:26 GMT</pubDate>
+      <sparkle:version>18</sparkle:version>
+      <sparkle:shortVersionString>2.1.13</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>14.6</sparkle:minimumSystemVersion>
+      <enclosure url="https://github.com/mayank-devac/octopus-dist/releases/download/v2.1.13-build.18/Octopus-2.1.13-18.zip" length="5771999" type="application/octet-stream" sparkle:edSignature="cYXPc/TxaOmwoEJOz0Nu2eyVMlqlAFc8dbkDhoXMgXd9Jxh5FbXxXj+m5A8Zzh82ekUIR+4PUcqlf9gRrGVRAA==" />
+    </item>
+    <item>
+      <title>Octopus 2.1.12 Beta</title>
+      <pubDate>Sun, 15 Nov 2026 18:35:43 GMT</pubDate>
+      <sparkle:version>17</sparkle:version>
+      <sparkle:shortVersionString>2.1.12</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>14.6</sparkle:minimumSystemVersion>
+      <enclosure url="https://github.com/mayank-devac/octopus-dist/releases/download/v2.1.12-build.17/Octopus-2.1.12-17.zip" length="5633323" type="application/octet-stream" sparkle:edSignature="u7tjCfDkjsZp1/z/Iu18Q1a0+eKfD+w5KhYsxDdq56q/uhEsqnmsvkdcXRxNQPsrZ/kbuiTCgE/ZWcxc8S+FAg==" />
+    </item>
+    <item>
+      <title>Octopus 2.1.11 Beta</title>
+      <pubDate>Sun, 15 Nov 2026 17:11:01 GMT</pubDate>
+      <sparkle:version>16</sparkle:version>
+      <sparkle:shortVersionString>2.1.11</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>14.6</sparkle:minimumSystemVersion>
+      <enclosure url="https://github.com/mayank-devac/octopus-dist/releases/download/v2.1.11-build.16/Octopus-2.1.11-16.zip" length="22299163" type="application/octet-stream" sparkle:edSignature="MckzJMaDE7w8RcQmor6qqHxJvZ0/KVSpKp8p3mz6edFD4y1OyWj11+SwpUZE31xa/EbUNvwb9setfmluLbbZDQ==" />
+    </item>
+    <item>
+      <title>Octopus 2.1.10 Beta</title>
+      <pubDate>Sat, 14 Nov 2026 14:15:16 GMT</pubDate>
+      <sparkle:version>15</sparkle:version>
+      <sparkle:shortVersionString>2.1.10</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>14.6</sparkle:minimumSystemVersion>
+      <enclosure url="https://github.com/mayank-devac/octopus-dist/releases/download/v2.1.10-build.15/Octopus-2.1.10-15.zip" length="21915248" type="application/octet-stream" sparkle:edSignature="Du+CPwcKPYyyra99yZcW+jE4K1RHGauu9Tnpf/kFAXsiGMXdhAv6qOez4pb3EPkhUdhIxMGv6/g/HcNEnxAcDg==" />
+    </item>
+    <item>
+      <title>Octopus 2.1.9 Beta</title>
+      <pubDate>Sat, 14 Nov 2026 11:44:20 GMT</pubDate>
+      <sparkle:version>14</sparkle:version>
+      <sparkle:shortVersionString>2.1.9</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>14.6</sparkle:minimumSystemVersion>
+      <enclosure url="https://github.com/mayank-devac/octopus-dist/releases/download/v2.1.9-build.14/Octopus-2.1.9-14.zip" length="21859319" type="application/octet-stream" sparkle:edSignature="njvneLl/0uVQNYhNhivmVuqBw+PyiMRd6x1ZsBEWcf0CiAHJ4i60vt93RmIMibqfAicWAoIcAMyQicZVLpbADw==" />
+    </item>
+    <item>
+      <title>Octopus 2.1.8 Beta</title>
+      <pubDate>Sat, 14 Nov 2026 11:41:07 GMT</pubDate>
+      <sparkle:version>13</sparkle:version>
+      <sparkle:shortVersionString>2.1.8</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>14.6</sparkle:minimumSystemVersion>
+      <enclosure url="https://github.com/mayank-devac/octopus-dist/releases/download/v2.1.8-build.13/Octopus-2.1.8-13.zip" length="21859910" type="application/octet-stream" sparkle:edSignature="zlkCo22WscwTT62VHd1muZQIAr59CSpo0jS8enWMdf7uv3+xO56O74AsT8dGBLzQD9ym+HT2SoaPXeR3TRkyCg==" />
+    </item>
+    <item>
+      <title>Octopus 2.1.7 Beta</title>
+      <pubDate>Fri, 13 Nov 2026 19:35:53 GMT</pubDate>
+      <sparkle:version>12</sparkle:version>
+      <sparkle:shortVersionString>2.1.7</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>14.6</sparkle:minimumSystemVersion>
+      <enclosure url="https://github.com/mayank-devac/octopus-dist/releases/download/v2.1.7-build.12/Octopus-2.1.7-12.zip" length="21853150" type="application/octet-stream" sparkle:edSignature="9so5hOS0+hZ6DA+bEMHXbCzY06+VRdvKtjVTNwS/+A7Kud0m2GzEqpaJxCuev9DNiLnUebAJ5Qr9/CPNftjOBA==" />
+    </item>
+    <item>
+      <title>Octopus 2.1.6 Beta</title>
+      <pubDate>Fri, 13 Nov 2026 19:07:11 GMT</pubDate>
+      <sparkle:version>11</sparkle:version>
+      <sparkle:shortVersionString>2.1.6</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>14.6</sparkle:minimumSystemVersion>
+      <enclosure url="https://github.com/mayank-devac/octopus-dist/releases/download/v2.1.6-build.11/Octopus-2.1.6-11.zip" length="21834722" type="application/octet-stream" sparkle:edSignature="uKc2ifvoVMic8Uvr7YORYI/d+zCc8w/V+wR6iACQ6LsATS09bapnRoTRvDBQDWNp9pv3lsW4p0ldK/MfI1H3Dg==" />
+    </item>
+    <item>
+      <title>Octopus 2.1.5 Beta</title>
+      <pubDate>Thu, 22 Oct 2026 19:03:33 GMT</pubDate>
+      <sparkle:version>10</sparkle:version>
+      <sparkle:shortVersionString>2.1.5</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>14.6</sparkle:minimumSystemVersion>
+      <enclosure url="https://github.com/mayank-devac/octopus-dist/releases/download/v2.1.5-build.10/Octopus-2.1.5-10.zip" length="21755815" type="application/octet-stream" sparkle:edSignature="WOkgr0HB36pT9IjpQKylxNj5MgUTEPt4Cxd2nke9Vp8H+nNCz1QIDQZSmOs1vD7mITBZNPEQf5bAyIMhwj2sAA==" />
+    </item>
+    <item>
+      <title>Octopus 2.1.4 Beta</title>
+      <pubDate>Tue, 20 Oct 2026 15:16:17 GMT</pubDate>
+      <sparkle:version>8</sparkle:version>
+      <sparkle:shortVersionString>2.1.4</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>14.6</sparkle:minimumSystemVersion>
+      <enclosure url="https://github.com/mayank-devac/octopus-dist/releases/download/v2.1.4-build.8/Octopus-2.1.4-8.zip" length="21509091" type="application/octet-stream" sparkle:edSignature="Y0q1M7jjN7SFr6L/+mtdgpqlp3N1dcSE2AqDpoVfIeuEdAsnXO5khO9309Qy4e4rcALg+nAr14kTjILa6O5/BA==" />
+    </item>
+    <item>
+      <title>Octopus 2.1.3 Beta</title>
+      <pubDate>Sat, 17 Oct 2026 19:31:17 GMT</pubDate>
+      <sparkle:version>7</sparkle:version>
+      <sparkle:shortVersionString>2.1.3</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>14.6</sparkle:minimumSystemVersion>
+      <enclosure url="https://github.com/mayank-devac/octopus-dist/releases/download/v2.1.3-build.7/Octopus-2.1.3-7.zip" length="21418700" type="application/octet-stream" sparkle:edSignature="/7o2qaSbbUaBMqg5g8qljWCJuPRaKZXjqwsNnw94G78jp/Z+8GigIV5/3gqnexPpXmE23UiPGeBZqW6a5OXpDg==" />
+    </item>
+    <item>
+      <title>Octopus 2.1.2 Beta</title>
+      <pubDate>Wed, 14 Oct 2026 18:43:36 GMT</pubDate>
+      <sparkle:version>6</sparkle:version>
+      <sparkle:shortVersionString>2.1.2</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>14.6</sparkle:minimumSystemVersion>
+      <enclosure url="https://github.com/mayank-devac/octopus-dist/releases/download/v2.1.2-build.6/Octopus-2.1.2-6.zip" length="21092498" type="application/octet-stream" sparkle:edSignature="ibA+hMk8T7u1cjzhzYP6TF4V6mH8wU5A+zzRRaHQQFQ9hRFgWljBXEZkaSQmAnPUPazpQMzUFmgq+p7KdcorBw==" />
+    </item>
+    <item>
+      <title>Octopus 2.1.1 Beta</title>
+      <pubDate>Wed, 14 Oct 2026 18:37:27 GMT</pubDate>
+      <sparkle:version>5</sparkle:version>
+      <sparkle:shortVersionString>2.1.1</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>14.6</sparkle:minimumSystemVersion>
+      <enclosure url="https://github.com/mayank-devac/octopus-dist/releases/download/v2.1.1-build.5/Octopus-2.1.1-5.zip" length="21092471" type="application/octet-stream" sparkle:edSignature="+jbBxyiopxvXeY5onsRJkRY/bUtD7d5ZJzaUPvArtE+DKYj/YIRxD+WSAGu2CpqVCmGvRnOHqt53yQNoMTb8BQ==" />
+    </item>
+    <item>
+      <title>Octopus 2.1.0 Beta</title>
+      <pubDate>Mon, 12 Oct 2026 19:21:09 GMT</pubDate>
+      <sparkle:version>4</sparkle:version>
+      <sparkle:shortVersionString>2.1.0</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>14.6</sparkle:minimumSystemVersion>
+      <enclosure url="https://github.com/mayank-devac/octopus-dist/releases/download/v2.1.0-build.4/Octopus-2.1.0-4.zip" length="4345577" type="application/octet-stream" sparkle:edSignature="GylBsJLEqAJAn9ahkWSDa4hfMlJuNgqR5hwtEqZTUzOWfWw6TtAO67spXV8aGmgyco0XAmcynDOCOQfp/M+JCw==" />
+    </item>
     <title>Octopus Beta Updates</title>
     <link>https://github.com/mayank-devac/octopus-dist/releases</link>
     <description>Free Octopus beta updates.</description>

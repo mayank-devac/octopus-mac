@@ -73,6 +73,9 @@ curl -sL https://raw.githubusercontent.com/mayank-devac/octopus-dist/main/appcas
 
 The first entry must show the new version and its ZIP URL.
 
+The remote feed is the source of truth. Publishing copies it back to the local
+`octopus-dist/appcast.xml`, so commit that file after each release; the next release needs a clean tree.
+
 ## Failure rules
 
 - `Output already exists`: a previous attempt left `.build/beta-release/<v>-<b>/`. Look inside first;
