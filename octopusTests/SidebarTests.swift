@@ -421,11 +421,11 @@ struct SidebarTests {
         #expect(SidebarSettings.configuration(for: "B", in: defaults).virtualNotchWidth == 150)
         let oldProfile = Data("{\"idleBehavior\":\"notch\",\"appSpacing\":8}".utf8)
         let restored = try JSONDecoder().decode(SidebarConfiguration.self, from: oldProfile)
-        #expect(restored.virtualNotchWidth == SidebarSettings.defaultVirtualNotchWidth)
+        #expect(restored.virtualNotchWidth == SidebarSettingsValues.defaultVirtualNotchWidth)
         #expect(restored.appSpacing == 8)
         configuration.virtualNotchWidth = .nan
         configuration.normalize()
-        #expect(configuration.virtualNotchWidth == SidebarSettings.defaultVirtualNotchWidth)
+        #expect(configuration.virtualNotchWidth == SidebarSettingsValues.defaultVirtualNotchWidth)
         let screen = CGRect(x: 0, y: 0, width: 1512, height: 982)
         let resized = try #require(SidebarLayout.notchTriggerFrame(screenFrame: screen,
             safeTopInset: 0, leftArea: nil, rightArea: nil, virtualWidth: 320))

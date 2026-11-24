@@ -21,14 +21,15 @@ struct SidebarDelayedOpeningTests {
                 let policy = SidebarPresentation(configuration: config, hasNotchTrigger: false, fullScreen: false)
                 let plain = SidebarPresentation(behavior: behavior, hasNotchTrigger: false, fullScreen: false)
                 switch active {
-                case .hideUntilEdge:
-                    // Hide until edge presents exactly as Auto-Hide, plus the reveal delay.
+                case .hideEdge:
+                    // Hide edge presents exactly as Auto-Hide, plus the reveal delay.
                     let autoHide = SidebarPresentation(behavior: .hide, hasNotchTrigger: false, fullScreen: false)
                     #expect(config.effectiveIdleBehavior == .hide)
                     #expect(policy.mode == autoHide.mode && policy.autoHides == autoHide.autoHides)
                     #expect(policy.fadesWhenIdle == autoHide.fadesWhenIdle)
                     #expect(policy.revealDelay == 0.8 && policy.stepAsideDelay == nil)
-                    #expect(SidebarDelayedOpening.hideUntilEdge.delayCopy?.title == "Opening delay")
+                    #expect(SidebarDelayedOpening.hideEdge.title == "Hide edge")
+                    #expect(SidebarDelayedOpening.hideEdge.delayCopy?.title == "Opening delay")
                 case .stepAside:
                     #expect(policy.mode == plain.mode && policy.autoHides == plain.autoHides)
                     #expect(policy.stepAsideDelay == 1.4)
@@ -42,24 +43,25 @@ struct SidebarDelayedOpeningTests {
             }
         }
         #expect(!SidebarIdleBehavior.stayVisible.delayedOpeningChoices.contains(.stepAside))
-        #expect(SidebarIdleBehavior.stayVisible.delayedOpeningChoices.contains(.hideUntilEdge))
+        #expect(SidebarIdleBehavior.stayVisible.delayedOpeningChoices.contains(.hideEdge))
+        #expect(SidebarConfiguration.factoryDefaults.delayedOpening == .hideEdge)
     }
 
     @Test func delayedOpeningDecodesOldProfilesAndClampsTheDelay() throws {
         let oldProfile = Data("{\"idleBehavior\":\"stayVisible\"}".utf8)
         let restored = try JSONDecoder().decode(SidebarConfiguration.self, from: oldProfile)
-        #expect(restored.delayedOpening == .off)
-        #expect(restored.openingDelay == SidebarSettings.defaultOpeningDelay)
-        #expect(restored.closingDelay == SidebarSettings.defaultClosingDelay)
+        #expect(restored.delayedOpening == .hideEdge)
+        #expect(restored.openingDelay == SidebarSettingsValues.defaultOpeningDelay)
+        #expect(restored.closingDelay == SidebarSettingsValues.defaultClosingDelay)
         let unknown = Data("{\"delayedOpening\":\"later\",\"openingDelay\":9}".utf8)
         let clamped = try JSONDecoder().decode(SidebarConfiguration.self, from: unknown)
-        #expect(clamped.delayedOpening == .off)
-        #expect(clamped.openingDelay == SidebarSettings.openingDelayRange.upperBound)
-        #expect(clamped.closingDelay == SidebarSettings.defaultClosingDelay)
+        #expect(clamped.delayedOpening == .hideEdge)
+        #expect(clamped.openingDelay == SidebarSettingsValues.openingDelayRange.upperBound)
+        #expect(clamped.closingDelay == SidebarSettingsValues.defaultClosingDelay)
         let prior = Data("{\"delayedOpening\":\"stepAside\",\"openingDelay\":1.2}".utf8)
         let restoredPrior = try JSONDecoder().decode(SidebarConfiguration.self, from: prior)
         #expect(restoredPrior.openingDelay == 1.2)
-        #expect(restoredPrior.closingDelay == SidebarSettings.defaultClosingDelay)
+        #expect(restoredPrior.closingDelay == SidebarSettingsValues.defaultClosingDelay)
     }
 
     @Test func openingAndClosingDelaysPersistIndependently() throws {

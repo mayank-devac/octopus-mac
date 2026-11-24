@@ -71,8 +71,8 @@ struct PreferencesSidebarView: View {
 
     ////////////////////
     //// Delay opening
-    /// Fade and Compact can step aside; all three supported modes can hide until the pointer reaches the edge.
-    // Step aside fades a sidebar the pointer rests on unused; Hide until edge hides it until the pointer rests at the edge.
+    /// Fade and Compact can step aside; all three supported modes can hide when the pointer reaches the edge.
+    // Step aside fades a sidebar the pointer rests on unused; Hide edge hides it until the pointer rests at the edge.
 
     @ViewBuilder private var delayedOpeningControls: some View {
         Picker("Delay opening", selection: delayedOpeningSelection.animation()) {
@@ -81,13 +81,13 @@ struct PreferencesSidebarView: View {
             }
         }
         .disabled(!editingEnabled)
-        .help("Step aside is available for Fade and Compact; it fades the unused sidebar and lets clicks through. Hide until edge hides the sidebar until the pointer rests at the screen edge.")
-        // Step aside waits before closing the sidebar; Hide until edge waits before opening it.
+        .help("Step aside is available for Fade and Compact; it fades the unused sidebar and lets clicks through. Hide edge hides the sidebar until the pointer rests at the screen edge.")
+        // Step aside waits before closing the sidebar; Hide edge waits before opening it.
         if let delay = configuration.activeDelayedOpening.delayCopy {
             LabeledContent(delay.title) {
                 HStack(spacing: 6) {
                     Text("Short").font(.caption).foregroundStyle(.secondary)
-                    Slider(value: selectedDelayBinding, in: SidebarSettings.openingDelayRange, step: 0.1)
+                    Slider(value: selectedDelayBinding, in: SidebarSettingsValues.openingDelayRange, step: 0.1)
                         .accessibilityLabel("Sidebar " + delay.title.lowercased())
                         .accessibilityValue(Text(selectedDelayText))
                     Text("Long").font(.caption).foregroundStyle(.secondary)
@@ -313,7 +313,7 @@ struct PreferencesSidebarView: View {
                 if usesVirtualNotch {
                     HStack {
                         Text("Notch width")
-                        Slider(value: setting(\.virtualNotchWidth), in: SidebarSettings.virtualNotchWidthRange, step: 10)
+                        Slider(value: setting(\.virtualNotchWidth), in: SidebarSettingsValues.virtualNotchWidthRange, step: 10)
                             .accessibilityLabel("Virtual notch width")
                         Text("\(Int(configuration.virtualNotchWidth)) pt")
                             .monospacedDigit().foregroundStyle(.secondary)

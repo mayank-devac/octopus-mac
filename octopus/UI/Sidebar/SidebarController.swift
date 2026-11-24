@@ -1422,7 +1422,7 @@ private final class SidebarDisplayController {
                 }
                 revealWork = work
                 // Reveal as soon as the pointer reaches the edge, or after it rests there for
-                // Hide until edge's delay; the work re-checks that the pointer is still at the edge.
+                // Hide edge's delay; the work re-checks that the pointer is still at the edge.
                 if presentation.revealDelay > 0 {
                     DispatchQueue.main.asyncAfter(deadline: .now() + presentation.revealDelay, execute: work)
                 } else {
