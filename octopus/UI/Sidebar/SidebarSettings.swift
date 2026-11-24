@@ -84,6 +84,30 @@ enum SidebarIdleBehavior: String, CaseIterable, Codable {
         case .notch: return "Mac Notch"
         }
     }
+
+    // Modes that keep the sidebar over windows offer Delay opening; Auto-Hide and Mac Notch already stay out of the way.
+    var supportsDelayedOpening: Bool { self == .fade || self == .stayVisible || self == .compact }
+}
+
+// How Delay opening keeps the sidebar out of the way until the pointer rests on it.
+enum SidebarDelayedOpening: String, CaseIterable, Codable {
+    // The sidebar works normally, then fades and lets clicks through once the pointer rests on it unused for the delay.
+    case stepAside
+    // The sidebar hides while idle and slides in after the pointer rests at the screen edge.
+    case hideUntilEdge
+
+    static let defaultChoice: Self = .stepAside
+
+    static func saved(_ value: String?) -> Self {
+        value.flatMap(Self.init(rawValue:)) ?? defaultChoice
+    }
+
+    var title: String {
+        switch self {
+        case .stepAside: return "Step aside"
+        case .hideUntilEdge: return "Hide until edge"
+        }
+    }
 }
 
 // Floating: icons float over the desktop.
@@ -175,6 +199,11 @@ struct SidebarConfiguration: Codable, Equatable {
     // Opacity of the vertical Dock's glass panel; Dock style shows this in place of shadow opacity.
     var dockOpacity: Double
     var virtualNotchWidth: Double
+    // Delay opening: only applies to modes where `idleBehavior.supportsDelayedOpening`.
+    var delaysOpening: Bool
+    var delayedOpening: SidebarDelayedOpening
+    // Seconds the pointer must rest: before Step aside fades the sidebar, or before Hide until edge opens it.
+    var openingDelay: Double
 
     init(defaults: UserDefaults? = .standard) {
         enabled = defaults?.object(forKey: "sidebarEnabled") as? Bool ?? true
@@ -199,8 +228,21 @@ struct SidebarConfiguration: Codable, Equatable {
         dockOpacity = defaults?.object(forKey: SidebarSettings.dockOpacityKey) as? Double ?? SidebarSettings.defaultDockOpacity
         virtualNotchWidth = defaults?.object(forKey: SidebarSettings.virtualNotchWidthKey) as? Double
             ?? SidebarSettings.defaultVirtualNotchWidth
+        delaysOpening = defaults?.bool(forKey: SidebarSettings.delaysOpeningKey) ?? false
+        delayedOpening = .saved(defaults?.string(forKey: SidebarSettings.delayedOpeningKey))
+        openingDelay = defaults?.object(forKey: SidebarSettings.openingDelayKey) as? Double
+            ?? SidebarSettings.defaultOpeningDelay
         normalize()
     }
+
+    // The Delay opening choice in effect, or nil when it is off or the visibility mode does not offer it.
+    var activeDelayedOpening: SidebarDelayedOpening? {
+        delaysOpening && idleBehavior.supportsDelayedOpening ? delayedOpening : nil
+    }
+
+    // Hide until edge replaces Compact's strip with the hidden edge sidebar. The view draws from this,
+    // and `SidebarPresentation` resolves the same rule for geometry and pointer input.
+    var usesCompactStrip: Bool { idleBehavior == .compact && activeDelayedOpening != .hideUntilEdge }
 
     // Passing no preference store uses the same fallbacks as a fresh installation.
     static var factoryDefaults: Self { Self(defaults: nil) }
@@ -240,6 +282,7 @@ struct SidebarConfiguration: Codable, Equatable {
     private enum CodingKeys: String, CodingKey {
         case enabled, desktopScope, displayScope, side, position, idleBehavior, style, compactShowsIcons, autoHideShowsEdgeMark, autoHideEdgeMarkColor
         case showSingleWindowMenu, showsWindowTitles, inactiveStyleChoices, appSpacing, fontSize, shadowOpacity, dockOpacity, virtualNotchWidth
+        case delaysOpening, delayedOpening, openingDelay
     }
 
     init(from decoder: Decoder) throws {
@@ -267,6 +310,10 @@ struct SidebarConfiguration: Codable, Equatable {
         shadowOpacity = try saved.decodeIfPresent(Double.self, forKey: .shadowOpacity) ?? shadowOpacity
         dockOpacity = try saved.decodeIfPresent(Double.self, forKey: .dockOpacity) ?? dockOpacity
         virtualNotchWidth = try saved.decodeIfPresent(Double.self, forKey: .virtualNotchWidth) ?? virtualNotchWidth
+        delaysOpening = try saved.decodeIfPresent(Bool.self, forKey: .delaysOpening) ?? delaysOpening
+        // Decoded as text so an unknown choice falls back instead of failing the whole configuration.
+        delayedOpening = .saved(try saved.decodeIfPresent(String.self, forKey: .delayedOpening))
+        openingDelay = try saved.decodeIfPresent(Double.self, forKey: .openingDelay) ?? openingDelay
         normalize()
     }
 
@@ -283,6 +330,8 @@ struct SidebarConfiguration: Codable, Equatable {
         dockOpacity = clamp(dockOpacity, 0...1, fallback: SidebarSettings.defaultDockOpacity)
         virtualNotchWidth = clamp(virtualNotchWidth, SidebarSettings.virtualNotchWidthRange,
                                  fallback: SidebarSettings.defaultVirtualNotchWidth)
+        openingDelay = clamp(openingDelay, SidebarSettings.openingDelayRange,
+                             fallback: SidebarSettings.defaultOpeningDelay)
     }
 
     func saveSingleSidebar(in defaults: UserDefaults = .standard) {
@@ -299,7 +348,10 @@ struct SidebarConfiguration: Codable, Equatable {
             "sidebarAppSpacing": appSpacing,
             "sidebarFontSize": fontSize, "sidebarShadowOpacity": shadowOpacity,
             SidebarSettings.dockOpacityKey: dockOpacity,
-            SidebarSettings.virtualNotchWidthKey: virtualNotchWidth
+            SidebarSettings.virtualNotchWidthKey: virtualNotchWidth,
+            SidebarSettings.delaysOpeningKey: delaysOpening,
+            SidebarSettings.delayedOpeningKey: delayedOpening.rawValue,
+            SidebarSettings.openingDelayKey: openingDelay
         ]
         for (key, value) in values { defaults.set(value, forKey: key) }
         defaults.set(autoHideEdgeMarkColor, forKey: SidebarSettings.edgeMarkColorKey)
@@ -332,6 +384,11 @@ enum SidebarSettings {
     static let virtualNotchWidthKey = "sidebarVirtualNotchWidth"
     static let defaultVirtualNotchWidth: Double = 200
     static let virtualNotchWidthRange: ClosedRange<Double> = 100...400
+    static let delaysOpeningKey = "sidebarDelaysOpening"
+    static let delayedOpeningKey = "sidebarDelayedOpening"
+    static let openingDelayKey = "sidebarOpeningDelay"
+    static let defaultOpeningDelay: Double = 0.5
+    static let openingDelayRange: ClosedRange<Double> = 0.1...5.0
     static let multiDisplayKey = "sidebarMultiDisplayEnabled"
     static let displayPreferencesKey = "sidebarDisplayPreferences"
     // Display last chosen in the Settings "Display" picker, so reopening Settings shows the same monitor.
@@ -389,7 +446,10 @@ enum SidebarSettings {
             "sidebarShadowOpacity": defaultShadowOpacity,
             dockOpacityKey: defaultDockOpacity,
             snapDistanceKey: defaultSnapDistance,
-            virtualNotchWidthKey: defaultVirtualNotchWidth
+            virtualNotchWidthKey: defaultVirtualNotchWidth,
+            delaysOpeningKey: false,
+            delayedOpeningKey: SidebarDelayedOpening.defaultChoice.rawValue,
+            openingDelayKey: defaultOpeningDelay
         ])
     }
 

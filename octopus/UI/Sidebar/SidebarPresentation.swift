@@ -6,18 +6,32 @@ struct SidebarPresentation {
     let mode: Mode
     let autoHides: Bool
     let fadesWhenIdle: Bool
+    // Seconds the pointer rests at the screen edge before a hidden sidebar slides in; 0 reveals at once.
+    let revealDelay: TimeInterval
+    // Step aside: after the pointer rests unused on the sidebar for `stepAsideDelay`, it fades and lets clicks through.
+    let stepsAside: Bool
+    let stepAsideDelay: TimeInterval
 
-    init(behavior: SidebarIdleBehavior, hasNotchTrigger: Bool, fullScreen: Bool) {
+    // `delayedOpening` is nil unless Delay opening is on for a mode that offers it
+    // (see `SidebarConfiguration.activeDelayedOpening`).
+    init(behavior: SidebarIdleBehavior, hasNotchTrigger: Bool, fullScreen: Bool,
+         delayedOpening: SidebarDelayedOpening? = nil, openingDelay: TimeInterval = SidebarSettings.defaultOpeningDelay) {
+        let hidesUntilEdge = delayedOpening == .hideUntilEdge
         switch behavior {
-        case .compact:
+        // Hide until edge replaces Compact's strip with the hidden edge sidebar.
+        case .compact where !hidesUntilEdge:
             mode = .compact
         case .notch where hasNotchTrigger:
             mode = .notch
         default:
             mode = .edge
         }
-        autoHides = mode == .edge && (behavior == .hide || behavior == .notch || fullScreen)
-        fadesWhenIdle = behavior == .fade
+        autoHides = mode == .edge && (behavior == .hide || behavior == .notch || fullScreen || hidesUntilEdge)
+        // A sidebar that only appears while in use has no idle state to fade.
+        fadesWhenIdle = behavior == .fade && !hidesUntilEdge
+        revealDelay = hidesUntilEdge ? openingDelay : 0
+        stepsAside = delayedOpening == .stepAside
+        stepAsideDelay = stepsAside ? openingDelay : 0
     }
 
     var usesCompactStrip: Bool { mode == .compact }

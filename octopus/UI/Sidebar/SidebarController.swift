@@ -145,6 +145,7 @@ private final class SidebarDisplayController {
         missionControlPresented = presented
         if presented {
             cancelInteraction()
+            endStepAside()
             anchors.values.forEach { ($0 as? SidebarPointerRegion.PointerView)?.cancelOperation(nil) }
             desktopMenu.hide()
             viewState.isExpanded = false
@@ -253,6 +254,8 @@ private final class SidebarDisplayController {
     private var pointerWasInSidebar = false
     private let positionScrollCapture = SidebarPositionScrollCapture()
     private var idleOpacityTarget: CGFloat = 1
+    private var stepAside = SidebarStepAside()
+    private var stepAsideWork: DispatchWorkItem?
 
     private struct Settings: Equatable {
         let configuration: SidebarConfiguration
@@ -288,7 +291,9 @@ private final class SidebarDisplayController {
     /// Presentation for the current settings; uses the default idle behavior until settings load.
     private var presentation: SidebarPresentation {
         SidebarPresentation(behavior: settings?.idleBehavior ?? .defaultBehavior,
-                            hasNotchTrigger: !notchFrame.isEmpty, fullScreen: isFullScreen)
+                            hasNotchTrigger: !notchFrame.isEmpty, fullScreen: isFullScreen,
+                            delayedOpening: settings?.configuration.activeDelayedOpening,
+                            openingDelay: settings?.configuration.openingDelay ?? SidebarSettings.defaultOpeningDelay)
     }
     // Pointer location for sidebar hit tests; the screen's top edge counts as inside the top row.
     private var pointerLocation: CGPoint {
@@ -449,6 +454,8 @@ private final class SidebarDisplayController {
         dragController.onInteractionChange = { [weak self] dragging in
             guard let self else { return }
             if dragging {
+                // A dragged window needs the sidebar visible as a drop target.
+                self.endStepAside()
                 self.updateIdleOpacity(inUse: true)
                 self.viewState.dragDesktops = self.inventory.desktops
                 self.viewState.dragSections = SidebarDesktopSection.make(entries: self.inventory.entries,
@@ -486,6 +493,7 @@ private final class SidebarDisplayController {
         if active { pairVisibleWindowIDs = Set(inventory.entries.flatMap { $0.visibleIDs }) }
         else { pairVisibleWindowIDs = nil }
         if active, viewState.dragSections == nil {
+            endStepAside()
             viewState.highlightedEntryID = nil
             cancelPendingHover()
             for work in [dismissWork, hideWork, revealWork] { work?.cancel() }
@@ -569,6 +577,7 @@ private final class SidebarDisplayController {
         let wasEnabled = settings?.enabled ?? false
         let sideChanged = settings.map { $0.enabled && $0.side != next.side } ?? false
         if settings?.idleBehavior != next.idleBehavior { viewState.isExpanded = false }
+        endStepAside()
         settings = next
         viewState.configuration = next.configuration
         updateInventoryScope(next)
@@ -771,8 +780,10 @@ private final class SidebarDisplayController {
     }
 
     // Fade mode dims the idle sidebar so content behind the icons stays visible.
+    // A stepped-aside sidebar is fully transparent, whatever the mode.
     private func updateIdleOpacity(inUse: Bool) {
-        let target = presentation.fadesWhenIdle && !inUse ? SidebarSettings.idleSidebarOpacity : 1
+        let target: CGFloat = stepAside.isSteppedAside ? 0
+            : presentation.fadesWhenIdle && !inUse ? SidebarSettings.idleSidebarOpacity : 1
         guard idleOpacityTarget != target else { return }
         idleOpacityTarget = target
         let duration = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? 0 : 0.15
@@ -781,6 +792,63 @@ private final class SidebarDisplayController {
             panel.animator().alphaValue = target
         }
     }
+
+    ////////////////////
+    //// Step aside (Delay opening)
+    /// Feed the pointer to `SidebarStepAside` and carry out its decision.
+    // Returns true while the sidebar is stepped aside, so the caller skips hover and menus.
+
+    private func updateStepAside(at point: CGPoint) -> Bool {
+        guard presentation.stepsAside, !isPeeking, !cycleController.isKeyboardSwitcherVisible else {
+            endStepAside()
+            return false
+        }
+        let inside = panel.isVisible && panel.isOnActiveSpace && pointerFrame.contains(point)
+        // An open window list, app menu or position drag means the sidebar is being used.
+        let inUse = sidebarEntryID != nil || appMenu.isVisible || positionScrollCapture.isActive
+        applyStepAside(stepAside.update(pointerInside: inside, inUse: inUse,
+                                        now: ProcessInfo.processInfo.systemUptime, delay: presentation.stepAsideDelay))
+        return stepAside.isSteppedAside
+    }
+
+    private func applyStepAside(_ action: SidebarStepAside.Action) {
+        switch action {
+        case .none:
+            return
+        case .checkAfter(let delay):
+            // One pending check is enough; it re-reads the latest use time when it fires.
+            guard stepAsideWork == nil else { return }
+            // A resting pointer sends no events, so the timer re-runs the pointer path itself.
+            let work = DispatchWorkItem { [weak self] in
+                guard let self else { return }
+                self.stepAsideWork = nil
+                self.updatePointer()
+            }
+            stepAsideWork = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+        // The rest of `updatePointer` then drops hover and applies the opacity for the new state.
+        case .stepAside:
+            stepAsideWork?.cancel()
+            stepAsideWork = nil
+            cancelPendingHover()
+        case .restore:
+            stepAsideWork?.cancel()
+            stepAsideWork = nil
+        }
+    }
+
+    // Drops any step-aside state and gives the sidebar back its normal opacity.
+    private func endStepAside() {
+        stepAsideWork?.cancel()
+        stepAsideWork = nil
+        guard stepAside.phase != .idle else { return }
+        let wasSteppedAside = stepAside.isSteppedAside
+        stepAside.reset()
+        if wasSteppedAside { updateIdleOpacity(inUse: false) }
+    }
+
+    //// Opacity follows `updateIdleOpacity`; mouse pass-through follows the `ignoresMouseEvents` checks.
+    //////////////////
 
     private func layout() {
         guard !missionControlPresented, let settings, settings.enabled else { return }
@@ -832,7 +900,7 @@ private final class SidebarDisplayController {
             notchPanel.orderOut(nil)
         }
         let menuFrame = sidebarEntryID == nil ? nil : cycleController.panel.frame
-        panel.ignoresMouseEvents = !SidebarLayout.acceptsSidebarPointer(
+        panel.ignoresMouseEvents = stepAside.isSteppedAside || !SidebarLayout.acceptsSidebarPointer(
             at: pointerLocation, sidebar: pointerFrame, menu: menuFrame)
         updateEdgeMark()
     }
@@ -1233,6 +1301,7 @@ private final class SidebarDisplayController {
         let modifiers = NSEvent.modifierFlags
         let point = pointerLocation
         let inPanel = panel.isVisible && panel.isOnActiveSpace && pointerFrame.contains(point)
+            && !stepAside.isSteppedAside
         let inNotch = notchPanel.isVisible && notchPanel.isOnActiveSpace && notchFrame.contains(point)
         let canPreview = settings?.enabled == true && inventory.hasPermission && screen != nil
             && !radialPresented && !missionControlPresented && !hasActiveInteraction
@@ -1250,6 +1319,8 @@ private final class SidebarDisplayController {
         }
         guard !radialPresented, !missionControlPresented else { return }
         guard !dragController.isActive, !otherDragActive() else { return }
+        // Any pointer use on the sidebar restarts its step-aside wait.
+        stepAside.pointerInteracted(now: ProcessInfo.processInfo.systemUptime)
         // The app menu shares this pointer path: hover selects its items, a click outside closes it.
         if appMenu.isVisible {
             if [.mouseMoved, .leftMouseDragged, .rightMouseDragged].contains(event.type) { appMenu.updatePointer(at: point) }
@@ -1287,15 +1358,17 @@ private final class SidebarDisplayController {
         guard settings?.enabled == true, !dragController.isActive, !otherDragActive() else { return }
         restoreSidebarIfNeeded()
         let point = pointerLocation
-        let inCompact = presentation.usesCompactStrip && panel.isVisible && panel.isOnActiveSpace && compactFrame.contains(point)
+        // Decide before hover: a stepped-aside sidebar takes no hover, menus or clicks.
+        let steppedAside = updateStepAside(at: point)
+        let inCompact = !steppedAside && presentation.usesCompactStrip && panel.isVisible && panel.isOnActiveSpace && compactFrame.contains(point)
         let inNotch = presentation.hasTopTrigger && notchPanel.isVisible && notchFrame.contains(point)
         if inCompact || inNotch { revealSidebarFromPersistentTrigger() }
-        let inSidebar = presentation.showsMainSidebar(expanded: viewState.isExpanded) && panel.isVisible && panel.isOnActiveSpace && sidebarFrame.contains(point)
+        let inSidebar = !steppedAside && presentation.showsMainSidebar(expanded: viewState.isExpanded) && panel.isVisible && panel.isOnActiveSpace && sidebarFrame.contains(point)
         let inMenu = sidebarEntryID != nil && cycleController.panel.isVisible
             && cycleController.panel.isOnActiveSpace
             && (cycleController.panel.frame.contains(point) || isInNotchMenuBridge(point))
         // The popup can overlap the sidebar's wide icon hit area. Give it all input there.
-        panel.ignoresMouseEvents = !panel.isVisible || !SidebarLayout.acceptsSidebarPointer(
+        panel.ignoresMouseEvents = steppedAside || !panel.isVisible || !SidebarLayout.acceptsSidebarPointer(
             at: point, sidebar: pointerFrame,
             menu: sidebarEntryID == nil ? nil : cycleController.panel.frame)
         let inEdge = edgeFrame.contains(point)
@@ -1346,8 +1419,13 @@ private final class SidebarDisplayController {
                     self.updatePointer()
                 }
                 revealWork = work
-                // Reveal immediately when the pointer reaches the edge.
-                DispatchQueue.main.async(execute: work)
+                // Reveal as soon as the pointer reaches the edge, or after it rests there for
+                // Hide until edge's delay; the work re-checks that the pointer is still at the edge.
+                if presentation.revealDelay > 0 {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + presentation.revealDelay, execute: work)
+                } else {
+                    DispatchQueue.main.async(execute: work)
+                }
             }
         } else {
             revealWork?.cancel()
