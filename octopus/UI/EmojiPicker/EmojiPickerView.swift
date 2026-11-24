@@ -13,6 +13,7 @@ import SwiftUI
 struct EmojiPickerView: View {
     @ObservedObject var model: EmojiPickerModel
     @FocusState private var searchFocused: Bool
+    @State private var showsCopied = false
 
     private let columns = Array(repeating: GridItem(.flexible(), spacing: 2), count: EmojiPickerModel.columnCount)
 
@@ -30,7 +31,36 @@ struct EmojiPickerView: View {
         }
         .frame(width: 360, height: 440)
         .onAppear { searchFocused = true }
-        .onChange(of: model.openCount) { searchFocused = true }
+        .onChange(of: model.openCount) {
+            searchFocused = true
+            showsCopied = false
+        }
+    }
+
+    // MARK: - Copied badge
+
+    /// Shows the badge briefly after each copy; a newer copy cancels this task
+    /// and restarts the timer instead of hiding the new badge early.
+    private func flashCopied() async {
+        guard model.copyCount > 0 else { return }
+        withAnimation(.easeOut(duration: 0.15)) { showsCopied = true }
+        guard (try? await Task.sleep(for: .seconds(1.2))) != nil else { return }
+        withAnimation(.easeIn(duration: 0.2)) { showsCopied = false }
+    }
+
+    private var copiedBadge: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+            Text("Copied \(model.lastCopied?.emoji ?? "")")
+        }
+        .font(.system(size: 12, weight: .medium))
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .background(Capsule().fill(.regularMaterial))
+        .overlay(Capsule().strokeBorder(Color.primary.opacity(0.1)))
+        .shadow(color: .black.opacity(0.15), radius: 6, y: 2)
+        .padding(.bottom, 10)
+        .transition(.opacity.combined(with: .move(edge: .bottom)))
     }
 
     // MARK: - Search
@@ -114,6 +144,10 @@ struct EmojiPickerView: View {
                     .foregroundStyle(.secondary)
             }
         }
+        .overlay(alignment: .bottom) {
+            if showsCopied { copiedBadge }
+        }
+        .task(id: model.copyCount) { await flashCopied() }
     }
 
     private func section(_ group: EmojiGroup) -> some View {
@@ -156,9 +190,6 @@ struct EmojiPickerView: View {
                             .truncationMode(.middle)
                     }
                 }
-            } else if let emoji = model.lastCopied {
-                Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
-                Text("Copied \(emoji.emoji)")
             }
             Spacer(minLength: 8)
             keyHints

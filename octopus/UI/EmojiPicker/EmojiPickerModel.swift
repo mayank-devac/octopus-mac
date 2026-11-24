@@ -26,7 +26,8 @@ struct EmojiSlot: Hashable {
 @MainActor
 final class EmojiPickerModel: ObservableObject {
     /// Fixed so arrow keys move through the same rows the grid draws.
-    static let columnCount = 9
+    /// Nonisolated so the pure `grid(for:)` helper can use it as a default.
+    nonisolated static let columnCount = 9
 
     @Published var query = "" { didSet { refreshGroups(selectFirst: true) } }
     /// `nil` shows all categories.
@@ -35,6 +36,8 @@ final class EmojiPickerModel: ObservableObject {
     @Published var selection: EmojiSlot?
     @Published private(set) var groups: [EmojiGroup] = []
     @Published private(set) var lastCopied: Emoji?
+    /// Bumped on every copy so copying the same emoji twice still re-shows the "Copied" badge.
+    @Published private(set) var copyCount = 0
     /// Bumped on each open so the view can refocus the search field.
     @Published private(set) var openCount = 0
 
@@ -96,6 +99,7 @@ final class EmojiPickerModel: ObservableObject {
         pasteboard.clearContents()
         guard pasteboard.setString(emoji.emoji, forType: .string) else { return false }
         lastCopied = emoji
+        copyCount += 1
         let stored = EmojiPickerSettings.recents(adding: emoji.emoji, to: recents.map(\.emoji))
         defaults.set(stored, forKey: EmojiPickerSettings.recentsKey)
         recents = catalog.emojis(for: stored)
