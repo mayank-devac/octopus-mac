@@ -61,6 +61,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var sidebarController: SidebarController!
     private var centerWindowMenu: CenterWindowMenuController!
     private let radialController = RadialWindowController()
+    private let emojiPickerController = EmojiPickerController()
     let windowLayoutController = WindowLayoutController()
     let windowTabGroupController = WindowTabGroupController()
     private var appearanceObserver: NSObjectProtocol?
@@ -113,10 +114,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             return !self.cycleController.isKeyboardSwitcherVisible && !self.sidebarController.hasActiveInteraction
         }
         centerWindowMenu.start()
+        emojiPickerController.start()
     }
 
     func applicationWillTerminate(_ notification: Notification) {
         radialController.stop()
+        emojiPickerController.stop()
         if let appearanceObserver { NotificationCenter.default.removeObserver(appearanceObserver) }
         appearanceObserver = nil
         sidebarController?.stop()

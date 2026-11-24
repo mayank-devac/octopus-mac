@@ -29,6 +29,7 @@ struct PreferencesShortcutsView: View {
     @State private var monitorShortcutConflict = false
     @StateObject private var radialSettings = RadialWindowSettings.shared
     @State private var radialError: String?
+    @State private var emojiShortcutError: String?
     private struct ShortcutAssignment {
         let name: KeyboardShortcuts.Name
         let shortcut: KeyboardShortcuts.Shortcut
@@ -335,6 +336,24 @@ struct PreferencesShortcutsView: View {
                     Text(error).font(.caption).foregroundStyle(.secondary)
                 }
             } header: { Text("Radial window selector") }
+
+            Section {
+                HStack {
+                    Text("Open emoji picker").frame(maxWidth: .infinity, alignment: .leading)
+                    KeyboardShortcutRecorder(name: .showEmojiPicker, onRecord: { saveShortcut($0, for: .showEmojiPicker) },
+                                             onError: { emojiShortcutError = $0 })
+                        .frame(width: 135, height: 26)
+                        .accessibilityLabel("Emoji picker shortcut")
+                    Button("Disable") {
+                        emojiShortcutError = saveShortcut(nil, for: .showEmojiPicker)
+                    }
+                }
+                Text("Opens the emoji menu-bar panel. Works while the emoji icon is shown in the menu bar.")
+                    .font(.caption).foregroundStyle(.secondary)
+                if let emojiShortcutError {
+                    Text(emojiShortcutError).font(.caption).foregroundStyle(.red)
+                }
+            } header: { Text("Emoji picker") }
 
             Section {
                 Button("Reset all mouse shortcuts") {
