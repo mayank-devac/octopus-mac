@@ -22,7 +22,7 @@ grep -m2 "MARKETING_VERSION\|CURRENT_PROJECT_VERSION" octopus.xcodeproj/project.
 - Version: bump the patch (`2.1.6` → `2.1.7`) unless the user names another.
 - Update both app-target entries in `octopus.xcodeproj/project.pbxproj` (Debug and Release):
   `MARKETING_VERSION` and `CURRENT_PROJECT_VERSION`. Leave the test targets (`1.0` / `1`) alone.
-- Commit the bump only if the user asks.
+- Commit the bump before building: publishing requires a clean tree so the source tag matches the build.
 
 ## 3. Test only what changed
 
@@ -59,7 +59,8 @@ python3 scripts/beta-release.py release --version <v> --build <b> --notes-file <
 
 - Takes several minutes (universal Release archive). Run it in the background and redirect the log;
   the xcodebuild output is huge.
-- Success ends with `Published https://github.com/mayank-devac/octopus-dist/releases/tag/v<v>-build.<b>`.
+- Success ends with `Published https://github.com/mayank-devac/octopus-dist/releases/tag/v<v>-build.<b>`
+  followed by `Tagged source <hash> as v<v>-build.<b> on origin` (octopus-mac tags).
 - If the user says stop/wait, stop it at once. Before publishing it is harmless; afterwards check
   the GitHub release and feed before doing anything else.
 
