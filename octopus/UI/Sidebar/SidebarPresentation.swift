@@ -63,7 +63,8 @@ struct SidebarPresentation {
     }
 
     func layout(configuration: SidebarConfiguration, notch: CGRect, available: CGRect,
-                screen: CGRect, groups: [SidebarMonitorGroup], entryCount: Int, expanded: Bool) -> Layout {
+                screen: CGRect, groups: [SidebarMonitorGroup], entryCount: Int, expanded: Bool,
+                allScreens: [CGRect] = []) -> Layout {
         let side = configuration.side
         let spacing = CGFloat(configuration.appSpacing)
         let displayedCount = groups.flatMap(\.sections).reduce(0) { $0 + $1.entries.count }
@@ -119,8 +120,9 @@ struct SidebarPresentation {
             drawing = CGRect(x: side == .right ? edge.minX - SidebarLayout.drawingPadding : edge.minX,
                              y: edge.minY, width: edge.width + SidebarLayout.drawingPadding, height: edge.height)
         }
-        let edgeTrigger = hasTopTrigger ? CGRect.zero : CGRect(
-            x: side == .left ? screen.minX : screen.maxX - 3, y: edge.minY, width: 3, height: edge.height)
+        // Only a delayed reveal needs the pointer to rest, so only Hide edge widens at a display seam.
+        let edgeTrigger = hasTopTrigger ? CGRect.zero : SidebarLayout.edgeTriggerFrame(side: side, screenFrame: screen,
+            minY: edge.minY, height: edge.height, widensAtSeam: revealDelay > 0, allScreenFrames: allScreens)
         // The notch zone sits above the usable area, which excludes the menu bar.
         let drawingBounds = notchInset > 0
             ? CGRect(x: available.minX, y: available.minY, width: available.width,

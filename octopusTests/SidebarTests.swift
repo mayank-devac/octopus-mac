@@ -562,6 +562,26 @@ struct SidebarTests {
         #expect(SidebarConfiguration.factoryDefaults.idleBehavior == SidebarIdleBehavior.defaultBehavior)
     }
 
+    @Test func hideEdgeTriggerWidensOnItsOwnDisplayAtSharedSeam() {
+        let left = CGRect(x: 0, y: 0, width: 1920, height: 1080)
+        let right = CGRect(x: 1920, y: 0, width: 2560, height: 1440)
+        let screens = [left, right]
+        func trigger(_ side: SidebarSide, on screen: CGRect, delayed: Bool) -> CGRect {
+            SidebarLayout.edgeTriggerFrame(side: side, screenFrame: screen, minY: 100, height: 600,
+                                           widensAtSeam: delayed, allScreenFrames: screens)
+        }
+        let leftSeam = trigger(.right, on: left, delayed: true)
+        let rightSeam = trigger(.left, on: right, delayed: true)
+        // Each display's seam trigger widens but stays on that display, so only its own sidebar opens.
+        #expect(leftSeam.width == SidebarLayout.seamTriggerWidth && left.contains(leftSeam))
+        #expect(rightSeam.width == SidebarLayout.seamTriggerWidth && right.contains(rightSeam))
+        #expect(!leftSeam.intersects(rightSeam))
+        // Without a delay, and on free edges, the strip keeps its thin width.
+        #expect(trigger(.right, on: left, delayed: false).width == SidebarLayout.edgeTriggerWidth)
+        #expect(trigger(.left, on: left, delayed: true).width == SidebarLayout.edgeTriggerWidth)
+        #expect(trigger(.right, on: right, delayed: true).width == SidebarLayout.edgeTriggerWidth)
+    }
+
     @Test func pointerOnScreenTopEdgeHitsVirtualNotch() throws {
         let screen = CGRect(x: 0, y: 0, width: 1920, height: 1080)
         let notch = try #require(SidebarLayout.notchTriggerFrame(

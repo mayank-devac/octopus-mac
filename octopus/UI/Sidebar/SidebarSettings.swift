@@ -709,6 +709,31 @@ enum SidebarLayout {
         return CGRect(x: minX, y: y, width: maxX - minX, height: notchTriggerHeight)
     }
 
+    ////////////////////
+    //// Edge trigger
+    /// A free screen edge stops the pointer, so a thin on-screen strip is enough to rest in.
+    // An edge shared with another display has no wall: the pointer slides onto the neighbour,
+    // so a delayed reveal could never fire. There the strip widens, but only on its own display:
+    // the display under the pointer decides which sidebar opens.
+
+    static let edgeTriggerWidth: CGFloat = 3
+    static let seamTriggerWidth: CGFloat = 12
+
+    static func edgeTriggerFrame(side: SidebarSide, screenFrame: CGRect, minY: CGFloat, height: CGFloat,
+                                 widensAtSeam: Bool, allScreenFrames: [CGRect]) -> CGRect {
+        let seamX = side == .left ? screenFrame.minX : screenFrame.maxX
+        let sharesSeam = allScreenFrames.contains { other in
+            other != screenFrame && abs((side == .left ? other.maxX : other.minX) - seamX) < 0.5
+                && other.minY < minY + height && other.maxY > minY
+        }
+        let width = widensAtSeam && sharesSeam ? seamTriggerWidth : edgeTriggerWidth
+        return CGRect(x: side == .left ? screenFrame.minX : screenFrame.maxX - width,
+                      y: minY, width: width, height: height)
+    }
+
+    //// A pointer resting just inside its own display at the seam now opens that display's sidebar.
+    //////////////////
+
     // A pointer pushed against the top edge reports y == screen maxY, which half-open
     // CGRect hit tests treat as outside the notch and the Dock bar. Move it onto the top row,
     // unless a display stacked above actually owns that point.

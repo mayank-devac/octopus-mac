@@ -879,7 +879,8 @@ private final class SidebarDisplayController {
         let policy = presentation
         let frames = policy.layout(configuration: settings.configuration, notch: notchFrame,
             available: usable, screen: target.frame, groups: groups,
-            entryCount: inventory.entries.count, expanded: viewState.isExpanded)
+            entryCount: inventory.entries.count, expanded: viewState.isExpanded,
+            allScreens: NSScreen.screens.map(\.frame))
         if viewState.side != settings.side { viewState.side = settings.side }
         if viewState.isTopCentered != policy.hasTopTrigger { viewState.isTopCentered = policy.hasTopTrigger }
         sidebarFrame = frames.sidebar
