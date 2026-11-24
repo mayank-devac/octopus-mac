@@ -41,6 +41,7 @@ struct EmojiPickerView: View {
                 .foregroundStyle(.secondary)
             TextField("Search emoji", text: $model.query)
                 .textFieldStyle(.plain)
+                .font(.system(size: 13))
                 .focused($searchFocused)
             if !model.query.isEmpty {
                 Button { model.query = "" } label: {
@@ -50,9 +51,13 @@ struct EmojiPickerView: View {
                 .foregroundStyle(.secondary)
             }
         }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 6)
-        .background(RoundedRectangle(cornerRadius: 7).fill(.quaternary))
+        .padding(.horizontal, 9)
+        .frame(height: 30)
+        .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.06)))
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .strokeBorder(searchFocused ? Color.accentColor.opacity(0.6) : Color.primary.opacity(0.08))
+        )
     }
 
     // MARK: - Category filters
@@ -87,7 +92,7 @@ struct EmojiPickerView: View {
     private var grid: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                LazyVGrid(columns: columns, spacing: 2, pinnedViews: [.sectionHeaders]) {
+                LazyVGrid(columns: columns, spacing: 2) {
                     ForEach(model.groups) { group in
                         section(group)
                     }
@@ -95,6 +100,8 @@ struct EmojiPickerView: View {
                 .padding(.horizontal, 8)
                 .padding(.bottom, 8)
             }
+            // A legacy (always-visible) scroller would cover the last emoji column.
+            .scrollIndicators(.never)
             // A new filter starts at the top instead of keeping the old scroll offset.
             .id(model.category)
             .onChange(of: model.selection) { _, slot in
@@ -120,12 +127,14 @@ struct EmojiPickerView: View {
                 .id(slot)
             }
         } header: {
+            // Unpinned and transparent so it sits on the popover material, not a grey bar.
             Text(group.title)
-                .font(.caption.weight(.semibold))
+                .font(.system(size: 11, weight: .semibold))
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.vertical, 4)
-                .background(.bar)
+                .padding(.leading, 4)
+                .padding(.top, 8)
+                .padding(.bottom, 2)
         }
     }
 
@@ -134,25 +143,60 @@ struct EmojiPickerView: View {
     private var footer: some View {
         HStack(spacing: 8) {
             if let emoji = model.hovered ?? model.selectedEmoji {
-                Text(emoji.emoji).font(.title2)
-                VStack(alignment: .leading, spacing: 0) {
-                    Text(emoji.description.capitalized).lineLimit(1)
+                Text(emoji.emoji).font(.system(size: 24))
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(emoji.description.capitalized)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
                     if let alias = emoji.aliases.first {
-                        Text(":\(alias):").font(.caption).foregroundStyle(.secondary)
+                        Text(":\(alias):")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
                     }
                 }
             } else if let emoji = model.lastCopied {
                 Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
                 Text("Copied \(emoji.emoji)")
             }
-            Spacer()
-            Text("↩ copy  ⌥↩ keep open  ⇥ filter  esc close")
-                .font(.caption2)
-                .foregroundStyle(.tertiary)
+            Spacer(minLength: 8)
+            keyHints
         }
         .font(.callout)
         .padding(.horizontal, 12)
-        .frame(height: 44)
+        .frame(height: 46)
+    }
+
+    // Short keycaps keep the footer on one line; the tooltip spells out every key.
+    private var keyHints: some View {
+        HStack(spacing: 6) {
+            KeyHint(key: "↩", label: "Copy")
+            KeyHint(key: "⇥", label: "Filter")
+            KeyHint(key: "esc", label: nil)
+        }
+        .fixedSize()
+        .help("Return copies and closes · Option-Return copies and stays open · Tab / Shift-Tab change category · Esc clears search, then closes")
+    }
+}
+
+/// One footer shortcut: a small keycap with an optional caption.
+private struct KeyHint: View {
+    let key: String
+    let label: String?
+
+    var body: some View {
+        HStack(spacing: 3) {
+            Text(key)
+                .font(.system(size: 10, weight: .medium))
+                .padding(.horizontal, 4)
+                .frame(minWidth: 18, minHeight: 16)
+                .background(RoundedRectangle(cornerRadius: 4).fill(Color.primary.opacity(0.08)))
+            if let label {
+                Text(label).font(.system(size: 10))
+            }
+        }
+        .foregroundStyle(.secondary)
     }
 }
 
