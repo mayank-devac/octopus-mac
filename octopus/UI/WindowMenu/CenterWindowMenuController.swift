@@ -27,7 +27,7 @@ final class CenterWindowMenuController {
     private var hasFreshData = false
     private var isPresented = false
     private var focusPID: pid_t?
-    private var anchorCenter: CGPoint?
+    private var anchor: WindowMenuPositionPreference.Anchor?
 
     /// Keeps a finished focus or launch alive after the menu closes.
     private static let inventoryGracePeriod: TimeInterval = 10
@@ -87,7 +87,7 @@ final class CenterWindowMenuController {
         presenter.present(placement: .center, entries: inventory.entries, focusPID: focusPID, status: status)
         inventory.refresh()
 
-        anchorCenter = Self.anchorCenter()
+        anchor = WindowMenuPositionPreference.anchor()
         layoutPanel()
         fader.cancel(panel)
         panel.orderFrontRegardless()
@@ -140,19 +140,10 @@ final class CenterWindowMenuController {
 
     // Keep the card centred on the same point as its height changes.
     private func layoutPanel() {
-        guard let center = anchorCenter else { return }
+        guard let anchor else { return }
         let size = MenuShadowMargin.panelSize(card: presenter.cardSize, facing: nil)
-        let frame = CGRect(x: center.x - size.width / 2, y: center.y - size.height / 2,
-                           width: size.width, height: size.height)
+        let frame = WindowMenuPositionPreference.panelFrame(size: size, anchor: anchor)
         if panel.frame != frame { panel.setFrame(frame, display: true, animate: false) }
-    }
-
-    private static func anchorCenter() -> CGPoint {
-        let screen = WindowMenuDisplayPreference.chosenScreen()
-            ?? NSScreen.screens.first { $0.frame.contains(NSEvent.mouseLocation) }
-            ?? NSScreen.main
-        guard let frame = screen?.visibleFrame else { return .zero }
-        return CGPoint(x: frame.midX, y: frame.midY + frame.height * WindowMenuMetrics.centerVerticalBias)
     }
 
     //////////////////

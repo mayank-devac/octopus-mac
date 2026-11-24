@@ -22,6 +22,7 @@ Act like a senior developer owning this repo.
 - **Test what you change.** Add or update Swift Testing cases next to the behavior (`octopusTests/`). Prefer pure geometry/planning tests; do not rely on them for pointer, hover or Space behavior. When a change alters existing behavior or defaults, update every test that depends on the old behavior in the same change.
 - **Be honest and concise.** Report exactly what was and wasn't verified, flag risks and open questions, and keep explanations short and plain.
 - **Ask before risky actions.** Confirm before deleting files, rewriting history, pushing, or changing signing, entitlements, the update feed or licences.
+- **No session links.** Never add a Claude Code session link (`Claude-Session: …` / `claude.ai/code/session_…`) to commit messages, PR descriptions or comments.
 - do test when needed and alway least amount of test . use tail so that you read less and save my tokens - basically smartly read whats necessary . 
 
 ## Commands
