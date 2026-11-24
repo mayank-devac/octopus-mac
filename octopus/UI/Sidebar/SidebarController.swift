@@ -1319,8 +1319,13 @@ private final class SidebarDisplayController {
         }
         guard !radialPresented, !missionControlPresented else { return }
         guard !dragController.isActive, !otherDragActive() else { return }
-        // Any pointer use on the sidebar restarts its step-aside wait.
-        stepAside.pointerInteracted(now: ProcessInfo.processInfo.systemUptime)
+        // Pointer use on the sidebar restarts its step-aside wait; plain moves ignore hand tremor.
+        let now = ProcessInfo.processInfo.systemUptime
+        if event.type == .mouseMoved {
+            stepAside.pointerMoved(to: point, now: now)
+        } else {
+            stepAside.pointerInteracted(now: now)
+        }
         // The app menu shares this pointer path: hover selects its items, a click outside closes it.
         if appMenu.isVisible {
             if [.mouseMoved, .leftMouseDragged, .rightMouseDragged].contains(event.type) { appMenu.updatePointer(at: point) }

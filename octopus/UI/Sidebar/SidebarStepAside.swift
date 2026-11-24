@@ -1,3 +1,4 @@
+import CoreGraphics
 import Foundation
 
 ////////////////////
@@ -25,8 +26,13 @@ struct SidebarStepAside: Equatable {
 
     // Timer callbacks can land a little early relative to the recorded start.
     static let timingTolerance: TimeInterval = 0.01
+    // A resting hand still drifts the pointer a few points; movement within this distance
+    // of the last counted move is tremor, not use.
+    static let jitterTolerance: CGFloat = 4
 
     private(set) var phase: Phase = .idle
+    // Where the last counted move ended; nil until the first move while watching.
+    private var restPoint: CGPoint?
 
     var isSteppedAside: Bool { phase == .steppedAside }
 
@@ -34,7 +40,7 @@ struct SidebarStepAside: Equatable {
     mutating func update(pointerInside: Bool, inUse: Bool, now: TimeInterval, delay: TimeInterval) -> Action {
         // Leaving returns the sidebar to its normal look.
         guard pointerInside else {
-            phase = .idle
+            reset()
             return .none
         }
         switch phase {
@@ -56,12 +62,24 @@ struct SidebarStepAside: Equatable {
         }
     }
 
-    // Movement, clicks and scrolls on the usable sidebar restart the wait.
+    // Clicks, drags and scrolls on the usable sidebar restart the wait.
     mutating func pointerInteracted(now: TimeInterval) {
         if case .watching = phase { phase = .watching(since: now) }
     }
 
-    mutating func reset() { phase = .idle }
+    // A plain move restarts the wait only once it travels past `jitterTolerance`, so tremor
+    // never counts; slow drift still adds up because the rest point stays put until then.
+    mutating func pointerMoved(to point: CGPoint, now: TimeInterval) {
+        guard case .watching = phase else { return }
+        if let restPoint, hypot(point.x - restPoint.x, point.y - restPoint.y) <= Self.jitterTolerance { return }
+        restPoint = point
+        phase = .watching(since: now)
+    }
+
+    mutating func reset() {
+        phase = .idle
+        restPoint = nil
+    }
 }
 
 //// The controller owns the fade and the timer; this type only decides when each happens.

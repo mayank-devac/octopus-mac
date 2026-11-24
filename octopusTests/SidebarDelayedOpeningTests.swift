@@ -11,12 +11,13 @@ struct SidebarDelayedOpeningTests {
     @Test func delayedOpeningAppliesOnlyToModesThatOfferIt() {
         var config = SidebarConfiguration.factoryDefaults
         config.openingDelay = 0.8
+        config.closingDelay = 1.4
         for behavior in SidebarIdleBehavior.allCases {
             config.idleBehavior = behavior
             for choice in SidebarDelayedOpening.allCases {
                 config.delayedOpening = choice
                 let active = config.activeDelayedOpening
-                #expect(active == (behavior.supportsDelayedOpening ? choice : .off))
+                #expect(active == (behavior.delayedOpeningChoices.contains(choice) ? choice : .off))
                 let policy = SidebarPresentation(configuration: config, hasNotchTrigger: false, fullScreen: false)
                 let plain = SidebarPresentation(behavior: behavior, hasNotchTrigger: false, fullScreen: false)
                 switch active {
@@ -27,16 +28,21 @@ struct SidebarDelayedOpeningTests {
                     #expect(policy.mode == autoHide.mode && policy.autoHides == autoHide.autoHides)
                     #expect(policy.fadesWhenIdle == autoHide.fadesWhenIdle)
                     #expect(policy.revealDelay == 0.8 && policy.stepAsideDelay == nil)
+                    #expect(SidebarDelayedOpening.hideUntilEdge.delayCopy?.title == "Opening delay")
                 case .stepAside:
                     #expect(policy.mode == plain.mode && policy.autoHides == plain.autoHides)
-                    #expect(policy.stepAsideDelay == 0.8 && policy.revealDelay == 0)
+                    #expect(policy.stepAsideDelay == 1.4)
+                    #expect(SidebarDelayedOpening.stepAside.delayCopy?.title == "Closing delay")
                 case .off:
                     // Auto-Hide and Mac Notch keep their existing behaviour.
                     #expect(policy.mode == plain.mode && policy.autoHides == plain.autoHides)
                     #expect(policy.stepAsideDelay == nil && policy.revealDelay == 0)
+                    #expect(SidebarDelayedOpening.off.delayCopy == nil)
                 }
             }
         }
+        #expect(!SidebarIdleBehavior.stayVisible.delayedOpeningChoices.contains(.stepAside))
+        #expect(SidebarIdleBehavior.stayVisible.delayedOpeningChoices.contains(.hideUntilEdge))
     }
 
     @Test func delayedOpeningDecodesOldProfilesAndClampsTheDelay() throws {
@@ -44,10 +50,31 @@ struct SidebarDelayedOpeningTests {
         let restored = try JSONDecoder().decode(SidebarConfiguration.self, from: oldProfile)
         #expect(restored.delayedOpening == .off)
         #expect(restored.openingDelay == SidebarSettings.defaultOpeningDelay)
+        #expect(restored.closingDelay == SidebarSettings.defaultClosingDelay)
         let unknown = Data("{\"delayedOpening\":\"later\",\"openingDelay\":9}".utf8)
         let clamped = try JSONDecoder().decode(SidebarConfiguration.self, from: unknown)
         #expect(clamped.delayedOpening == .off)
         #expect(clamped.openingDelay == SidebarSettings.openingDelayRange.upperBound)
+        #expect(clamped.closingDelay == SidebarSettings.defaultClosingDelay)
+        let prior = Data("{\"delayedOpening\":\"stepAside\",\"openingDelay\":1.2}".utf8)
+        let restoredPrior = try JSONDecoder().decode(SidebarConfiguration.self, from: prior)
+        #expect(restoredPrior.openingDelay == 1.2)
+        #expect(restoredPrior.closingDelay == SidebarSettings.defaultClosingDelay)
+    }
+
+    @Test func openingAndClosingDelaysPersistIndependently() throws {
+        let suite = "SidebarDelayValues-\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        var config = SidebarConfiguration.factoryDefaults
+        config.openingDelay = 0.8
+        config.closingDelay = 1.4
+        config.saveSingleSidebar(in: defaults)
+
+        let restored = SidebarConfiguration(defaults: defaults)
+        #expect(restored.openingDelay == 0.8)
+        #expect(restored.closingDelay == 1.4)
     }
 
     @Test func stepAsideWaitsForAnUnusedRestAndStaysAsideUntilThePointerLeaves() {
@@ -65,6 +92,22 @@ struct SidebarDelayedOpeningTests {
         #expect(stepAside.update(pointerInside: true, inUse: false, now: 11.5, delay: 0.5) == .none)
         #expect(stepAside.update(pointerInside: false, inUse: false, now: 11.6, delay: 0.5) == .none)
         #expect(!stepAside.isSteppedAside && stepAside.phase == .idle)
+    }
+
+    @Test func stepAsideIgnoresHandTremorButCountsRealMovement() {
+        var stepAside = SidebarStepAside()
+        #expect(stepAside.update(pointerInside: true, inUse: false, now: 10, delay: 1) == .checkAfter(1))
+        stepAside.pointerMoved(to: CGPoint(x: 100, y: 100), now: 10)
+        // Small wobbles around the rest point keep the original deadline.
+        stepAside.pointerMoved(to: CGPoint(x: 102, y: 99), now: 10.4)
+        stepAside.pointerMoved(to: CGPoint(x: 99, y: 103), now: 10.8)
+        #expect(stepAside.update(pointerInside: true, inUse: false, now: 11, delay: 1) == .stepAside)
+        stepAside.reset()
+        #expect(stepAside.update(pointerInside: true, inUse: false, now: 20, delay: 1) == .checkAfter(1))
+        stepAside.pointerMoved(to: CGPoint(x: 100, y: 100), now: 20)
+        // A move past the tolerance is use and restarts the wait.
+        stepAside.pointerMoved(to: CGPoint(x: 110, y: 100), now: 20.5)
+        #expect(stepAside.update(pointerInside: true, inUse: false, now: 21, delay: 1) == .checkAfter(0.5))
     }
 }
 

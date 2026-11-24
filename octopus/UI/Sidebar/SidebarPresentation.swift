@@ -27,12 +27,12 @@ struct SidebarPresentation {
         self.stepAsideDelay = stepAsideDelay
     }
 
-    // Delay opening resolves here: Hide until edge presents as Auto-Hide with a reveal delay.
+    // Hide until edge presents as Auto-Hide with a reveal delay.
     init(configuration: SidebarConfiguration, hasNotchTrigger: Bool, fullScreen: Bool) {
         let choice = configuration.activeDelayedOpening
         self.init(behavior: configuration.effectiveIdleBehavior, hasNotchTrigger: hasNotchTrigger, fullScreen: fullScreen,
                   revealDelay: choice == .hideUntilEdge ? configuration.openingDelay : 0,
-                  stepAsideDelay: choice == .stepAside ? configuration.openingDelay : nil)
+                  stepAsideDelay: choice == .stepAside ? configuration.closingDelay : nil)
     }
 
     var usesCompactStrip: Bool { mode == .compact }

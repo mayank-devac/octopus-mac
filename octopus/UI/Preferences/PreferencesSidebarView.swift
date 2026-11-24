@@ -71,27 +71,27 @@ struct PreferencesSidebarView: View {
 
     ////////////////////
     //// Delay opening
-    /// Compact, Always visible and Fade can wait before opening so buttons under the sidebar stay clickable.
+    /// Fade and Compact can step aside; all three supported modes can hide until the pointer reaches the edge.
     // Step aside fades a sidebar the pointer rests on unused; Hide until edge hides it until the pointer rests at the edge.
 
     @ViewBuilder private var delayedOpeningControls: some View {
-        Picker("Delay opening", selection: setting(\.delayedOpening).animation()) {
-            ForEach(SidebarDelayedOpening.allCases, id: \.rawValue) { choice in
+        Picker("Delay opening", selection: delayedOpeningSelection.animation()) {
+            ForEach(configuration.idleBehavior.delayedOpeningChoices, id: \.rawValue) { choice in
                 Text(choice.title).tag(choice)
             }
         }
         .disabled(!editingEnabled)
-        .help("Step aside fades the sidebar and lets clicks through when the pointer rests on it without using it. Hide until edge hides the sidebar until the pointer rests at the screen edge.")
+        .help("Step aside is available for Fade and Compact; it fades the unused sidebar and lets clicks through. Hide until edge hides the sidebar until the pointer rests at the screen edge.")
         // Step aside waits before closing the sidebar; Hide until edge waits before opening it.
-        if let delay = configuration.delayedOpening.delayCopy {
+        if let delay = configuration.activeDelayedOpening.delayCopy {
             LabeledContent(delay.title) {
                 HStack(spacing: 6) {
                     Text("Short").font(.caption).foregroundStyle(.secondary)
-                    Slider(value: setting(\.openingDelay), in: SidebarSettings.openingDelayRange, step: 0.1)
+                    Slider(value: selectedDelayBinding, in: SidebarSettings.openingDelayRange, step: 0.1)
                         .accessibilityLabel("Sidebar " + delay.title.lowercased())
-                        .accessibilityValue(Text(openingDelayText))
+                        .accessibilityValue(Text(selectedDelayText))
                     Text("Long").font(.caption).foregroundStyle(.secondary)
-                    Text(openingDelayText)
+                    Text(selectedDelayText)
                         .monospacedDigit().foregroundStyle(.secondary)
                         .frame(width: 38, alignment: .trailing)
                 }
@@ -101,8 +101,21 @@ struct PreferencesSidebarView: View {
         }
     }
 
-    private var openingDelayText: String {
-        configuration.openingDelay.formatted(.number.precision(.fractionLength(1))) + " s"
+    private var delayedOpeningSelection: Binding<SidebarDelayedOpening> {
+        Binding(get: { configuration.activeDelayedOpening }, set: { value in
+            setting(\.delayedOpening).wrappedValue = value
+        })
+    }
+
+    private var selectedDelayBinding: Binding<Double> {
+        configuration.activeDelayedOpening == .stepAside ? setting(\.closingDelay) : setting(\.openingDelay)
+    }
+
+    private var selectedDelayText: String {
+        let delay = configuration.activeDelayedOpening == .stepAside
+            ? configuration.closingDelay
+            : configuration.openingDelay
+        return delay.formatted(.number.precision(.fractionLength(1))) + " s"
     }
 
     //// Rows appear only for the modes that offer Delay opening.
