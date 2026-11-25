@@ -48,21 +48,6 @@ struct EmojiPickerView: View {
         withAnimation(.easeIn(duration: 0.2)) { showsCopied = false }
     }
 
-    private var copiedBadge: some View {
-        HStack(spacing: 6) {
-            Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
-            Text("Copied \(model.lastCopied?.emoji ?? "")")
-        }
-        .font(.system(size: 12, weight: .medium))
-        .padding(.horizontal, 12)
-        .padding(.vertical, 6)
-        .background(Capsule().fill(.regularMaterial))
-        .overlay(Capsule().strokeBorder(Color.primary.opacity(0.1)))
-        .shadow(color: .black.opacity(0.15), radius: 6, y: 2)
-        .padding(.bottom, 10)
-        .transition(.opacity.combined(with: .move(edge: .bottom)))
-    }
-
     // MARK: - Search
 
     private var searchField: some View {
@@ -145,7 +130,7 @@ struct EmojiPickerView: View {
             }
         }
         .overlay(alignment: .bottom) {
-            if showsCopied { copiedBadge }
+            if showsCopied { EmojiCopiedBadge(emoji: model.lastCopied) }
         }
         .task(id: model.copyCount) { await flashCopied() }
     }
@@ -208,60 +193,5 @@ struct EmojiPickerView: View {
         }
         .fixedSize()
         .help("Return copies and closes · Option-Return copies and stays open · Tab / Shift-Tab change category · Esc clears search, then closes")
-    }
-}
-
-/// One footer shortcut: a small keycap with an optional caption.
-private struct KeyHint: View {
-    let key: String
-    let label: String?
-
-    var body: some View {
-        HStack(spacing: 3) {
-            Text(key)
-                .font(.system(size: 10, weight: .medium))
-                .padding(.horizontal, 4)
-                .frame(minWidth: 18, minHeight: 16)
-                .background(RoundedRectangle(cornerRadius: 4).fill(Color.primary.opacity(0.08)))
-            if let label {
-                Text(label).font(.system(size: 10))
-            }
-        }
-        .foregroundStyle(.secondary)
-    }
-}
-
-/// One emoji button; highlights for keyboard selection, grows slightly on hover
-/// and names itself in a tooltip when the pointer rests on it.
-private struct EmojiCell: View {
-    let emoji: Emoji
-    let isSelected: Bool
-    @Binding var hovered: Emoji?
-    let onPick: () -> Void
-
-    private var highlight: Color {
-        if isSelected { return Color.accentColor.opacity(0.3) }
-        return hovered == emoji ? Color.primary.opacity(0.1) : .clear
-    }
-
-    var body: some View {
-        Button(action: onPick) {
-            Text(emoji.emoji)
-                .font(.system(size: 24))
-                .frame(width: 34, height: 34)
-                .background(RoundedRectangle(cornerRadius: 6).fill(highlight))
-                .scaleEffect(hovered == emoji ? 1.15 : 1)
-                .animation(.easeOut(duration: 0.12), value: hovered == emoji)
-        }
-        .buttonStyle(.plain)
-        // Native tooltip: appears after the pointer rests on the emoji.
-        .help(emoji.description.capitalized)
-        .onHover { inside in
-            if inside {
-                hovered = emoji
-            } else if hovered == emoji {
-                hovered = nil
-            }
-        }
     }
 }
