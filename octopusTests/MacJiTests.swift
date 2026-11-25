@@ -73,4 +73,15 @@ struct MacJiTests {
                                               pointer: .zero, visibleFrames: [screen])
         #expect(above.minY + MenuShadowMargin.size >= 36)
     }
+
+    @Test func caretRejectsFieldSizedOrOffscreenRects() {
+        let screens = [CGRect(x: 0, y: 0, width: 1000, height: 800)]
+        let line = MacJiCaretLocator.plausibleCaret(CGRect(x: 100, y: 100, width: 0, height: 16),
+                                                    primaryMaxY: 800, screens: screens)
+        #expect(line == CGRect(x: 100, y: 684, width: 0, height: 16))
+        #expect(MacJiCaretLocator.plausibleCaret(CGRect(x: 100, y: 100, width: 600, height: 400),
+                                                 primaryMaxY: 800, screens: screens) == nil)
+        #expect(MacJiCaretLocator.plausibleCaret(CGRect(x: -5000, y: 100, width: 0, height: 16),
+                                                 primaryMaxY: 800, screens: screens) == nil)
+    }
 }

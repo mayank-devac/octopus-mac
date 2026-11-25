@@ -25,12 +25,14 @@
 - 🗂️ **Profiles:** switch app bindings for work, study, or browsing.
 - 🚀 **Per-app window switching:** cycle through one app’s windows with an Alt-Tab-style panel.
 - 🌐 **Desktops:** move windows between macOS Desktops from the sidebar.
+- 😀 **MacJi:** type `::` and a word in any app to insert an emoji inline.
+- 🔎 **Emoji picker:** search and copy emoji from the menu bar or a shortcut.
 - 🎨 **Your setup:** customise sidebar position, spacing, labels, and idle behaviour.
 
 Octopus is a macOS window switcher and window-management app. This repository is
 Mayank Baral's modified version of the original Octopus by Xander Gouws and Omar Hayat.
 
-download beta : [octopus-dist](https://github.com/mayank-devac/octopus-dist/releases).
+📦Download beta : [octopus-dist](https://github.com/mayank-devac/octopus-dist/releases).
 
 ## See Octopus in action
 
@@ -85,6 +87,16 @@ Click any screenshot for a closer look.
     <td width="50%" align="center" valign="top">
       <a href="docs/assets/open.png"><img src="docs/assets/open.png" width="400" alt="Desktop overview with sidebar apps grouped under two monitor headings"></a>
       <p><strong>🖥️ Multiple monitors</strong><br>See your running apps grouped by display.</p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" align="center" valign="top">
+      <a href="docs/assets/macji.png"><img src="docs/assets/macji.png" width="320" alt="MacJi inline emoji panel open under the text caret while typing ::rocket"></a>
+      <p><strong>😀 MacJi inline emoji</strong><br>Type <code>::</code> and a word, then press Return to insert.</p>
+    </td>
+    <td width="50%" align="center" valign="top">
+      <a href="docs/assets/emoji-picker.png"><img src="docs/assets/emoji-picker.png" width="280" alt="Menu-bar emoji picker with search field, category buttons and emoji grid"></a>
+      <p><strong>🔎 Emoji picker</strong><br>Search, browse by category and copy from the menu bar.</p>
     </td>
   </tr>
 </table>
@@ -144,6 +156,13 @@ switcher for macOS — and it has grown into a keyboard-and-mouse window manager
 - Defaults: left click = resize and snap, right click = minimise/restore
 - <kbd>Control</kbd> + scroll wheel over the sidebar moves it vertically
 - Reset any recorded shortcut from Preferences
+
+### Emoji
+- **MacJi:** type the trigger (<kbd>:</kbd><kbd>:</kbd> by default) plus a search term in
+  any text field and a small panel opens under the caret, without stealing focus
+- **Emoji picker:** a menu-bar popover with search, category filters and a keyboard-driven
+  grid, with an optional global shortcut to open it
+- Both search emoji names, aliases and tags, and show the emoji's name as you move over it
 
 ### Updates
 - Built-in Sparkle 2 updater with feed and EdDSA signature verification
@@ -276,6 +295,28 @@ you want (modifiers optional, <kbd>Escape</kbd> cancels):
 
 Click and drag shortcuts work on sidebar app icons; inactive apps focus first. Hide
 and minimise must use different shortcuts.
+
+### Emoji
+
+**MacJi (inline):** in any app, type <kbd>:</kbd><kbd>:</kbd> followed by a word, for example
+`::rocket`. A panel opens under the text caret (or at the pointer when the app does not
+report one):
+
+| Key | Action |
+| --- | --- |
+| Arrow keys | Move through the results |
+| <kbd>Return</kbd> | Replace the typed `::word` with the selected emoji |
+| <kbd>Shift</kbd> + <kbd>Return</kbd> | Copy the emoji instead |
+| <kbd>Escape</kbd> | Close the panel |
+
+Typing a space or punctuation closes it and keeps your text. Turn MacJi on or off and
+change the trigger (up to 4 characters) in **Preferences → General**.
+
+**Emoji picker (menu bar):** click the emoji item in the menu bar, or record a shortcut
+for it in **Preferences → Shortcuts** (there is no default, so it does not clash with the
+system <kbd>Control</kbd> + <kbd>Command</kbd> + <kbd>Space</kbd> viewer). Search or pick a
+category, then press <kbd>Return</kbd> to copy the emoji and return to your previous app,
+ready to paste with <kbd>Command</kbd> + <kbd>V</kbd>.
 
 ### Customization
 
