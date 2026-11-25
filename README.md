@@ -49,6 +49,16 @@ Click any screenshot for a closer look.
       <p><strong>🪟 Find a window</strong><br>Pick a window, minimise it, or close it from the sidebar.</p>
     </td>
   </tr>
+    <tr>
+    <td width="50%" align="center" valign="top">
+      <a href="docs/assets/macji.png"><img src="docs/assets/macji.png" width="320" alt="MacJi inline emoji panel open under the text caret while typing ::rocket"></a>
+      <p><strong>😀 MacJi inline emoji</strong><br>Type <code>::</code> and a word, then press Return to insert.</p>
+    </td>
+    <td width="50%" align="center" valign="top">
+      <a href="docs/assets/emoji-picker.png"><img src="docs/assets/emoji-picker.png" width="280" alt="Menu-bar emoji picker with search field, category buttons and emoji grid"></a>
+      <p><strong>🔎 Emoji picker</strong><br>Search, browse by category and copy from the menu bar.</p>
+    </td>
+  </tr>
   <tr>
     <td width="50%" align="center" valign="top">
       <a href="docs/assets/mac%20notch.png"><img src="docs/assets/mac%20notch.png" width="400" alt="Horizontal Octopus app bar beneath the MacBook notch"></a>
@@ -87,16 +97,6 @@ Click any screenshot for a closer look.
     <td width="50%" align="center" valign="top">
       <a href="docs/assets/open.png"><img src="docs/assets/open.png" width="400" alt="Desktop overview with sidebar apps grouped under two monitor headings"></a>
       <p><strong>🖥️ Multiple monitors</strong><br>See your running apps grouped by display.</p>
-    </td>
-  </tr>
-  <tr>
-    <td width="50%" align="center" valign="top">
-      <a href="docs/assets/macji.png"><img src="docs/assets/macji.png" width="320" alt="MacJi inline emoji panel open under the text caret while typing ::rocket"></a>
-      <p><strong>😀 MacJi inline emoji</strong><br>Type <code>::</code> and a word, then press Return to insert.</p>
-    </td>
-    <td width="50%" align="center" valign="top">
-      <a href="docs/assets/emoji-picker.png"><img src="docs/assets/emoji-picker.png" width="280" alt="Menu-bar emoji picker with search field, category buttons and emoji grid"></a>
-      <p><strong>🔎 Emoji picker</strong><br>Search, browse by category and copy from the menu bar.</p>
     </td>
   </tr>
 </table>
