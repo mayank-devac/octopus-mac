@@ -16,8 +16,10 @@ final class WindowMenuPresenter {
     // Inputs
     var profiles: () -> (profiles: [Profile], currentID: UUID?) = { ([], nil) }
     var recentBundleIdentifiers: () -> [String] = { [] }
-    /// True adds every open app after the workspace apps; read on each rebuild so the setting applies live.
-    var includesOpenApps: () -> Bool = { false }
+    /// Which apps fill the strip; read on each rebuild so the setting applies live.
+    var appScope: () -> WindowMenuAppScope = { .workspace }
+    /// True lists only the hovered strip app's windows; read on each presentation.
+    var showsHoveredAppOnly: () -> Bool = { false }
 
     // Outputs
     var onActivateWindow: (SidebarWindowID) -> Void = { _ in }
@@ -50,6 +52,7 @@ final class WindowMenuPresenter {
         selectedWorkspaceID = profiles().currentID
         appPageStart = 0
         windowPageStart = 0
+        state.showsHoveredAppOnly = showsHoveredAppOnly()
         state.begin(placement: placement, content: buildContent(isCenter: placement == .center),
                     status: status, restingAppID: nil)
         settleRestingApp(reveal: true)
@@ -187,7 +190,7 @@ final class WindowMenuPresenter {
     }
 
     private func pageWindows() {
-        let windows = state.content.windows
+        let windows = state.listedWindows
         guard !windows.isEmpty else { return }
         let visible = WindowMenuLayout.maximumRows(isCenter: state.isCenter)
         windowPageStart = windowPageStart + visible < windows.count ? windowPageStart + visible : 0
@@ -202,7 +205,7 @@ final class WindowMenuPresenter {
             workspaces: WindowMenuCatalogue.workspaces(from: source.profiles),
             selectedWorkspaceID: selectedWorkspaceID ?? source.currentID,
             running: running, focusPID: focusPID,
-            includesOpenApps: includesOpenApps(),
+            appScope: appScope(),
             recentBundleIdentifiers: isCenter ? recentBundleIdentifiers() : [],
             installed: WindowMenuSource.installedApp)
     }

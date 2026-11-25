@@ -9,6 +9,8 @@ struct PreferencesSidebarView: View {
     @AppStorage("sidebarMonitor") private var monitor = "primary"
     @AppStorage(PreferenceKeys.sidebarWindowMenuStyle) private var windowMenuStyle = SidebarWindowMenuStyle.defaultStyle
     @AppStorage(PreferenceKeys.sidebarWindowMenuShowsOpenApps) private var windowMenuShowsOpenApps = false
+    @AppStorage(PreferenceKeys.sidebarWindowMenuOnlyOpenApps) private var windowMenuOnlyOpenApps = false
+    @AppStorage(PreferenceKeys.sidebarWindowMenuShowsHoveredAppOnly) private var windowMenuShowsHoveredAppOnly = false
     @State private var screens = NSScreen.screens
     @AppStorage(SidebarSettings.settingsSelectedDisplayKey) private var selectedDisplayID = ""
     @State private var configuration = SidebarConfiguration()
@@ -265,9 +267,23 @@ struct PreferencesSidebarView: View {
                     }
                 }
                 .help(WindowMenuStrings.styleHelp)
-                Toggle(WindowMenuStrings.showsOpenAppsTitle, isOn: $windowMenuShowsOpenApps)
-                    .disabled(windowMenuStyle != .modern)
-                    .help(WindowMenuStrings.showsOpenAppsHelp)
+                // Options that only the Modern menu reads.
+                Group {
+                    // Both open-app options share one row; "Only" narrows "Show", so it waits for it.
+                    LabeledContent(WindowMenuStrings.openAppsTitle) {
+                        HStack(spacing: 14) {
+                            Toggle(WindowMenuStrings.showsOpenAppsTitle, isOn: $windowMenuShowsOpenApps)
+                                .help(WindowMenuStrings.showsOpenAppsHelp)
+                            Toggle(WindowMenuStrings.onlyOpenAppsTitle, isOn: $windowMenuOnlyOpenApps)
+                                .disabled(!windowMenuShowsOpenApps)
+                                .help(WindowMenuStrings.onlyOpenAppsHelp)
+                        }
+                        .toggleStyle(.checkbox)
+                    }
+                    Toggle(WindowMenuStrings.hoveredAppOnlyTitle, isOn: $windowMenuShowsHoveredAppOnly)
+                        .help(WindowMenuStrings.hoveredAppOnlyHelp)
+                }
+                .disabled(windowMenuStyle != .modern)
                 Toggle("Show menu for apps with one window", isOn: setting(\.showSingleWindowMenu))
                     .disabled(!editingEnabled)
                     .help("Off opens the window menu only for apps with more than one window.")

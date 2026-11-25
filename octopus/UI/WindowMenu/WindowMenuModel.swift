@@ -43,8 +43,26 @@ struct WindowMenuContent: Equatable {
     var workspaces: [WindowMenuWorkspace] = []
     var selectedWorkspaceID: UUID?
     var apps: [WindowMenuApp] = []
+    /// The first workspace app when opened apps lead the strip; a separator sits before it, nil draws none.
+    var firstWorkspaceAppID: String?
     var windows: [WindowMenuWindow] = []
     var recentApps: [WindowMenuApp] = []
+}
+
+/// Which apps the strip lists besides the hovered or frontmost app.
+enum WindowMenuAppScope: Equatable {
+    /// The workspace's apps; open apps only when the workspace has none.
+    case workspace
+    /// The workspace's apps, then every other app with open windows.
+    case workspaceAndOpen
+    /// Only apps with open windows.
+    case openOnly
+
+    /// Reads the two Preferences checkboxes; "Only opened apps" counts only while "Show" is on.
+    static func current(in defaults: UserDefaults = .standard) -> Self {
+        guard defaults.bool(forKey: PreferenceKeys.sidebarWindowMenuShowsOpenApps) else { return .workspace }
+        return defaults.bool(forKey: PreferenceKeys.sidebarWindowMenuOnlyOpenApps) ? .openOnly : .workspaceAndOpen
+    }
 }
 
 /// Every hoverable or focusable element; also the key for pointer anchors.

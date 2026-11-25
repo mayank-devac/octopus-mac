@@ -187,7 +187,10 @@ final class CyclePanelController: NSObject {
             self.onSidebarDrag?(id, title, source, event)
         }
         windowMenu.onLayoutChange = { [weak self] in self?.updatePanelSize() }
-        windowMenu.includesOpenApps = { UserDefaults.standard.bool(forKey: PreferenceKeys.sidebarWindowMenuShowsOpenApps) }
+        windowMenu.appScope = { WindowMenuAppScope.current() }
+        windowMenu.showsHoveredAppOnly = {
+            UserDefaults.standard.bool(forKey: PreferenceKeys.sidebarWindowMenuShowsHoveredAppOnly)
+        }
     }
 
     private func setModernMenuVisible(_ modern: Bool) {

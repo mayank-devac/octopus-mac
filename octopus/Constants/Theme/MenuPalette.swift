@@ -20,9 +20,9 @@ enum MenuPalette {
     static let windowControlStroke = Color.black.opacity(0.12)
 
     // Menus
-    static let focusFill = Color.accentColor.opacity(0.24)
-    static let groupFill = Color.accentColor.opacity(0.09)
-    static let hoverFill = Color.primary.opacity(0.08)
+    static let focusFill = Color.accentColor.opacity(0.36)
+    static let groupFill = Color.accentColor.opacity(0.16)
+    static let hoverFill = Color.primary.opacity(0.14)
     static let runningRing = Color.accentColor
     static let destructive = Color.red
     static let cardStroke = Color.primary.opacity(0.1)

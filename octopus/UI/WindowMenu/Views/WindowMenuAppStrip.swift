@@ -42,11 +42,16 @@ struct WindowMenuAppStrip: View {
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
+                // A separator sits before the first workspace app when opened apps lead the strip.
+                let separatedAppID = kind == .workspace ? state.content.firstWorkspaceAppID : nil
                 ScrollViewReader { proxy in
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: Metrics.appCellSpacing) {
                             ForEach(apps) { app in
                                 cell(app).id(target(for: app))
+                                    .overlay(alignment: .leading) {
+                                        if app.id == separatedAppID { groupSeparator }
+                                    }
                             }
                         }
                         .padding(.horizontal, 2)
@@ -109,6 +114,16 @@ struct WindowMenuAppStrip: View {
         .help(app.title)
         .accessibilityLabel(app.isRunning ? WindowMenuStrings.runningApp(app.title) : WindowMenuStrings.openApp(app.title))
         .accessibilityAddTraits(isFocused ? .isSelected : [])
+    }
+
+    // A hairline like the card's own dividers, centred in the gap before the cell,
+    // so it takes no width and the strip's layout maths stay unchanged.
+    private var groupSeparator: some View {
+        Rectangle()
+            .fill(Color(nsColor: .separatorColor))
+            .frame(width: 0.5, height: Metrics.appIconSize)
+            .offset(x: -(Metrics.appCellSpacing + 0.5) / 2)
+            .allowsHitTesting(false)
     }
 
     private var moreButton: some View {

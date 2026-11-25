@@ -13,10 +13,11 @@ struct WindowMenuWindowList: View {
     @Namespace private var focusSpace
     private typealias Metrics = WindowMenuMetrics
 
-    private var windows: [WindowMenuWindow] { state.content.windows }
-
+    // Rows come from `listedWindows`, filtered once per pass. The card keeps its full
+    // height when a hovered app narrows the rows, so the panel does not resize under the pointer.
     var body: some View {
-        if let message = placeholderMessage {
+        let windows = state.listedWindows
+        if let message = placeholderMessage(isEmpty: windows.isEmpty) {
             placeholder(message)
         } else {
             VStack(spacing: 0) {
@@ -153,11 +154,11 @@ struct WindowMenuWindowList: View {
     ////////////////////
     //// Empty and unavailable states
 
-    private var placeholderMessage: String? {
+    private func placeholderMessage(isEmpty: Bool) -> String? {
         switch state.status {
         case .loading: return WindowMenuStrings.loading
         case .needsPermission: return WindowMenuStrings.needsPermission
-        case .ready: return windows.isEmpty ? WindowMenuStrings.noWindows : nil
+        case .ready: return isEmpty ? WindowMenuStrings.noWindows : nil
         }
     }
 

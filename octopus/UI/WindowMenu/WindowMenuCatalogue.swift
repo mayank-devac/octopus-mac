@@ -50,19 +50,26 @@ enum WindowMenuCatalogue {
     //// Menu content
     /// `focusPID` is the hovered sidebar app (or frontmost app for the centre menu);
     /// it is added to the strip when the workspace does not include it.
-    // `includesOpenApps` appends every other running app with windows after the workspace apps.
+    // `appScope` decides whether workspace apps, open apps or both fill the strip.
 
     static func content(workspaces: [WindowMenuWorkspace], selectedWorkspaceID: UUID?,
                         running: [WindowMenuRunningApp], focusPID: pid_t?,
-                        includesOpenApps: Bool = false,
+                        appScope: WindowMenuAppScope = .workspace,
                         recentBundleIdentifiers: [String] = [],
                         recentLimit: Int = WindowMenuMetrics.recentAppLimit,
                         installed: (String) -> WindowMenuInstalledApp?) -> WindowMenuContent {
         let workspace = workspaces.first { $0.id == selectedWorkspaceID } ?? workspaces.first
-        var apps = workspaceApps(workspace?.bundleIdentifiers ?? [], running: running, installed: installed)
-        if apps.isEmpty || includesOpenApps {
+        let boundApps = appScope == .openOnly ? []
+            : workspaceApps(workspace?.bundleIdentifiers ?? [], running: running, installed: installed)
+        var apps = boundApps
+        var firstWorkspaceAppID: String?
+        if apps.isEmpty || appScope != .workspace {
             let shownPIDs = Set(apps.compactMap(\.pid))
-            apps += running.filter { !$0.windows.isEmpty && !shownPIDs.contains($0.pid) }.map(app(for:))
+            let openApps = running.filter { !$0.windows.isEmpty && !shownPIDs.contains($0.pid) }.map(app(for:))
+            // Show all: opened apps lead, a separator, then the workspace apps.
+            // Otherwise `apps` is still empty here, so the opened apps fill the strip alone.
+            apps = appScope == .workspaceAndOpen ? openApps + boundApps : openApps
+            if !openApps.isEmpty { firstWorkspaceAppID = boundApps.first?.id }
         }
         if let focusPID, !apps.contains(where: { $0.pid == focusPID }),
            let focused = running.first(where: { $0.pid == focusPID }) {
@@ -84,7 +91,7 @@ enum WindowMenuCatalogue {
             }
         }
         return WindowMenuContent(workspaces: workspaces, selectedWorkspaceID: workspace?.id,
-                                 apps: apps, windows: windows, recentApps: Array(recentApps.prefix(recentLimit)))
+                                 apps: apps, firstWorkspaceAppID: firstWorkspaceAppID, windows: windows, recentApps: Array(recentApps.prefix(recentLimit)))
     }
 
     private static func workspaceApps(_ identifiers: [String], running: [WindowMenuRunningApp],

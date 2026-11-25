@@ -61,8 +61,14 @@ struct WindowMenuTests {
         #expect(workspaceOnly.apps.map(\.id) == ["a"])
         let withOpenApps = WindowMenuCatalogue.content(
             workspaces: [workspace(["a"])], selectedWorkspaceID: nil, running: running, focusPID: nil,
-            includesOpenApps: true, installed: installed)
-        #expect(withOpenApps.apps.map(\.id) == ["a", "x"])
+            appScope: .workspaceAndOpen, installed: installed)
+        #expect(withOpenApps.apps.map(\.id) == ["x", "a"])
+        #expect(withOpenApps.firstWorkspaceAppID == "a")
+        let openOnly = WindowMenuCatalogue.content(
+            workspaces: [workspace(["a", "y"])], selectedWorkspaceID: nil, running: running, focusPID: nil,
+            appScope: .openOnly, installed: installed)
+        #expect(openOnly.apps.map(\.id) == ["a", "x"])
+        #expect(openOnly.firstWorkspaceAppID == nil)
     }
 
     @Test func recentAppsSkipRunningAppsAndStopAtTheLimit() {

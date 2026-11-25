@@ -3,7 +3,7 @@ import SwiftUI
 ////////////////////
 //// Observable state behind WindowMenuView
 /// Written only by WindowMenuPresenter. `focus` is the single selection that
-/// both arrow keys and pointer hover move; `hovered` adds pointer-only button
+// both arrow keys and pointer hover move; `hovered` adds pointer-only button
 // highlights (such as a row's close button).
 
 /// Asks a scroll view to reveal a target; a fresh ID repeats the same target.
@@ -36,6 +36,15 @@ final class WindowMenuState: ObservableObject {
     var appearEdge: HorizontalEdge? {
         if case .sidebar(let edge) = placement { return edge }
         return nil
+    }
+
+    /// Set by the presenter on each presentation: a focused strip app hides the other apps' rows.
+    var showsHoveredAppOnly = false
+
+    /// The rows the list draws and pages through. Only an app icon narrows them; a focused row lists every window.
+    var listedWindows: [WindowMenuWindow] {
+        guard showsHoveredAppOnly, case .app(let appID)? = focus else { return content.windows }
+        return content.windows.filter { $0.appID == appID }
     }
 
     /// The app whose windows are tinted in the list.
