@@ -62,6 +62,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var centerWindowMenu: CenterWindowMenuController!
     private let radialController = RadialWindowController()
     private let emojiPickerController = EmojiPickerController()
+    private let macJiController = MacJiController()
     let windowLayoutController = WindowLayoutController()
     let windowTabGroupController = WindowTabGroupController()
     private var appearanceObserver: NSObjectProtocol?
@@ -115,11 +116,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
         centerWindowMenu.start()
         emojiPickerController.start()
+        macJiController.start()
     }
 
     func applicationWillTerminate(_ notification: Notification) {
         radialController.stop()
         emojiPickerController.stop()
+        macJiController.stop()
         if let appearanceObserver { NotificationCenter.default.removeObserver(appearanceObserver) }
         appearanceObserver = nil
         sidebarController?.stop()

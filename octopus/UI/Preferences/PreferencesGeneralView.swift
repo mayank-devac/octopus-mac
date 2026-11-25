@@ -16,6 +16,8 @@ struct PreferencesGeneralView: View {
 //    @AppStorage("hideMenubarIcon") private var hideMenubarIcon = false
     @AppStorage("showActiveProfileInMenuBar") private var showActiveProfileInMenuBar = false
     @AppStorage(EmojiPickerSettings.showMenuBarItemKey) private var showEmojiMenuBarItem = true
+    @AppStorage(MacJiSettings.enabledKey) private var macJiEnabled = true
+    @AppStorage(MacJiSettings.triggerKey) private var macJiTrigger = MacJiSettings.defaultTrigger
     @AppStorage("appearance") private var appearance = "system"
     @AppStorage("defaultNumberOrder") private var defaultNumberOrder = "rightHanded"
     @AppStorage("instantSwitch") private var instantSwitch = "never"
@@ -109,9 +111,20 @@ struct PreferencesGeneralView: View {
                 }
                 .pickerStyle(.menu)
             }
+
+            // MacJi: inline emoji panel opened by typing the trigger and a term.
+            Section {
+                Toggle("Enable MacJi", isOn: $macJiEnabled)
+                TextField("Trigger:", text: $macJiTrigger)
+                    .disabled(!macJiEnabled)
+                    .help("Type this, then a name, in any app. Up to \(MacJiSettings.triggerMaxLength) characters, no spaces, and not only letters or digits. Invalid text uses ::.")
+                Text("Type \(MacJiSettings.validTrigger(macJiTrigger))rocket in any app. ↩ inserts · ⇧↩ copies · esc closes.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } header: { Text("MacJi emoji") }
         }
         .formStyle(.grouped)
-        .frame(height: hasAccessibilityPermission ? 310 : 400)
+        .frame(height: hasAccessibilityPermission ? 420 : 510)
         .onAppear {
             screens = NSScreen.screens
         }
