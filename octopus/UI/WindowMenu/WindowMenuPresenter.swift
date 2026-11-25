@@ -174,7 +174,8 @@ final class WindowMenuPresenter {
     //// Hovered-app-only list
     /// Hovering an app icon lists only its windows. The list stays narrowed while
     /// the pointer is over the strip or the rows, so it does not jump while the
-    // user moves down to pick a window. Leaving both widens it after `widenDelay`;
+    // user moves down to pick a window. Leaving both widens it after `widenDelay`
+    // (immediately when the app has only one window);
     // coming back before then cancels the wait and the next exit starts it afresh.
 
     private func narrow(to appID: String) {
@@ -185,6 +186,11 @@ final class WindowMenuPresenter {
 
     private func scheduleWiden() {
         guard state.narrowedAppID != nil, widenTask == nil else { return }
+        // A single window needs no picking time, so its list widens at once.
+        guard state.listedWindows.count > 1 else {
+            state.setNarrowedApp(nil)
+            return
+        }
         widenTask = Task { [weak self] in
             try? await Task.sleep(for: Self.widenDelay)
             guard !Task.isCancelled, let self else { return }
