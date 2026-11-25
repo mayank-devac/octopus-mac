@@ -84,4 +84,13 @@ struct MacJiTests {
         #expect(MacJiCaretLocator.plausibleCaret(CGRect(x: -5000, y: 100, width: 0, height: 16),
                                                  primaryMaxY: 800, screens: screens) == nil)
     }
+
+    @Test func secureInputHolderReadsSessionPID() {
+        let other: [String: Any] = [MacJiSecureInput.onConsoleKey: false, MacJiSecureInput.pidKey: NSNumber(value: 42)]
+        let console: [String: Any] = [MacJiSecureInput.onConsoleKey: true, MacJiSecureInput.pidKey: NSNumber(value: 8705)]
+        #expect(MacJiSecureInput.holderPID(inConsoleUsers: [other, console]) == 8705)
+        #expect(MacJiSecureInput.holderPID(inConsoleUsers: [[MacJiSecureInput.onConsoleKey: true,
+                                                             MacJiSecureInput.pidKey: NSNumber(value: 0)]]) == nil)
+        #expect(MacJiSecureInput.holderPID(inConsoleUsers: [other]) == nil)
+    }
 }

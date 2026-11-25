@@ -17,6 +17,7 @@ final class MacJiController {
 
     private let monitor = MacJiInputMonitor()
     private let model = MacJiModel()
+    private let secureInputNotifier = MacJiSecureInputNotifier()
     private lazy var panel = MacJiPanel(rootView: MacJiView(model: model) { [weak self] in self?.insert($0) })
     private var tracker = MacJiTriggerTracker(trigger: MacJiSettings.defaultTrigger)
     private var observers: [NSObjectProtocol] = []
@@ -34,13 +35,16 @@ final class MacJiController {
             MainActor.assumeIsolated { self?.applySettings() }
         })
         // Switching apps moves the caret; it is also a cheap moment to retry the
-        // tap after Accessibility was granted.
+        // tap after Accessibility was granted, and to report a background app
+        // whose Secure Input hides every key from the tap.
         workspaceObservers.append(NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main
-        ) { [weak self] _ in
+        ) { [weak self] note in
+            let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
             MainActor.assumeIsolated {
                 self?.endSession()
                 self?.applySettings()
+                if MacJiSettings.isEnabled { self?.secureInputNotifier.check(frontmostPID: app?.processIdentifier) }
             }
         })
         applySettings()

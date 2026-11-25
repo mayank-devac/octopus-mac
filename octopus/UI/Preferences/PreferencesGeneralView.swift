@@ -26,6 +26,7 @@ struct PreferencesGeneralView: View {
     @AppStorage(WindowMenuPositionPreference.key) private var windowMenuPosition = WindowMenuPositionPreference.cursor.rawValue
     
     @State private var hasAccessibilityPermission = AXIsProcessTrusted()
+    @State private var secureInputHolder = MacJiSecureInput.holder()
     @State private var screens = NSScreen.screens
     
     // Timer to poll for accessibility permission changes
@@ -121,6 +122,13 @@ struct PreferencesGeneralView: View {
                 Text("Type \(MacJiSettings.validTrigger(macJiTrigger))rocket in any app. ↩ inserts · ⇧↩ copies · esc closes.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                // Secure Input hides every key from MacJi until the holding app releases it.
+                if macJiEnabled, let secureInputHolder {
+                    Label("MacJi is paused because \(secureInputHolder.name) is blocking keyboard access. \(MacJiSecureInput.turnOffSteps(for: secureInputHolder))",
+                          systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
             } header: { Text("MacJi emoji") }
         }
         .formStyle(.grouped)
@@ -134,6 +142,7 @@ struct PreferencesGeneralView: View {
         .onReceive(timer) { _ in
             // Poll for permission changes
             hasAccessibilityPermission = AXIsProcessTrusted()
+            secureInputHolder = MacJiSecureInput.holder()
         }
     }
     
