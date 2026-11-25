@@ -78,6 +78,25 @@ struct WindowMenuTests {
         #expect(content.recentApps.map(\.id) == ["b", "c"])
     }
 
+    @MainActor @Test func narrowedListKeepsOneAppsWindowsUntilThatAppLeaves() {
+        let both = WindowMenuCatalogue.content(
+            workspaces: [workspace(["a", "b"])], selectedWorkspaceID: nil,
+            running: [runningApp(10, "a", windows: [1, 2]), runningApp(20, "b", windows: [3])],
+            focusPID: nil, installed: { _ in nil })
+        let state = WindowMenuState()
+        state.begin(placement: .center, content: both, status: .ready, restingAppID: nil)
+        state.setNarrowedApp("a")
+        #expect(state.listedWindows.map(\.id.windowID) == [1, 2])
+        // Focusing a row no longer widens the list; only the presenter's delay does.
+        state.setFocus(.window(state.listedWindows[0].id), reveal: false)
+        #expect(state.listedWindows.count == 2)
+        let onlyB = WindowMenuCatalogue.content(
+            workspaces: [workspace(["b"])], selectedWorkspaceID: nil,
+            running: [runningApp(20, "b", windows: [3])], focusPID: nil, installed: { _ in nil })
+        state.update(content: onlyB, status: .ready, restingAppID: nil)
+        #expect(state.narrowedAppID == nil)
+    }
+
     @Test func arrowsMoveBetweenStripsListAndAppGroups() {
         let space = workspace(["a", "b"])
         var content = WindowMenuCatalogue.content(

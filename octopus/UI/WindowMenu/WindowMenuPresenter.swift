@@ -37,6 +37,11 @@ final class WindowMenuPresenter {
     private var appPageStart = 0
     private var windowPageStart = 0
     private let zoomClicks = WindowZoomClickResolver()
+    private var showsHoveredAppOnlyNow = false
+    private var widenTask: Task<Void, Never>?
+
+    /// How long a narrowed list waits, once the pointer leaves the strip and rows, before listing every window.
+    static let widenDelay: Duration = .milliseconds(550)
 
     var cardSize: CGSize {
         WindowMenuLayout.cardSize(content: state.content, isCenter: state.isCenter, status: state.status)
@@ -52,7 +57,8 @@ final class WindowMenuPresenter {
         selectedWorkspaceID = profiles().currentID
         appPageStart = 0
         windowPageStart = 0
-        state.showsHoveredAppOnly = showsHoveredAppOnly()
+        showsHoveredAppOnlyNow = showsHoveredAppOnly()
+        cancelWiden()
         state.begin(placement: placement, content: buildContent(isCenter: placement == .center),
                     status: status, restingAppID: nil)
         settleRestingApp(reveal: true)
@@ -71,6 +77,7 @@ final class WindowMenuPresenter {
     }
 
     func reset() {
+        cancelWiden()
         running = []
         focusPID = nil
         state.reset()
@@ -104,6 +111,9 @@ final class WindowMenuPresenter {
         case .up, .down, .left, .right:
             let next = WindowMenuNavigator.move(state.focus, key, in: state.content)
             if case .workspace(let id)? = next { selectWorkspace(id) }
+            // Keys walk every window, so only an app icon keeps the list narrowed.
+            cancelWiden()
+            if case .app(let id)? = next { narrow(to: id) } else { state.setNarrowedApp(nil) }
             state.setFocus(next, reveal: true)
             return true
         }
@@ -115,17 +125,25 @@ final class WindowMenuPresenter {
         state.setHovered(target)
         switch target {
         case .app(let id)?:
+            narrow(to: id)
             guard state.focus != target else { return }
             state.setFocus(target, reveal: false)
             if let window = WindowMenuNavigator.firstWindow(ofApp: id, in: state.content) {
                 state.requestScroll(to: window, anchor: nil)
             }
-        case .window?, .recent?:
+        case .window?:
+            cancelWiden()
+            state.setFocus(target, reveal: false)
+        case .recent?:
+            scheduleWiden()
             state.setFocus(target, reveal: false)
         case .windowControl(let id, _)?:
+            cancelWiden()
             state.setFocus(.window(id), reveal: false)
-        case .workspace?, .moreApps?, .moreWindows?, nil:
-            break
+        case .moreApps?, .moreWindows?:
+            cancelWiden()
+        case .workspace?, nil:
+            scheduleWiden()
         }
     }
 
@@ -150,6 +168,37 @@ final class WindowMenuPresenter {
     }
 
     //// Escape and outside clicks belong to the owner, which also hides its panel.
+    //////////////////
+
+    ////////////////////
+    //// Hovered-app-only list
+    /// Hovering an app icon lists only its windows. The list stays narrowed while
+    /// the pointer is over the strip or the rows, so it does not jump while the
+    // user moves down to pick a window. Leaving both widens it after `widenDelay`;
+    // coming back before then cancels the wait and the next exit starts it afresh.
+
+    private func narrow(to appID: String) {
+        guard showsHoveredAppOnlyNow else { return }
+        cancelWiden()
+        state.setNarrowedApp(appID)
+    }
+
+    private func scheduleWiden() {
+        guard state.narrowedAppID != nil, widenTask == nil else { return }
+        widenTask = Task { [weak self] in
+            try? await Task.sleep(for: Self.widenDelay)
+            guard !Task.isCancelled, let self else { return }
+            self.widenTask = nil
+            self.state.setNarrowedApp(nil)
+        }
+    }
+
+    private func cancelWiden() {
+        widenTask?.cancel()
+        widenTask = nil
+    }
+
+    //// Re-hovering any strip icon narrows to that app straight away.
     //////////////////
 
     ////////////////////

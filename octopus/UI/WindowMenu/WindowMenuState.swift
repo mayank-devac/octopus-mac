@@ -38,13 +38,14 @@ final class WindowMenuState: ObservableObject {
         return nil
     }
 
-    /// Set by the presenter on each presentation: a focused strip app hides the other apps' rows.
-    var showsHoveredAppOnly = false
+    /// The strip app whose windows alone are listed (the "hovered app only" setting).
+    /// The presenter keeps it while the pointer moves from the icon onto its rows.
+    @Published private(set) var narrowedAppID: String?
 
-    /// The rows the list draws and pages through. Only an app icon narrows them; a focused row lists every window.
+    /// The rows the list draws and pages through.
     var listedWindows: [WindowMenuWindow] {
-        guard showsHoveredAppOnly, case .app(let appID)? = focus else { return content.windows }
-        return content.windows.filter { $0.appID == appID }
+        guard let narrowedAppID else { return content.windows }
+        return content.windows.filter { $0.appID == narrowedAppID }
     }
 
     /// The app whose windows are tinted in the list.
@@ -66,6 +67,7 @@ final class WindowMenuState: ObservableObject {
         self.restingAppID = restingAppID
         focus = nil
         hovered = nil
+        narrowedAppID = nil
         scrollRequest = nil
         presentationID = UUID()
     }
@@ -77,6 +79,11 @@ final class WindowMenuState: ObservableObject {
         if self.restingAppID != restingAppID { self.restingAppID = restingAppID }
         if let focus, !contains(focus) { self.focus = nil }
         if let hovered, !contains(hovered) { self.hovered = nil }
+        if let narrowedAppID, !contains(.app(narrowedAppID)) { self.narrowedAppID = nil }
+    }
+
+    func setNarrowedApp(_ appID: String?) {
+        if narrowedAppID != appID { narrowedAppID = appID }
     }
 
     func setFocus(_ target: WindowMenuTarget?, reveal: Bool) {
