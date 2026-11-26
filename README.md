@@ -34,6 +34,8 @@ Mayank Baral's modified version of the original Octopus by Xander Gouws and Omar
 
 📦Download beta : [octopus-dist](https://github.com/mayank-devac/octopus-dist/releases).
 
+[![Total downloads](https://img.shields.io/github/downloads/mayank-devac/octopus-dist/total?label=downloads)](https://github.com/mayank-devac/octopus-dist/releases)
+
 ## See Octopus in action
 
 Click any screenshot for a closer look.
